@@ -70,9 +70,9 @@ crate::serde_via_parse!(EmbedderBackend, result);
 ///
 /// INTENT: nothing about the model is compiled in. Backend, URL, route, auth
 /// header, model name and width are all data. The defaults happen to describe
-/// the bundled local Qwen3 container; pointing `base_url` at api.openai.com,
-/// api.voyageai.com or a remote TEI behind TLS is a configuration change, not a
-/// code change.
+/// `qwen3.7-text-embedding` on DashScope; pointing `base_url` at a local
+/// LM Studio, at api.openai.com or at a TEI behind TLS is a configuration
+/// change, not a code change.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EmbedderConfig {
@@ -97,7 +97,7 @@ pub struct EmbedderConfig {
     /// Expected vector width. `0` means: ask the runtime at startup.
     pub dim: usize,
     /// Send `dimensions` in the request body. Matryoshka-capable models
-    /// (Qwen3-Embedding, OpenAI text-embedding-3-*) honour it and return a
+    /// (qwen3.7-text-embedding, OpenAI text-embedding-3-*) honour it and return a
     /// truncated vector; models that do not will reject the field.
     pub send_dimensions: bool,
     /// Probe the runtime once at startup and fail fast when the returned width
@@ -115,7 +115,7 @@ pub struct EmbedderConfig {
     pub max_input_chars: usize,
     /// L2-normalize vectors on arrival so cosine becomes a dot product.
     pub normalize: bool,
-    /// Instruction prefix, applied to QUERIES only (Qwen3 is asymmetric).
+    /// Instruction prefix, applied to QUERIES only (the model is asymmetric).
     pub query_instruction: String,
 }
 
@@ -123,9 +123,9 @@ impl Default for EmbedderConfig {
     fn default() -> Self {
         Self {
             backend: EmbedderBackend::OpenAiCompat,
-            base_url: "http://127.0.0.1:8080".into(),
+            base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode".into(),
             path: "/v1/embeddings".into(),
-            model: "Qwen/Qwen3-Embedding-0.6B".into(),
+            model: "qwen3.7-text-embedding".into(),
             api_key: None,
             auth_header: "Authorization".into(),
             auth_prefix: "Bearer ".into(),

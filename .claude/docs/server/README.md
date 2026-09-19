@@ -46,7 +46,7 @@ one and started a second time.
 Readiness: probes the embeddings runtime.
 
 ```json
-{ "ok": true, "model": "Qwen/Qwen3-Embedding-0.6B", "dim": 1024,
+{ "ok": true, "model": "qwen3.7-text-embedding", "dim": 1024,
   "store_backend": "sqlite", "projects": 3, "embedder_ok": true }
 ```
 

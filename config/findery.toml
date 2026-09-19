@@ -22,18 +22,20 @@ job_history = 64
 # "openai_compat" talks to anything serving /v1/embeddings: TEI, llama.cpp,
 # vLLM, Ollama, LM Studio, OpenAI, Voyage, Jina. "mock" is for offline tests.
 backend = "openai_compat"
-# The default targets a daemon running natively with the model in Docker, which
-# is the recommended setup. Compose overrides this to `http://tei:80` for the
-# all-Docker path.
-base_url = "http://127.0.0.1:8080"
+# `qwen3.7-text-embedding` is served by DashScope; it has no Hugging Face
+# weights, so nothing local can host it. Point this at a local runtime instead
+# (http://127.0.0.1:1234 for LM Studio, :11434 for Ollama) and set `model` to
+# whatever that runtime reports — a different model is a different recipe, and
+# a recipe change is a re-index.
+base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode"
 path = "/v1/embeddings"
-model = "Qwen/Qwen3-Embedding-0.6B"
+model = "qwen3.7-text-embedding"
 # api_key = "sk-..."
 auth_header = "Authorization"
 auth_prefix = "Bearer "
 # Expected vector width. 0 means "ask the runtime at startup".
 dim = 1024
-# Matryoshka truncation. Qwen3-Embedding and text-embedding-3-* honour it;
+# Matryoshka truncation. qwen3.7-text-embedding (256-2560) and text-embedding-3-* honour it;
 # others reject the field outright.
 send_dimensions = false
 # Probe once at boot and refuse to run on a width mismatch. Leave this on: half
@@ -46,7 +48,7 @@ max_retries = 3
 max_input_chars = 24000
 # L2-normalize on arrival, so cosine becomes a dot product downstream.
 normalize = true
-# Applied to QUERIES only — Qwen3-Embedding is asymmetric by design. A caller can override it per search, either with a
+# Applied to QUERIES only — qwen3.7-text-embedding is asymmetric by design. A caller can override it per search, either with a
 # named preset (`task`: code, symbol, usage, docs, test, config, error) or with
 # free-form text. Qwen measures +1 to 5% retrieval accuracy from a tailored
 # instruction — it costs one prefix on a string that was going to be embedded.

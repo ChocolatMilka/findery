@@ -276,13 +276,18 @@ mod tests {
         cfg.validate().expect("defaults must validate");
         assert_eq!(cfg.store.backend, StoreBackend::Sqlite);
         assert_eq!(cfg.embedder.dim, 1024);
-        // The default targets a native daemon: a loopback model endpoint and a
-        // catalog in the user's data directory, not a container path.
+        // The default model and the default endpoint must be able to meet. A
+        // default naming a model its own URL cannot serve is a first run that
+        // fails for a reason nobody can read.
+        assert_eq!(cfg.embedder.model, "qwen3.7-text-embedding");
         assert!(
-            cfg.embedder.base_url.contains("127.0.0.1"),
-            "{}",
-            cfg.embedder.base_url
+            cfg.embedder.endpoint().contains("dashscope"),
+            "`{}` is served by DashScope, not by `{}`",
+            cfg.embedder.model,
+            cfg.embedder.endpoint()
         );
+        // The catalog still belongs in the user's data directory, not a
+        // container path: the daemon runs natively by default.
         assert!(
             !cfg.store.data_dir.starts_with("/data"),
             "{}",

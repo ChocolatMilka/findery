@@ -5,7 +5,7 @@ the background. Multiple projects, multiple clients. Rust API, HTTP API,
 MCP API — so it plugs directly into Claude Code.
 
 - 🦀 100% Rust, a five-layer workspace
-- 🔒 100% local by default (Qwen3-Embedding in a container), **or** any remote
+- 🔒 `qwen3.7-text-embedding` by default, **or** a fully local runtime, **or** any remote
   provider: nothing about the model is hardcoded
 - ⚡ Three-gate incremental sync: re-syncing an unchanged repo costs
   **zero embeddings**
@@ -134,12 +134,12 @@ Nothing is hardcoded. Three examples, all in `.env`:
 
 ```bash
 # Local, provided (default)
-FINDERY_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
+FINDERY_EMBED_MODEL=qwen3.7-text-embedding
 FINDERY_EMBED_DIM=1024
 
 # A local runtime you already have (Ollama, llama.cpp, LM Studio, vLLM…)
 FINDERY_EMBED_BASE_URL=http://host.docker.internal:11434
-FINDERY_EMBED_MODEL=qwen3-embedding:0.6b
+FINDERY_EMBED_MODEL=<the name your local runtime reports>
 
 # A remote provider
 FINDERY_EMBED_BASE_URL=https://api.openai.com

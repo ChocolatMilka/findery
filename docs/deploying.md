@@ -47,7 +47,7 @@ variables.
 
 ```bash
 export FINDERY_EMBED_BASE_URL=http://127.0.0.1:1234   # LM Studio
-export FINDERY_EMBED_MODEL=Qwen3-Embedding-0.6B-GGUF
+export FINDERY_EMBED_MODEL=<the name your local runtime reports>
 ```
 
 Cost: nothing. Support burden: you now depend on each user keeping a runtime
@@ -60,7 +60,7 @@ A single GPU box, or a hosted provider. Every user points at it.
 
 ```bash
 export FINDERY_EMBED_BASE_URL=https://embed.internal.example.com
-export FINDERY_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
+export FINDERY_EMBED_MODEL=qwen3.7-text-embedding
 export FINDERY_EMBED_API_KEY=...
 ```
 
@@ -165,7 +165,7 @@ One command, and it is the only one you should have to teach:
 ```console
 $ findery doctor
 OK   daemon       answering at http://127.0.0.1:8077
-FAIL model        Qwen/Qwen3-Embedding-0.6B (1024 dims) · store sqlite — connection refused
+FAIL model        qwen3.7-text-embedding (1024 dims) · store sqlite — connection refused
        → start your embedding runtime (LM Studio, Ollama, `make up-model`),
        → then check FINDERY_EMBED_BASE_URL and FINDERY_EMBED_MODEL
 OK   here         `their-project` covers this directory (3 project(s) indexed)

@@ -121,7 +121,7 @@ provider. Point the daemon at it and move on:
 
 ```bash
 export FINDERY_EMBED_BASE_URL=http://127.0.0.1:11434
-export FINDERY_EMBED_MODEL=qwen3-embedding:0.6b
+export FINDERY_EMBED_MODEL=qwen3.7-text-embedding
 ```
 
 ## 4. The daemon — there is nothing to do

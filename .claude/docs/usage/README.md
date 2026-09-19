@@ -137,7 +137,7 @@ findery projects                   # all of them, current one marked *
 
 ### Retrieval intent — the cheapest accuracy you will get
 
-Qwen3-Embedding is instruction-aware: a task-tailored instruction buys 1-5%
+qwen3.7-text-embedding is instruction-aware: a task-tailored instruction buys 1-5%
 retrieval accuracy for the cost of one prefix on a string that was going to be
 embedded anyway.
 
@@ -240,8 +240,8 @@ Nothing about the model is compiled in. Backend, URL, route, auth header, name
 and width are all data.
 
 ```bash
-FINDERY_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B   FINDERY_EMBED_DIM=1024   # default, CPU-friendly
-FINDERY_EMBED_MODEL=Qwen/Qwen3-Embedding-4B     FINDERY_EMBED_DIM=2560   # GPU
+FINDERY_EMBED_MODEL=qwen3.7-text-embedding   FINDERY_EMBED_DIM=1024   # the default
+FINDERY_EMBED_MODEL=qwen3.7-text-embedding   FINDERY_EMBED_DIM=2560   # same model, widest vector
 FINDERY_EMBED_BASE_URL=https://api.openai.com   FINDERY_EMBED_API_KEY=sk-…
 ```
 

@@ -18,8 +18,8 @@ to both.
 
 | Target | Settings |
 |-------|----------|
-| Local TEI (default) | `FINDERY_EMBED_BASE_URL=http://tei:80`, `FINDERY_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B`, `FINDERY_EMBED_DIM=1024` |
-| Ollama on the host | `FINDERY_EMBED_BASE_URL=http://host.docker.internal:11434`, `FINDERY_EMBED_MODEL=qwen3-embedding:0.6b` |
+| DashScope (default) | `FINDERY_EMBED_BASE_URL=https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`, `FINDERY_EMBED_MODEL=qwen3.7-text-embedding`, `FINDERY_EMBED_DIM=1024`, `FINDERY_EMBED_API_KEY=$DASHSCOPE_API_KEY` |
+| A local runtime instead | `FINDERY_EMBED_BASE_URL=http://127.0.0.1:1234`, `FINDERY_EMBED_MODEL=<whatever it serves>` — `qwen3.7-text-embedding` is API-only, so a local box runs a different model and therefore a different recipe |
 | llama.cpp (GGUF) | `FINDERY_EMBED_BASE_URL=http://llama:8080` |
 | OpenAI | `FINDERY_EMBED_BASE_URL=https://api.openai.com`, `FINDERY_EMBED_MODEL=text-embedding-3-large`, `FINDERY_EMBED_DIM=3072`, `FINDERY_EMBED_API_KEY=sk-…`, `FINDERY_EMBED_SEND_DIMENSIONS=true` |
 | Azure OpenAI | + `FINDERY_EMBED_AUTH_HEADER=api-key`, `FINDERY_EMBED_AUTH_PREFIX=` (empty) |
@@ -30,7 +30,7 @@ to both.
 
 ## The Qwen3 asymmetry — don't break this
 
-Qwen3-Embedding is **instruction-aware and asymmetric**:
+qwen3.7-text-embedding is **instruction-aware and asymmetric**:
 
 ```text
 Instruct: {task}
@@ -118,7 +118,7 @@ This is the vector cache's namespace. Changing model or dimension opens a
 catalog:
 
 ```
-this catalog was built with embedding recipe `Qwen/Qwen3-Embedding-0.6B:1024`
+this catalog was built with embedding recipe `qwen3.7-text-embedding:1024`
 but the daemon now offers `text-embedding-3-large:3072`; keep the old settings,
 point FINDERY_DATA_DIR at a fresh directory, or delete the catalog to re-index
 ```
@@ -144,9 +144,9 @@ reached with an explicit `backend = "mock"` (CONV-036).
 
 | Model | Dim | Weight | Where |
 |--------|-----|-------|-----|
-| Qwen3-Embedding-0.6B | 1024 | ~1.2 GB | comfortable on CPU — the default |
-| Qwen3-Embedding-4B | 2560 | ~8 GB | GPU |
-| Qwen3-Embedding-8B | 4096 | ~16 GB | GPU, max quality |
+| `qwen3.7-text-embedding` | 256 → 2560, default 1024 | none, it is an API | **the default.** 131K context, $0.07/1M tokens |
+| Qwen3-Embedding-0.6B | 1024 | ~1.2 GB | a local fallback when an API is not an option |
+| Qwen3-Embedding-8B | 4096 | ~16 GB | a local fallback, GPU |
 
 The dimension multiplies everything downstream: matrix RAM, cache size,
 scan duration. 1024 is the right starting point; go up when a measurement

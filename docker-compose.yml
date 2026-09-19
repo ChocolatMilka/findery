@@ -32,7 +32,7 @@ x-daemon-env: &daemon-env
   FINDERY_MOUNTS: ${FINDERY_WORKSPACES:-.}=/workspaces
   # --- embedding runtime (local by default, remote by configuration) --------
   FINDERY_EMBED_BACKEND: ${FINDERY_EMBED_BACKEND:-openai_compat}
-  FINDERY_EMBED_MODEL: ${FINDERY_EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+  FINDERY_EMBED_MODEL: ${FINDERY_EMBED_MODEL:-qwen3.7-text-embedding}
   FINDERY_EMBED_DIM: ${FINDERY_EMBED_DIM:-1024}
   FINDERY_EMBED_API_KEY: ${FINDERY_EMBED_API_KEY:-}
   FINDERY_EMBED_BATCH_SIZE: ${FINDERY_EMBED_BATCH_SIZE:-32}
@@ -62,7 +62,7 @@ x-tei: &tei
   ports:
     - "${FINDERY_TEI_PORT:-8080}:80"
   command:
-    - --model-id=${FINDERY_EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+    - --model-id=${FINDERY_TEI_MODEL_ID:-Qwen/Qwen3-Embedding-0.6B}
     - --port=80
     - --max-client-batch-size=${FINDERY_EMBED_BATCH_SIZE:-32}
     - --auto-truncate

@@ -72,7 +72,7 @@ pub struct SearchRequest {
     /// The most direct lever an MCP client has on its own token spend.
     #[serde(default)]
     pub max_snippet_chars: Option<usize>,
-    /// Named retrieval intent. Qwen3-Embedding is instruction-aware, and a
+    /// Named retrieval intent. The embedding model is instruction-aware, and a
     /// task-tailored instruction buys 1-5% retrieval accuracy for free.
     #[serde(default)]
     pub task: Option<crate::prompt::QueryTask>,

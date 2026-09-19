@@ -1,6 +1,6 @@
-//! Qwen3-Embedding instruction templates.
+//! qwen3.7-text-embedding instruction templates.
 //!
-//! Qwen3-Embedding is instruction-aware and **asymmetric**: the QUERY carries an
+//! qwen3.7-text-embedding is instruction-aware and **asymmetric**: the QUERY carries an
 //! instruction, the DOCUMENT never does. Qwen measures a 1-5% retrieval gain
 //! from a task-tailored instruction, which is free — it costs one prefix on a
 //! string that was going to be embedded anyway.
