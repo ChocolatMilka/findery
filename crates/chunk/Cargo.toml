@@ -1,0 +1,10 @@
+[package]
+name                   = "findery-chunk"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description            = "L1 - deterministic, dependency-free chunkers for Rust and Markdown."
+
+[dependencies]
+findery-core = { workspace = true }
