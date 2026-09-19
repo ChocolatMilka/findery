@@ -207,13 +207,21 @@ impl Chunk {
 // Files and projects
 // ---------------------------------------------------------------------------
 
-/// Where a catalog file comes from.
+/// Where a catalog file comes from, and therefore who may delete it.
+///
+/// INTENT: two sides can feed the index — the daemon walking a directory it can
+/// see, or a client walking it and pushing the contents. Each may only prune
+/// what it put there. Without this distinction a client sync would sweep away
+/// the daemon's files, and vice versa.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
-    /// Present on disk, resynchronized by the walker.
+    /// The daemon walked it. Pruned by a daemon-side sync.
     File,
-    /// Pushed through the API with its text — the walker never deletes it.
+    /// A client walked it and pushed its contents. Pruned by that client's
+    /// `prune` call, never by a daemon-side sync.
+    Pushed,
+    /// Added by hand through the API. Nothing prunes it automatically.
     Inline,
 }
 
@@ -221,6 +229,7 @@ impl Origin {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::File => "file",
+            Self::Pushed => "pushed",
             Self::Inline => "inline",
         }
     }
@@ -228,6 +237,7 @@ impl Origin {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "file" => Some(Self::File),
+            "pushed" => Some(Self::Pushed),
             "inline" => Some(Self::Inline),
             _ => None,
         }
@@ -276,6 +286,13 @@ pub struct ProjectSpec {
     /// Per-file ceiling; above it the file is skipped and reported.
     #[serde(default = "default_max_file_bytes")]
     pub max_file_bytes: u64,
+    /// The daemon cannot see `root`, so contents arrive by push.
+    ///
+    /// Set at registration by testing the path, not by the caller: whether the
+    /// daemon can read a directory is a fact about the deployment, not an
+    /// opinion the client should have to hold.
+    #[serde(default)]
+    pub push: bool,
 }
 
 fn default_true() -> bool {
@@ -296,6 +313,7 @@ impl Default for ProjectSpec {
             follow_gitignore: true,
             include_hidden: true,
             max_file_bytes: default_max_file_bytes(),
+            push: false,
         }
     }
 }

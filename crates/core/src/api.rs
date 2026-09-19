@@ -31,6 +31,13 @@ pub struct RegisterProject {
     pub follow_gitignore: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_hidden: Option<bool>,
+    /// Force push mode instead of letting the daemon test the path.
+    ///
+    /// The automatic choice is right almost always; this exists for the cases
+    /// it cannot see — a stale mount, a daemon that will move, or a client that
+    /// simply prefers to own the reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_bytes: Option<u64>,
 }
@@ -163,6 +170,26 @@ pub struct AddDocument {
     /// Inline content. When omitted the file is read from disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// `POST /v1/projects/{id}/documents/batch` — push several documents at once.
+///
+/// INTENT: a first index of a large repository is thousands of files. One HTTP
+/// request each, even on loopback, spends minutes in round trips.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushDocuments {
+    pub documents: Vec<AddDocument>,
+}
+
+/// `POST /v1/projects/{id}/prune` — delete pushed files the client no longer has.
+///
+/// The client sends every path it saw; whatever the catalog holds beyond that
+/// list disappeared on its side.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PruneRequest {
+    pub keep: Vec<String>,
 }
 
 /// `POST /v1/projects/{id}/watch`
