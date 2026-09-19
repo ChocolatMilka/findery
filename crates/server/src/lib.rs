@@ -29,6 +29,12 @@ use tower_http::trace::TraceLayer;
 #[derive(Clone)]
 pub struct AppState {
     pub indexer: Arc<Indexer>,
+    /// Fires when a client asks the daemon to stop.
+    ///
+    /// INTENT: a daemon started in the background has no terminal to Ctrl-C and
+    /// no pid anyone recorded. Asking it to leave over its own API is the only
+    /// way that works identically on every platform.
+    pub shutdown: Arc<tokio::sync::Notify>,
     /// Live watchers, one per project. Dropping a handle stops its task.
     pub watches: Arc<Mutex<HashMap<String, WatchHandle>>>,
     pub token: Option<Arc<str>>,
@@ -41,6 +47,7 @@ impl AppState {
             indexer,
             watches: Arc::new(Mutex::new(HashMap::new())),
             token,
+            shutdown: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }

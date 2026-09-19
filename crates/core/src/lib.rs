@@ -23,7 +23,7 @@ pub mod traits;
 
 pub use api::{
     AddDocument, Deleted, ErrorBody, ExportReport, ExportRequest, HealthReport, Job, JobState,
-    RegisterProject, Removed, SyncRequest, SyncResponse, WatchRequest, Watching,
+    RegisterProject, Removed, Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 pub use error::{Error, Result};
 pub use filter::CompiledFilter;

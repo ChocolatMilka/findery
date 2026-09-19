@@ -77,6 +77,7 @@ async fn run() -> Result<()> {
     );
 
     let state = findery_server::state_from_config(cfg).await?;
+    let asked_to_stop = state.shutdown.clone();
     let app = findery_server::app(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -85,7 +86,7 @@ async fn run() -> Result<()> {
     tracing::info!(%bind, authenticated, "listening");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(asked_to_stop))
         .await
         .map_err(|e| Error::Internal(format!("server: {e}")))
 }
@@ -120,12 +121,17 @@ fn init_tracing() {
     let _ = fmt().with_env_filter(filter).with_target(false).try_init();
 }
 
-/// Resolves on Ctrl-C or on SIGTERM, so `docker stop` is a clean shutdown and
-/// not a 10-second wait followed by SIGKILL.
-async fn shutdown_signal() {
+/// Resolves on Ctrl-C, on SIGTERM, or on `POST /v1/shutdown`.
+///
+/// The first two make `docker stop` a clean shutdown instead of a 10-second wait
+/// followed by SIGKILL. The third is for the daemon nobody started by hand:
+/// there is no terminal to Ctrl-C and no pid anyone wrote down, so
+/// `findery daemon stop` asks over the API.
+async fn shutdown_signal(asked_to_stop: std::sync::Arc<tokio::sync::Notify>) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
+    let over_the_api = async { asked_to_stop.notified().await };
 
     #[cfg(unix)]
     let terminate = async {
@@ -142,6 +148,7 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {}
         _ = terminate => {}
+        _ = over_the_api => {}
     }
     tracing::info!("shutting down");
 }

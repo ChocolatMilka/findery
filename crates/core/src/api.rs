@@ -267,6 +267,12 @@ pub struct Deleted {
     pub deleted: bool,
 }
 
+/// Envelope for `POST /v1/shutdown`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Stopping {
+    pub stopping: bool,
+}
+
 /// Envelope for watch toggling.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Watching {

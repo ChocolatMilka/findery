@@ -3,7 +3,7 @@
 
 use crate::dto::{
     AddDocument, Deleted, DocumentQuery, ExportRequest, PruneRequest, PushDocuments, Removed,
-    SyncRequest, SyncResponse, WatchRequest, Watching,
+    Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use crate::{ApiResult, AppState};
 use axum::extract::{Path, Query, State};
@@ -34,6 +34,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/files", get(file_manifest))
         .route("/v1/projects/{id}/prune", post(prune))
         .route("/v1/search", post(search))
+        .route("/v1/shutdown", post(shutdown))
         .route("/v1/jobs", get(list_jobs))
         .route("/v1/jobs/{id}", get(get_job))
         // Kept last so a typo in a path yields 404 rather than a confusing 405.
@@ -236,6 +237,16 @@ async fn set_watch(
         project: id.to_string(),
         watching: true,
     }))
+}
+
+/// Asks the daemon to stop, gracefully.
+///
+/// Requires the bearer token when one is configured, like everything else: a
+/// daemon anyone on the network can stop is not a daemon.
+async fn shutdown(State(state): State<AppState>) -> Json<Stopping> {
+    tracing::info!("shutdown requested over the API");
+    state.shutdown.notify_one();
+    Json(Stopping { stopping: true })
 }
 
 async fn list_jobs(State(state): State<AppState>) -> Json<Vec<Job>> {

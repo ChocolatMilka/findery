@@ -9,7 +9,7 @@
 // nothing of its own: a DTO that existed only here would be a shape the Rust
 // client and the MCP bridge could not see.
 pub use findery_core::api::{
-    AddDocument, Deleted, ErrorBody, ExportRequest, PruneRequest, PushDocuments, Removed,
+    AddDocument, Deleted, ErrorBody, ExportRequest, PruneRequest, PushDocuments, Removed, Stopping,
     SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use serde::Deserialize;
