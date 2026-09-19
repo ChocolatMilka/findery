@@ -2,8 +2,8 @@
 //! call one [`findery_index::Indexer`] method, serialize.
 
 use crate::dto::{
-    AddDocument, Deleted, DocumentQuery, ExportRequest, Removed, SyncRequest, SyncResponse,
-    WatchRequest, Watching,
+    AddDocument, Deleted, DocumentQuery, ExportRequest, PruneRequest, PushDocuments, Removed,
+    SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use crate::{ApiResult, AppState};
 use axum::extract::{Path, Query, State};
@@ -11,7 +11,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use findery_core::api::{HealthReport, Job, RegisterProject};
 use findery_core::ids::ProjectId;
-use findery_core::model::{IndexStats, Project, SearchHit, SearchRequest, SyncReport};
+use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
 use findery_store::{ExportFormat, ExportReport};
 use std::time::Duration;
 
@@ -30,6 +30,9 @@ pub fn router() -> Router<AppState> {
             "/v1/projects/{id}/documents",
             post(add_document).delete(remove_document),
         )
+        .route("/v1/projects/{id}/documents/batch", post(push_documents))
+        .route("/v1/projects/{id}/files", get(file_manifest))
+        .route("/v1/projects/{id}/prune", post(prune))
         .route("/v1/search", post(search))
         .route("/v1/jobs", get(list_jobs))
         .route("/v1/jobs/{id}", get(get_job))
@@ -143,6 +146,41 @@ async fn remove_document(
     let id = ProjectId::new(id)?;
     Ok(Json(Removed {
         removed: state.indexer.remove_document(&id, &query.path).await?,
+    }))
+}
+
+/// Ingests documents a client walked and read itself.
+async fn push_documents(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PushDocuments>,
+) -> ApiResult<Json<SyncReport>> {
+    let id = ProjectId::new(id)?;
+    Ok(Json(
+        state.indexer.push_documents(&id, body.documents).await?,
+    ))
+}
+
+/// What the catalog knows about a project's files, so a pushing client can send
+/// only what changed.
+async fn file_manifest(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<FileRecord>>> {
+    Ok(Json(
+        state.indexer.file_manifest(&ProjectId::new(id)?).await?,
+    ))
+}
+
+/// Removes pushed files absent from the list the client saw.
+async fn prune(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PruneRequest>,
+) -> ApiResult<Json<Removed>> {
+    let id = ProjectId::new(id)?;
+    Ok(Json(Removed {
+        removed: state.indexer.prune(&id, body.keep).await?,
     }))
 }
 

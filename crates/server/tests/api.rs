@@ -365,11 +365,7 @@ async fn bad_requests_get_the_status_they_deserve() {
     assert_eq!(body["code"], "not_found");
 
     let (status, body) = h
-        .call(
-            "POST",
-            "/v1/projects",
-            Some(json!({ "root": "/nowhere/at/all" })),
-        )
+        .call("POST", "/v1/projects", Some(json!({ "root": "   " })))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["code"], "invalid");
@@ -512,4 +508,148 @@ async fn the_instruction_aware_knobs_reach_the_wire() {
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+/// The push path end to end: a project fed entirely over HTTP, never read from
+/// disk by the daemon.
+#[tokio::test]
+async fn pushed_documents_are_indexed_searchable_and_prunable() {
+    let h = harness().await;
+    let id = h.register().await;
+
+    let (status, report) = h
+        .call(
+            "POST",
+            &format!("/v1/projects/{id}/documents/batch"),
+            Some(json!({ "documents": [
+                { "path": "pushed/alpha.rs", "text": "pub fn rotate_credentials() -> bool { true }" },
+                { "path": "pushed/beta.md",  "text": "# Beta\n\nNotes about credential rotation.\n" }
+            ]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["files_added"], 2, "{report}");
+    assert!(
+        report["chunks_written"].as_u64().expect("chunks") >= 2,
+        "{report}"
+    );
+
+    // The manifest is what a pushing client diffs against.
+    let (status, files) = h
+        .call("GET", &format!("/v1/projects/{id}/files"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{files}");
+    let files = files.as_array().expect("array");
+    assert_eq!(files.len(), 2, "{files:?}");
+    assert!(files.iter().all(|f| f["origin"] == "pushed"), "{files:?}");
+    assert!(
+        files
+            .iter()
+            .all(|f| f["content_hash"].as_str().is_some_and(|h| !h.is_empty()))
+    );
+
+    // Content that never touched the daemon's filesystem is searchable.
+    let (_, hits) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(
+                json!({ "project": id, "query": "rotate_credentials", "mode": "keyword", "k": 5 }),
+            ),
+        )
+        .await;
+    let paths: Vec<&str> = hits
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|x| x["chunk"]["path"].as_str())
+        .collect();
+    assert!(paths.contains(&"pushed/alpha.rs"), "got {paths:?}");
+
+    // Re-pushing identical content costs nothing.
+    let (_, again) = h
+        .call(
+            "POST",
+            &format!("/v1/projects/{id}/documents/batch"),
+            Some(json!({ "documents": [
+                { "path": "pushed/alpha.rs", "text": "pub fn rotate_credentials() -> bool { true }" }
+            ]})),
+        )
+        .await;
+    assert_eq!(again["files_unchanged"], 1, "{again}");
+    assert_eq!(again["embeddings_computed"], 0, "{again}");
+
+    // Pruning drops exactly what the client no longer has.
+    let (status, pruned) = h
+        .call(
+            "POST",
+            &format!("/v1/projects/{id}/prune"),
+            Some(json!({ "keep": ["pushed/alpha.rs"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{pruned}");
+    assert_eq!(pruned["removed"], 1, "{pruned}");
+
+    let (_, files) = h
+        .call("GET", &format!("/v1/projects/{id}/files"), None)
+        .await;
+    assert_eq!(files.as_array().expect("array").len(), 1);
+}
+
+/// Each side may only prune what it fed. A daemon-side sync sweeping away a
+/// client's pushed files would be silent data loss.
+#[tokio::test]
+async fn a_daemon_sync_never_prunes_pushed_files() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+
+    h.call(
+        "POST",
+        &format!("/v1/projects/{id}/documents/batch"),
+        Some(json!({ "documents": [
+            { "path": "generated/notes.md", "text": "# Generated\n\nKept across syncs.\n" }
+        ]})),
+    )
+    .await;
+
+    let after = h.sync(&id, json!({ "mode": "full" })).await;
+    assert_eq!(after["files_removed"], 0, "{after}");
+
+    let (_, files) = h
+        .call("GET", &format!("/v1/projects/{id}/files"), None)
+        .await;
+    let pushed: Vec<&str> = files
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|f| f["origin"] == "pushed")
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert_eq!(pushed, vec!["generated/notes.md"], "{files:?}");
+}
+
+/// A root the daemon cannot read is not an error: it is a project the client
+/// will feed. Rejecting it was what forced every project under a bind mount.
+#[tokio::test]
+async fn an_unreachable_root_becomes_a_push_project() {
+    let h = harness().await;
+
+    let (status, body) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({ "id": "remote", "root": "/nowhere/at/all" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["spec"]["push"], true, "{body}");
+    // The host path is kept verbatim: there is no daemon-side path to map from.
+    assert_eq!(body["host_root"], "/nowhere/at/all", "{body}");
+
+    // A project the daemon can read stays in pull mode.
+    let (_, local) = h
+        .call("POST", "/v1/projects", Some(json!({ "root": h.root() })))
+        .await;
+    assert_eq!(local["spec"]["push"], false, "{local}");
 }
