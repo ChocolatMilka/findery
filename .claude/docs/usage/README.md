@@ -7,6 +7,10 @@ knob, what it actually changes, and when reaching for it is the right move.
 
 ## 1. Two ways to run it
 
+Both modes run **the same daemon binary**; only its packaging differs. The
+container next to it is never the server — it is a stateless third-party
+inference runtime that turns text into vectors and keeps nothing.
+
 The model is heavy and benefits from a container. The daemon is a 5 MB Rust
 binary with an embedded SQLite — containerizing it on a dev machine buys nothing
 and costs the bind-mount boundary.

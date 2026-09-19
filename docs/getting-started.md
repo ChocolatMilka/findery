@@ -10,38 +10,59 @@ Nothing here assumes where it lives — any directory, on any disk, works.
 
 ## What you are setting up
 
-Three pieces, and only the first two need to be running:
+Two processes with two different jobs, and a set of thin clients.
 
 ```
- ┌─ Docker ─────────────┐
- │  the embedding model │  loaded once, stays warm, shared by everything
- └──────────┬───────────┘
-            │ HTTP
- ┌──────────▼───────────┐
- │  finderyd            │  the daemon: catalog, vectors, search
- └──────────┬───────────┘
-            │ HTTP 127.0.0.1:8077
-    ┌───────┴────────┬──────────────────┐
- findery          findery-mcp        your Rust code
- (the CLI)        (Claude Code)      (findery-client)
+ ┌─ a container ────────────────┐
+ │  the embedding model         │  text in, vector out. STATELESS.
+ │  (HuggingFace TEI, Qwen3)    │  It does not know what a project,
+ └──────────────┬───────────────┘  a chunk or your index is.
+                │ HTTP — "embed these 32 texts"
+ ┌──────────────▼───────────────┐
+ │  finderyd                    │  THE server. It owns everything:
+ │  catalog · vectors · search  │  the SQLite file, the warm matrix,
+ │  jobs · watchers             │  search, jobs, watchers.
+ └──────────────┬───────────────┘
+                │ HTTP 127.0.0.1:8077
+      ┌─────────┴────────┬──────────────────┐
+   findery          findery-mcp        your Rust code
+   (the CLI)        (Claude Code)      (findery-client)   ← no state
 ```
+
+**There is only one server, and the container is not it.** The container runs a
+third-party inference runtime that turns text into vectors and forgets it ever
+happened. Everything that knows about your code lives in `finderyd`.
+
+`finderyd` itself can run either way — natively (the default) or in a container
+of its own (`make up`). Same binary, same behaviour; the only difference is that
+a containerized daemon sees only what you bind-mount, which is why the default
+is native.
 
 ### Why a daemon at all?
 
 A fair question — the CLI could open the SQLite catalog directly and skip it.
 
-It exists for **one** reason that matters: the vector matrix. Searching means
-comparing your query against every chunk, and that matrix is built in RAM. For a
-500k-line codebase it is a few hundred megabytes. A daemon builds it once and
-answers in ~15 ms; a process that starts fresh on every command would spend one
-to three **seconds** reloading it before it could answer anything.
+It exists for **one** reason that matters: the warm matrix. Searching means
+comparing your query against every chunk, from a matrix of normalized vectors
+held contiguously in RAM. For a 500k-line codebase that is a few hundred
+megabytes. A daemon builds it once and answers in ~15 ms; a process starting
+fresh on every command would spend one to three **seconds** loading it back from
+SQLite before it could compare anything.
+
+Note what that is *not*: it is not the vector cache. Two different things are
+easy to conflate.
+
+| | Lives in | Holds | Survives a restart |
+|---|---|---|---|
+| **Vector cache** | the `embeddings` table on disk | vectors keyed by `(recipe, content_hash)` — what makes a re-sync free | yes |
+| **Warm matrix** | the daemon's RAM | the same vectors, contiguous and normalized, for scanning | no, rebuilt at boot |
+
+The cache means you never re-embed. The daemon means you never wait. The cache
+would still be there with no daemon at all; you would just pay seconds per query.
 
 Two smaller reasons follow: `findery watch` needs a process that outlives your
 shell, and SQLite has a single writer — a daemon serializes concurrent clients
-instead of making them fight.
-
-What the daemon is *not*: it is not the model. The model lives in Docker and is
-the heavy part. The daemon is a 5 MB Rust binary.
+instead of letting them fight.
 
 ---
 
