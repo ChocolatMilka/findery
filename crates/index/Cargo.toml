@@ -1,0 +1,27 @@
+[package]
+name                   = "findery-index"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description            = "L2 - filesystem walk, incremental sync, hybrid search, jobs and watching."
+
+[dependencies]
+findery-core  = { workspace = true }
+findery-chunk = { workspace = true }
+findery-embed = { workspace = true }
+findery-store = { workspace = true }
+
+blake3      = { workspace = true }
+globset     = { workspace = true }
+ignore      = { workspace = true }
+notify      = { workspace = true }
+parking_lot = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+uuid        = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
