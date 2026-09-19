@@ -10,8 +10,9 @@
 pub mod jobs;
 pub mod search;
 pub mod sync;
-pub mod walker;
 pub mod watch;
+
+pub use findery_walk as walker;
 
 use findery_core::clock::now_unix;
 use findery_core::config::Config;
@@ -90,13 +91,12 @@ impl Indexer {
             return Err(Error::Invalid("root must not be empty".into()));
         }
         let container_root = self.mapper.to_container(&req.root);
-        if !Path::new(&container_root).is_dir() {
-            return Err(Error::Invalid(format!(
-                "root `{}` resolves to `{container_root}`, which the daemon cannot see; \
-                 check the mounts in FINDERY_MOUNTS",
-                req.root
-            )));
-        }
+        // Whether the daemon can read the directory decides HOW the project gets
+        // fed, not whether it can be indexed. Unreadable means the client walks
+        // it and pushes the contents — a deployment fact, not an error.
+        let push = req
+            .push
+            .unwrap_or_else(|| !Path::new(&container_root).is_dir());
 
         let defaults = &self.cfg.project_defaults;
         let name = req
@@ -119,10 +119,16 @@ impl Indexer {
             follow_gitignore: req.follow_gitignore.unwrap_or(defaults.follow_gitignore),
             include_hidden: req.include_hidden.unwrap_or(defaults.include_hidden),
             max_file_bytes: req.max_file_bytes.unwrap_or(defaults.max_file_bytes),
+            push,
         };
         let existing = self.catalog.get_project(&id).await?;
         let project = Project {
-            host_root: self.mapper.to_host(&spec.root),
+            // A pushed project has no daemon-side path to map back from.
+            host_root: if push {
+                req.root.clone()
+            } else {
+                self.mapper.to_host(&spec.root)
+            },
             id,
             name,
             spec,
@@ -174,6 +180,52 @@ impl Indexer {
             Some(body) => sync::index_inline(self, &project, &rel, &body).await,
             None => sync::run(self, &project, SyncMode::Paths(vec![rel])).await,
         }
+    }
+
+    /// Indexes a batch of documents pushed by a client.
+    ///
+    /// This is the entry point for a daemon that cannot see the project: the
+    /// client walks, reads and sends, so no bind mount and no path translation
+    /// are involved at all.
+    pub async fn push_documents(
+        &self,
+        id: &ProjectId,
+        documents: Vec<findery_core::api::AddDocument>,
+    ) -> Result<SyncReport> {
+        let project = self.catalog.require_project(id).await?;
+        let mut cleaned = Vec::with_capacity(documents.len());
+        for doc in documents {
+            let text = doc.text.ok_or_else(|| {
+                Error::Invalid(format!("document `{}` was pushed without text", doc.path))
+            })?;
+            cleaned.push((sanitize_rel(&doc.path)?, text));
+        }
+        sync::push_documents(self, &project, cleaned).await
+    }
+
+    /// Removes pushed files the client no longer has, given everything it saw.
+    pub async fn prune(&self, id: &ProjectId, keep: Vec<String>) -> Result<u64> {
+        let project = self.catalog.require_project(id).await?;
+        let mut wanted = std::collections::HashSet::with_capacity(keep.len());
+        for path in keep {
+            wanted.insert(sanitize_rel(&path)?);
+        }
+        sync::prune(self, &project, &wanted).await
+    }
+
+    /// Everything the catalog knows about a project's files.
+    ///
+    /// A pushing client diffs against this to decide what is worth sending.
+    pub async fn file_manifest(&self, id: &ProjectId) -> Result<Vec<findery_core::FileRecord>> {
+        let project = self.catalog.require_project(id).await?;
+        let mut files: Vec<_> = self
+            .catalog
+            .file_map(&project.id)
+            .await?
+            .into_values()
+            .collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(files)
     }
 
     /// Drops one document from the index.
