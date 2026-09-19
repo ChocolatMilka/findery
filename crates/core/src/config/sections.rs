@@ -227,6 +227,25 @@ pub fn default_data_dir() -> String {
         .unwrap_or_else(|| "./.findery".to_string())
 }
 
+/// Where the catalog lives for a process that has not loaded a configuration.
+///
+/// INTENT: clients need to *name* the data directory — in a diagnostic, in an
+/// error pointing at the daemon's log — without opening it. Reading
+/// `FINDERY_DATA_DIR` here is what keeps those messages pointing at the
+/// directory the daemon will actually use; [`default_data_dir`] alone would
+/// send the reader to a file that does not exist.
+///
+/// It is deliberately not the whole overlay: a configuration *file* can also
+/// move the data directory, and only the daemon reads that. Clients that need
+/// certainty ask the daemon.
+pub fn data_dir_from_env() -> String {
+    std::env::var("FINDERY_DATA_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.replace('\\', "/").trim_end_matches('/').to_string())
+        .unwrap_or_else(default_data_dir)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QdrantConfig {

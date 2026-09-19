@@ -8,7 +8,7 @@ mod sections;
 
 pub use sections::{
     ChunkConfig, EmbedderBackend, EmbedderConfig, ProjectDefaults, QdrantConfig, SearchConfig,
-    ServerConfig, StoreBackend, StoreConfig, default_data_dir,
+    ServerConfig, StoreBackend, StoreConfig, data_dir_from_env, default_data_dir,
 };
 
 use crate::path_map::{Mount, PathMapper};

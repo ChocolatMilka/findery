@@ -21,9 +21,12 @@
 //! pulls in neither SQLite, nor the walker, nor the chunkers — a consumer gets
 //! the vocabulary and an HTTP client, not half a daemon.
 
+pub mod daemon;
+
 use findery_core::api::{
     AddDocument, Deleted, ErrorBody, ExportReport, ExportRequest, HealthReport, Job, PruneRequest,
-    PushDocuments, RegisterProject, Removed, SyncRequest, SyncResponse, WatchRequest, Watching,
+    PushDocuments, RegisterProject, Removed, Stopping, SyncRequest, SyncResponse, WatchRequest,
+    Watching,
 };
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
@@ -242,6 +245,14 @@ impl Client {
     pub async fn search(&self, req: &SearchRequest) -> Result<Vec<SearchHit>> {
         self.send(reqwest::Method::POST, "/v1/search", Some(req))
             .await
+    }
+
+    /// Asks the daemon to stop gracefully.
+    pub async fn stop_daemon(&self) -> Result<bool> {
+        let body: Stopping = self
+            .send::<(), _>(reqwest::Method::POST, "/v1/shutdown", None)
+            .await?;
+        Ok(body.stopping)
     }
 
     pub async fn health(&self) -> Result<HealthReport> {
