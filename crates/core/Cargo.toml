@@ -1,0 +1,16 @@
+[package]
+name                   = "findery-core"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description            = "L0 - vocabulary, contracts and configuration for findery."
+
+[dependencies]
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+toml        = { workspace = true }
+thiserror   = { workspace = true }
+async-trait = { workspace = true }
+blake3      = { workspace = true }
+globset     = { workspace = true }
