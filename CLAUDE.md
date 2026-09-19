@@ -81,6 +81,10 @@ Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
 
 ## 🚀 Commands
 
+**No `make` on this machine?** `.\tools\tasks.ps1 <task>` is the same list with
+the same names (`check`, `test`, `install`, `up-model`…). It is the only way to
+run the exit checklist on Windows.
+
 ```bash
 make check                  # fmt-check + clippy -D warnings + test + layers
 make test                   # 206 tests

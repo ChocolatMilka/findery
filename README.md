@@ -31,6 +31,15 @@ make install        # findery, finderyd, findery-mcp → ~/.cargo/bin
 make up-model       # the Qwen3 model in Docker (~1.2 GB on first launch)
 ```
 
+**On Windows**, where there is no `make`, the same task list is a PowerShell
+script — same names, same commands:
+
+```powershell
+.\tools\tasks.ps1 install
+.\tools\tasks.ps1 up-model
+.\tools\tasks.ps1 help        # every task
+```
+
 Then, in **any project, on any disk**:
 
 ```bash
@@ -205,10 +214,13 @@ team.
 ## Development
 
 ```bash
-make check     # fmt-check + clippy -D warnings + test + layers
+make check     # fmt-check + clippy -D warnings + test + layers + sizes
 make test      # 206 tests
 make bench     # vector scan measurement
 ```
+
+Windows: `.\tools\tasks.ps1 check` — it needs Git for Windows, because the two
+watchdogs are shell scripts and it finds that bash rather than WSL's.
 
 The repo's rules: [`.claude/rules/CONVENTIONS.md`](.claude/rules/CONVENTIONS.md).
 Open work: [`.claude/roadmap/README.md`](.claude/roadmap/README.md).

@@ -109,7 +109,8 @@ user is in **French**.
 □ perf claim ⇒ reproducible number
 ```
 
-Reference commands:
+Reference commands — on a machine without `make`, `.\tools\tasks.ps1 <task>`
+runs the same list under the same names:
 
 ```bash
 make check          # fmt-check + clippy + test + layers + sizes

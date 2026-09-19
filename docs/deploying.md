@@ -98,6 +98,9 @@ cargo install --path crates/server --force
 cargo install --path crates/mcp --force
 ```
 
+Or `make install`, or `.\tools\tasks.ps1 install` on Windows — all three run
+exactly those lines.
+
 Or ship the three binaries in one directory. `findery` looks for `finderyd`
 **next to itself first**, then on the `PATH` — so an unzipped folder works with
 no installation at all, and a stale `finderyd` elsewhere on the `PATH` cannot

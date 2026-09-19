@@ -22,6 +22,9 @@ make install        # findery, finderyd, findery-mcp → ~/.cargo/bin
 make up-model       # the model, in Docker
 ```
 
+Without `make` — Windows — the same names work through
+`.\tools\tasks.ps1 install` and `.\tools\tasks.ps1 up-model`.
+
 The daemon is not in that list on purpose: the first `findery` command starts it
 in the background and says so. It sees your real filesystem, so **any path on any
 disk is indexable** — no mount to declare, no path translation.

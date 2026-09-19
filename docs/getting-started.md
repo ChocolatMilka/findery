@@ -73,6 +73,9 @@ instead of letting them fight.
 
 - **Rust** (stable). `rustc --version` should answer.
 - **Docker**, running. Only to host the model — see step 2 for the alternative.
+- **Windows only**: Git for Windows. It is what supplies the `bash` the two
+  repository watchdogs are written for; `.\tools\tasks.ps1` looks for it there
+  and not in WSL.
 
 ## 2. Install the binaries
 
@@ -89,8 +92,15 @@ That puts three commands in `~/.cargo/bin`:
 | `finderyd` | the daemon |
 | `findery-mcp` | the bridge Claude Code launches |
 
-No `make`? `cargo install --path crates/cli --force` and the same for
-`crates/server` and `crates/mcp`.
+No `make` — Windows, for instance? The same task list ships as PowerShell:
+
+```powershell
+.\tools\tasks.ps1 install
+.\tools\tasks.ps1 help       # every task, same names as the Makefile
+```
+
+Or the three raw lines: `cargo install --path crates/cli --force`, and the same
+for `crates/server` and `crates/mcp`.
 
 ## 3. Start the model
 
@@ -98,6 +108,9 @@ No `make`? `cargo install --path crates/cli --force` and the same for
 make up-model              # docker compose up -d tei
 docker compose logs -f tei # wait for it to report ready
 ```
+
+`docker compose` is identical on every platform, so `.\tools\tasks.ps1 up-model`
+and the raw command are interchangeable here.
 
 First run downloads about 1.2 GB of weights. They land in a Docker volume and
 survive `docker compose down`, so this happens once.
