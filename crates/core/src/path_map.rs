@@ -165,6 +165,33 @@ mod tests {
         );
     }
 
+    /// Mounting a whole drive is how the all-Docker mode stops caring where a
+    /// project lives. It only works if a drive root is a valid prefix.
+    #[test]
+    fn a_whole_drive_can_be_mounted() {
+        let m = PathMapper::new(vec![
+            Mount {
+                host: "C:/".into(),
+                container: "/hosts/c".into(),
+            },
+            Mount {
+                host: "D:/".into(),
+                container: "/hosts/d".into(),
+            },
+        ]);
+        assert_eq!(
+            m.to_container("C:/Users/me/Projects/axle"),
+            "/hosts/c/Users/me/Projects/axle"
+        );
+        assert_eq!(m.to_container(r"D:\work\tool"), "/hosts/d/work/tool");
+        assert_eq!(
+            m.to_host("/hosts/c/Users/me/Projects/axle/src/lib.rs"),
+            "C:/Users/me/Projects/axle/src/lib.rs"
+        );
+        // A drive that was not mounted must not be silently rewritten.
+        assert_eq!(m.to_container("E:/scratch"), "E:/scratch");
+    }
+
     #[test]
     fn unmatched_paths_pass_through_untouched() {
         let m = mapper();
