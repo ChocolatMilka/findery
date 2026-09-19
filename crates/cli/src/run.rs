@@ -4,7 +4,7 @@
 //! commands rather than a table of commands wrapped around their bodies.
 
 use crate::render;
-use crate::{Cli, Command, DocAction, Scope};
+use crate::{Cli, Command, DaemonAction, DocAction, Scope};
 use findery_client::Client;
 use findery_core::api::{AddDocument, ExportRequest, RegisterProject, SyncRequest, WatchRequest};
 use findery_core::ids::ProjectId;
@@ -20,6 +20,19 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
         client = client.with_token(token.clone());
     }
     let json = cli.json;
+
+    // Everything but the diagnostic and the lifecycle commands needs a daemon.
+    // Starting it here is what removes the "keep a terminal open" step: the user
+    // never learns that a daemon exists.
+    if !matches!(cli.command, Command::Doctor | Command::Daemon { .. }) {
+        if cli.no_spawn {
+            // SAFETY: set before any request, on the single CLI thread.
+            unsafe { std::env::set_var("FINDERY_NO_SPAWN", "1") };
+        }
+        if findery_client::daemon::ensure_running(&client).await? {
+            eprintln!("(started the daemon in the background)");
+        }
+    }
 
     match cli.command {
         Command::Init {
@@ -265,6 +278,33 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             }
         }
 
+        Command::Doctor => crate::doctor::run(&client, json).await?,
+
+        Command::Daemon { action } => match action {
+            DaemonAction::Start => {
+                if findery_client::daemon::ensure_running(&client).await? {
+                    println!("started — {}", client.base_url());
+                } else {
+                    println!("already running — {}", client.base_url());
+                }
+            }
+            DaemonAction::Stop => {
+                if findery_client::daemon::probe(client.base_url()).await {
+                    client.stop_daemon().await?;
+                    println!("stopping — {}", client.base_url());
+                } else {
+                    println!("not running — {}", client.base_url());
+                }
+            }
+            DaemonAction::Status => {
+                if findery_client::daemon::probe(client.base_url()).await {
+                    render::health(&client.health().await?);
+                } else {
+                    println!("not running — {}", client.base_url());
+                }
+            }
+        },
+
         Command::Jobs { id } => match id {
             Some(id) => render::json(&client.job(&id).await?)?,
             None => {
@@ -338,7 +378,7 @@ async fn derive_id(client: &Client, root: &str) -> Result<ProjectId> {
 }
 
 /// The current working directory, normalized.
-fn cwd() -> Result<String> {
+pub(crate) fn cwd() -> Result<String> {
     let dir = std::env::current_dir()
         .map_err(|e| Error::Invalid(format!("cannot read the current directory: {e}")))?;
     Ok(path_map::normalize(&dir.to_string_lossy()))

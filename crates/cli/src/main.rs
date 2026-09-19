@@ -9,6 +9,7 @@
 //! project's files or the model: whatever it can do, the HTTP API can do, which
 //! keeps the CLI and the MCP bridge honest about being peers.
 
+mod doctor;
 mod push;
 mod render;
 mod run;
@@ -35,6 +36,10 @@ pub(crate) struct Cli {
     /// Print the raw JSON answer instead of the formatted one.
     #[arg(long, global = true)]
     pub(crate) json: bool,
+
+    /// Never start the daemon; fail instead if it is not already running.
+    #[arg(long, global = true, env = "FINDERY_NO_SPAWN")]
+    pub(crate) no_spawn: bool,
 
     #[command(subcommand)]
     pub(crate) command: Command,
@@ -147,8 +152,25 @@ pub(crate) enum Command {
     },
     /// Daemon and model status.
     Health,
+    /// Check the whole setup and say what to fix.
+    Doctor,
+    /// Start, stop or inspect the background daemon.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     /// List background jobs, or show one.
     Jobs { id: Option<String> },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DaemonAction {
+    /// Start it if it is not already running.
+    Start,
+    /// Ask it to stop.
+    Stop,
+    /// Say whether it answers, and what it is serving.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -176,7 +198,7 @@ async fn main() -> std::process::ExitCode {
     match run::dispatch(cli).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("sec: {}", render::explain(&e, &server));
+            eprintln!("findery: {}", render::explain(&e, &server));
             std::process::ExitCode::FAILURE
         }
     }

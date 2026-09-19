@@ -123,16 +123,15 @@ pub fn jobs(list: &[Job]) {
 
 /// Turns a transport failure into something the reader can act on.
 ///
-/// INTENT: "connection refused" tells a user nothing. The daemon not running is
-/// by far the most common failure, and the fix is one line.
+/// INTENT: "connection refused" tells a user nothing. The daemon starts itself,
+/// so reaching this message means something stopped it from coming up — and
+/// naming the one command that reports why is the whole point.
 pub fn explain(err: &findery_core::Error, server: &str) -> String {
     let base = err.to_string();
     if base.contains("unreachable") || base.contains("Connection refused") {
         return format!(
-            "{base}\n\n  The daemon does not answer at {server}. Start it with:\n    \
-             make up-model      # the embedding model, in Docker\n    \
-             findery     # the daemon, on this machine\n\n  \
-             Or run the whole stack in Docker with `make up`."
+            "{base}\n\n  Nothing answers at {server}, and starting a daemon did not help.\n  \
+             Run `findery doctor` — it names what is missing and the command that fixes it."
         );
     }
     base
@@ -147,8 +146,7 @@ mod tests {
     fn a_refused_connection_names_the_fix() {
         let err = Error::upstream("findery", "http://127.0.0.1:8077 unreachable: refused");
         let text = explain(&err, "http://127.0.0.1:8077");
-        assert!(text.contains("make up-model"), "{text}");
-        assert!(text.contains("findery"), "{text}");
+        assert!(text.contains("findery doctor"), "{text}");
     }
 
     #[test]
