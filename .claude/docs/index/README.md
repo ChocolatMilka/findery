@@ -1,0 +1,146 @@
+# `findery-index` — the engine
+
+Sync, search, jobs, watch. The one place where the catalog, the vector
+store, the embedder, and the chunkers meet. Everything above it (HTTP, MCP,
+CLI) is a thin translation of `Indexer`.
+
+---
+
+## 1. Incremental sync
+
+### The three gates
+
+```
+candidate from the walk
+   │
+   ├─ gate 1: (size, mtime) unchanged? ─────▶ unchanged      (nothing is read)
+   │
+   ├─ read + blake3
+   │
+   ├─ gate 2: content_hash unchanged? ──────▶ unchanged      (nothing is chunked)
+   │           (mtime is refreshed so gate 1 bites next time)
+   │
+   ├─ chunk → materialize (id, ordinal, content_hash)
+   │
+   └─ gate 3: (recipe, content_hash) cached? ──▶ vector reused
+               otherwise ──▶ embedding
+```
+
+`--full` short-circuits gates 1 and 2, **never gate 3**: rebuilding an
+index on an unchanged repo costs no call to the model.
+
+### Writing
+
+In batches (96 files or 512 chunks, whichever comes first) to bound memory
+on a first indexing run. For each file:
+
+1. `replace_file_chunks` returns the **vanished** ids
+2. those ids are evicted from the vector store
+3. new ones are upserted (idempotent on id, CONV-028)
+4. the `FileRecord` is rewritten
+
+Intended order: the catalog decides what disappears, the store follows. A
+catalog row with no vector self-heals; an orphan vector doesn't.
+
+### Deletions
+
+A known path the walk didn't see again is deleted — **except**
+`Origin::Inline` (a document pushed through the API has no file, it must
+not vanish on the first scan) and **except** in `Paths` mode (the caller
+talked about specific paths, it said nothing about the rest).
+
+### What a `SyncReport` tells you
+
+Every field is a measured fact. `embeddings_computed` against
+`embeddings_cached` is the metric that says whether the cache is working.
+`warnings` carries non-fatal failures — an unreadable file, non-UTF-8,
+over `max_file_bytes` — never a silent `continue` (CONV-022).
+
+---
+
+## 2. Hybrid search
+
+### Two legs
+
+| Leg | Finds | Misses |
+|-------|--------|------|
+| vector | "where is retry handled" in a file that never says "retry" | an exact identifier, drowned among its neighbors |
+| BM25 | `E0432`, `try_from_utf8_lossy`, a crate name | rephrasing, synonyms |
+
+### The fusion
+
+Reciprocal Rank Fusion on **rank**, not on score:
+
+```
+score(d) = Σ  1 / (rrf_k + rang_i(d) + 1)
+```
+
+Cosine lives in `[-1,1]`, BM25 is unbounded. Calibrating one against the
+other would be a permanent, wrong tuning job; fusing by rank needs no
+calibration at all. `rrf_k = 60` comes from the original paper and holds up
+well here.
+
+Ties are broken **by id**: two identical queries must return the same
+list, otherwise any cache sitting above this one lies.
+
+In single-leg mode, the native score is kept: an operator reading `0.83` on
+a vector search should see a cosine, not an RRF artifact that means nothing
+in isolation.
+
+### Filters
+
+`CompiledFilter` is the SSOT (CONV-011). The vector leg filters store-side;
+the BM25 leg has no payload, so it over-fetches and is narrowed down once
+the chunks are in hand. A malformed glob is **rejected** rather than
+silently matching nothing.
+
+### Token budget
+
+`max_snippet_chars` truncates each excerpt **on a line boundary** and marks
+it `… [truncated]` — cutting mid-token while implying the file stops there
+would be a lie. It's the most direct lever an MCP client has over its own
+spend.
+
+---
+
+## 3. Jobs
+
+A first indexing run takes minutes. An MCP client that blocks on that HTTP
+call times out, retries, and kicks off a **second** sync. Hence jobs: the
+request returns an id right away, and a semaphore bounds concurrency so two
+clients can't saturate the embeddings runtime between them.
+
+`has_active()` lets the server refuse to stack a redundant sync: it returns
+the job already running.
+
+History bounded in memory (`job_history`). It's not persisted: a job is
+session-scoped information, and the `SyncReport` that counts is the one
+that's already been returned.
+
+---
+
+## 4. Watch
+
+`notify` in recursive mode, **content** events only — an access or
+metadata event fires constantly on an active checkout and would keep the
+debounce window open forever.
+
+Touched paths are coalesced by path, then sent as a single
+`SyncMode::Paths` after a `debounce` quiet period (1500 ms by default). An
+editor that writes in bursts — save, formatter, build script — would, if we
+reacted per event, re-embed the same file three times a second.
+
+`WatchHandle` stops watching when it's dropped: the server keeps a map per
+project, and replacing an entry is enough to kill the previous one.
+
+---
+
+## 5. Path safety
+
+`sanitize_rel` normalizes separators, strips the leading `/`, and **rejects
+any `..` segment**. This string arrives from an MCP tool call:
+`../../etc/passwd` has to die right there, before it becomes a
+`root.join(..)`.
+
+`PathMapper` then translates host ↔ container, at a segment boundary — a
+raw `starts_with` would make `/workspaces-old` match against `/workspaces`.
