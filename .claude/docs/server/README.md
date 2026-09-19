@@ -129,6 +129,34 @@ ordering.
 `host_path` is absolute **on the host side**: a hit that cites a container
 path is a hit nobody can open.
 
+### `GET /v1/projects/{id}/files`
+
+The manifest a pushing client diffs against: every known file with its
+`content_hash`, `size`, `origin` and chunk count. Without it a client would have
+to send the whole project on every sync.
+
+### `POST /v1/projects/{id}/documents/batch`
+
+```jsonc
+{ "documents": [ { "path": "src/lib.rs", "text": "…" }, … ] }
+```
+
+Ingests documents the client walked and read itself, in one round trip. Files
+arrive as `origin: "pushed"`. Re-sending identical content is free — the hash is
+compared before anything is chunked. Returns a `SyncReport`.
+
+### `POST /v1/projects/{id}/prune`
+
+```jsonc
+{ "keep": ["src/lib.rs", "README.md", …] }
+```
+
+Every path the client still has. Pushed files outside that list are deleted.
+
+**Only `origin: "pushed"` rows are touched.** A client can never delete what the
+daemon walked, nor a hand-added inline document. Each side prunes what it fed —
+otherwise one client's sync would silently erase another feeder's files.
+
 ### `GET /v1/jobs` · `GET /v1/jobs/{id}`
 
 ---

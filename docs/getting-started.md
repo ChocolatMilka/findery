@@ -34,9 +34,12 @@ third-party inference runtime that turns text into vectors and forgets it ever
 happened. Everything that knows about your code lives in `finderyd`.
 
 `finderyd` itself can run either way — natively (the default) or in a container
-of its own (`make up`). Same binary, same behaviour; the only difference is that
-a containerized daemon sees only what you bind-mount, which is why the default
-is native.
+of its own (`make up`). Same binary, same behaviour.
+
+A containerized daemon cannot read your disk, so the CLI reads the files and
+pushes them instead. That choice is made once, at registration, by testing the
+path; you never have to think about it. It also means the daemon can live on
+another machine entirely.
 
 ### Why a daemon at all?
 

@@ -13,6 +13,8 @@ MCP API — so it plugs directly into Claude Code.
 - 🗄️ Pluggable vector store: SQLite (exact, no service) or Qdrant
   (local vector database, HNSW)
 - 📤 JSONL / JSON / raw `float32` export — you're never locked in
+- 📡 Pull or push: the daemon reads your files, or the CLI sends them — so the
+  daemon can run in a container, or on another machine, with nothing mounted
 - 🧪 187 tests, clean `clippy -D warnings`, layer watchdog
 
 ---
@@ -54,17 +56,20 @@ findery search -p axle "retry"    # target another project from anywhere
 |---|---|---|
 | Commands | `make up-model` + `findery` | `make up` |
 | What's containerized | the model alone | model + daemon |
-| Indexable projects | **anywhere, any disk** | only under `FINDERY_WORKSPACES` |
-| Path translation | none | via `FINDERY_MOUNTS` |
-| Who it's for | a dev machine | a shared server, a CI |
+| Who reads your files | the daemon | **the CLI, and pushes them** |
+| Indexable projects | anywhere, any disk | anywhere, any disk |
+| Bind mounts | none | none |
+| Watching | background | `findery watch`, foreground |
+| Who it's for | a dev machine | a shared server, a CI, a remote daemon |
 
 The daemon is a 5 MB Rust binary with an embedded SQLite — containerizing it
 on a dev machine gains nothing and costs the mount boundary. What deserves
 Docker is the model.
 
-The all-Docker mode is still there and works: `cp .env.example .env`, set
-`FINDERY_WORKSPACES` to the parent of your repos, `make up`. Multiple roots:
-`docker-compose.override.yml.example`.
+The all-Docker mode needs no mounts either: when the daemon cannot see a
+directory, the CLI reads it and sends the contents. That is also what lets the
+daemon live on **another machine** — point `FINDERY_SERVER_URL` at it and index
+normally.
 
 ## Plugging into Claude Code
 

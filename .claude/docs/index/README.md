@@ -58,6 +58,26 @@ over `max_file_bytes` — never a silent `continue` (CONV-022).
 
 ---
 
+## 1bis. The same index, fed from two sides
+
+A project is fed either by the daemon walking it, or by a client walking it and
+pushing the contents. The walk is the same code (`findery-walk`, shared by both),
+and so is the write path (`sync::ingest`) — only who reads the bytes differs.
+
+What changes for the client is which gates it can evaluate. It has no catalog
+row to compare `(size, mtime)` against, so gate 1 is unavailable; it reads and
+hashes locally, which is cheap, and gate 2 does the filtering. Gate 3, the vector
+cache, is server-side and identical in both modes.
+
+`Origin` records who fed each file, and that is what keeps the two sides from
+deleting each other:
+
+| Origin | Fed by | Pruned by |
+|--------|--------|-----------|
+| `file` | the daemon's walk | a daemon-side sync |
+| `pushed` | a client's walk | that client's `prune` call |
+| `inline` | a hand-written API call | nothing automatic |
+
 ## 2. Hybrid search
 
 ### Two legs

@@ -33,7 +33,7 @@ carries **open** work, and fixing an entry **deletes** it.
  L4   findery-mcp (MCP stdio)      findery-cli (`findery`)        the edges — they speak HTTP
  L3   findery-server (axum)                              validate → 1 call → serialize
  L2   findery-index                                      THE ENGINE: sync, search, jobs, watch
- L1   findery-chunk   findery-embed   findery-store   findery-client    one responsibility each
+ L1   findery-chunk  findery-embed  findery-store  findery-walk  findery-client
  L0   findery-core                                       THE VOCABULARY — zero I/O, zero internal dep.
 ```
 
@@ -54,7 +54,7 @@ Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
 
 ---
 
-## ⚙️ The six facts that govern the design
+## ⚙️ The seven facts that govern the design
 
 1. **The vector is content-addressed.** Key `(recipe, content_hash)`, never
    the location. Moving a function, renaming a module, re-cloning the repo
@@ -69,7 +69,12 @@ Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
 5. **Search is hybrid.** Vector for the concept, BM25 for the exact
    identifier, RRF fusion by rank — no calibration between two incomparable
    scales.
-6. **Nothing about the model is hardcoded.** Backend, URL, route, auth
+6. **The index is fed from two sides.** The daemon walks what it can see; a
+   client walks what it cannot and pushes the contents. Same walk, same write
+   path, and `Origin` records who fed each file so neither side can prune the
+   other's. This is what lets the daemon run in a container, or on another
+   machine, with nothing mounted.
+7. **Nothing about the model is hardcoded.** Backend, URL, route, auth
    header, name, width: it's all data.
 
 ---

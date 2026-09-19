@@ -35,6 +35,7 @@
 | `findery-chunk` | L1 | how to chunk text | where the text comes from, what it's for |
 | `findery-embed` | L1 | how to talk to an embeddings runtime | what a project or a chunk is |
 | `findery-store` | L1 | how to persist and search | what produced the vectors |
+| `findery-walk` | L1 | which files belong to a project | who will read them |
 | `findery-client` | L1 | the HTTP API | the rest of the daemon |
 | `findery-index` | L2 | orchestrating the four | that a transport exists |
 | `findery-server` | L3 | HTTP, auth, status codes | how a sync works |
@@ -68,6 +69,7 @@ Three concrete reasons, not aesthetics:
 | What you're adding | Where |
 |-------------------|-----|
 | A field a client can see | `findery-core::model` or `findery-core::api` |
+| A rule about which files count | `findery-walk` — both feeding sides get it |
 | A language to chunk | `findery-chunk`, + one line in `Registry` |
 | An embeddings provider | `findery-embed` — often **zero code**: it's config |
 | A vector database | `findery-store`, impl of `VectorStore`, + a branch in `build_vector_store` |

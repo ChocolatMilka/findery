@@ -29,16 +29,35 @@ mount to declare, no path translation. `FINDERY_WORKSPACES` is irrelevant here.
 ### All-Docker
 
 ```bash
-cp .env.example .env    # FINDERY_WORKSPACES = the parent of your repositories
 make up
 ```
 
-The daemon only sees what is bind-mounted. Every project must live under
-`FINDERY_WORKSPACES`; `FINDERY_MOUNTS` translates container paths back to host paths so
-hits stay openable. Extra roots go in `docker-compose.override.yml` — and a
-mount without its matching `FINDERY_MOUNTS` entry is the classic mistake.
+The daemon cannot see your disk, so the CLI reads the files and sends them.
+Nothing to mount, nothing to translate: `findery init` works from any directory
+on any drive, exactly as in native mode.
 
-Pick this for a shared server or CI, not for a laptop.
+This is also what makes a daemon on **another machine** possible — a team
+server, a VM — which a daemon that has to read your filesystem never could.
+
+### Pull or push, and who decides
+
+Registration tests the path once: if the daemon can read it, it walks it
+itself (pull); if it cannot, the client walks and pushes. Nobody has to
+remember which mode a project is in.
+
+| | Pull | Push |
+|---|---|---|
+| Who reads the files | the daemon | the client |
+| Who watches | the daemon, in the background | `findery watch`, in the foreground |
+| Bind mounts | one per root | none |
+| Daemon on another machine | impossible | works |
+| Chosen when | the daemon can read the root | it cannot, or `--push` |
+
+`findery init --push` forces it — useful against a stale mount, or when the
+daemon is going to move.
+
+Both modes share the write path and the vector cache, so switching a project
+from one to the other costs a walk and no embedding at all.
 
 ### Where things land
 

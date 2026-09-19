@@ -39,6 +39,19 @@ success rate — roughly ~2,500 tokens saved per search.
 measure how often the right answer is present in the current top-3. If it's
 already ≥ 85%, the reranker buys nothing.
 
+### R0 — Client-side metadata cache for push mode
+
+A pushing client has no catalog row to compare `(size, mtime)` against, so it
+reads and hashes every candidate on every sync. Locally that is fast — 76 files
+in 11 ms on this repository — but it scales with the project, not with the
+change.
+
+*Fix*: a small local file next to the project recording `path → (size, mtime,
+hash)` from the last successful push, restoring gate 1 on the client side.
+
+*To measure first*: the read-and-hash cost on a 500k-line repository. If it
+stays under a second, the cache is complexity for nothing.
+
 ### R2b — Deduplicate `embeddings` and `vectors` on the `sqlite` side
 
 Measured on a real catalog: `embeddings` and `vectors` carry **exactly the
