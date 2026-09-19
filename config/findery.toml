@@ -1,0 +1,134 @@
+# Reference configuration. Every value below is the default, so an empty file —
+# or no file at all — yields exactly this. Two exceptions are marked inline:
+# `store.data_dir` is platform-dependent, and Docker Compose overrides a handful
+# of values through `FINDERY_*` so one image can serve every deployment.
+#
+# Mount it at /etc/findery/config.toml, or point FINDERY_CONFIG elsewhere.
+# `FINDERY_*` environment variables always win over this file, which is what lets one
+# image serve every deployment.
+#
+# Check what the daemon actually resolved:  finderyd --check
+
+[server]
+bind = "0.0.0.0:8077"
+# Uncomment to require `Authorization: Bearer <token>` on everything but /healthz.
+# api_token = "change-me"
+max_body_bytes = 33554432
+# Concurrent sync jobs. More than the embedding runtime can feed just queues.
+job_concurrency = 2
+job_history = 64
+
+[embedder]
+# "openai_compat" talks to anything serving /v1/embeddings: TEI, llama.cpp,
+# vLLM, Ollama, LM Studio, OpenAI, Voyage, Jina. "mock" is for offline tests.
+backend = "openai_compat"
+# The default targets a daemon running natively with the model in Docker, which
+# is the recommended setup. Compose overrides this to `http://tei:80` for the
+# all-Docker path.
+base_url = "http://127.0.0.1:8080"
+path = "/v1/embeddings"
+model = "Qwen/Qwen3-Embedding-0.6B"
+# api_key = "sk-..."
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+# Expected vector width. 0 means "ask the runtime at startup".
+dim = 1024
+# Matryoshka truncation. Qwen3-Embedding and text-embedding-3-* honour it;
+# others reject the field outright.
+send_dimensions = false
+# Probe once at boot and refuse to run on a width mismatch. Leave this on: half
+# a corpus at the wrong width is unsearchable and silent.
+verify_dim = true
+batch_size = 32
+concurrency = 2
+timeout_secs = 120
+max_retries = 3
+max_input_chars = 24000
+# L2-normalize on arrival, so cosine becomes a dot product downstream.
+normalize = true
+# Applied to QUERIES only — Qwen3-Embedding is asymmetric by design. A caller can override it per search, either with a
+# named preset (`task`: code, symbol, usage, docs, test, config, error) or with
+# free-form text. Qwen measures +1 to 5% retrieval accuracy from a tailored
+# instruction — it costs one prefix on a string that was going to be embedded.
+query_instruction = "Given a developer question about a Rust codebase, retrieve the source code or documentation passages that answer it."
+
+# Extra static headers, for gateways and tenancy.
+# [embedder.extra_headers]
+# "OpenAI-Organization" = "org-123"
+
+[store]
+# "sqlite": vectors beside the catalog, searched from a warm in-memory matrix.
+#           Exact, no extra service, ~11 ms at 50k chunks (1024 dims).
+# "qdrant": a local vector database — HNSW, payload filters, int8 quantization.
+backend = "sqlite"
+# Platform-dependent by default: `%LOCALAPPDATA%/findery` on Windows,
+# `$XDG_DATA_HOME/findery` or `~/.local/share/findery` elsewhere.
+# Compose sets `/data`. One `catalog.db` there holds every project — it is the
+# file worth backing up. Uncomment to pin it.
+# data_dir = "/data"
+# `export_dir` follows `data_dir` unless you pin it here.
+# export_dir = "/data/exports"
+
+[store.qdrant]
+url = "http://qdrant:6333"
+# api_key = "..."
+collection_prefix = "se_"
+timeout_secs = 30
+# 4x smaller vectors for roughly 1% recall loss.
+scalar_quantization = false
+
+[chunk]
+# Hard ceiling of one chunk, in characters (~3.6 chars per token on Rust).
+max_chars = 2400
+# Below this, a fragment is merged with its neighbour: a three-line
+# `impl Display` embedded alone is noise.
+min_chars = 120
+# Overlap when an oversized body has to be split into windows.
+overlap_chars = 200
+include_tests = true
+
+[search]
+default_k = 10
+max_k = 100
+# "hybrid" fuses vector and BM25 by rank; on code it beats either one alone.
+default_mode = "hybrid"
+rrf_k = 60.0
+candidate_multiplier = 4
+# Per-hit text budget. The single most effective token lever for MCP clients.
+max_snippet_chars = 2400
+
+[project_defaults]
+extensions = ["rs", "md"]
+# Two families: build output and vendored trees are noise; the rest are
+# secret-bearing paths, which matter because hidden entries ARE indexed.
+# `.env.example` is caught by `**/.env.*` — drop that line to index it.
+exclude = [
+    "**/target/**",
+    "**/node_modules/**",
+    "**/.git/**",
+    "**/vendor/**",
+    "**/*.lock",
+    "**/.env",
+    "**/.env.*",
+    "**/.ssh/**",
+    "**/.aws/**",
+    "**/.gnupg/**",
+    "**/.netrc",
+    "**/.npmrc",
+    "**/*.pem",
+    "**/*.p12",
+    "**/id_rsa*",
+    "**/id_ed25519*",
+]
+follow_gitignore = true
+# Index dotfiles and dot-directories. On by default: `.github/workflows`,
+# `.cargo/config.toml` and `.claude/docs` are exactly what a developer asks
+# about. The exclude list above is what keeps credentials out.
+include_hidden = true
+max_file_bytes = 2097152
+
+# Host <-> container translation, so search results cite paths a human can open.
+# Compose sets this through FINDERY_MOUNTS.
+# [[mounts]]
+# host = "C:/Users/users/RustroverProjects"
+# container = "/workspaces"

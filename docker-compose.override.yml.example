@@ -1,0 +1,36 @@
+# Extra workspace roots — copy to `docker-compose.override.yml` and edit.
+#
+# Docker Compose loads `docker-compose.override.yml` automatically and merges it
+# on top of `docker-compose.yml`. Nothing else to pass on the command line.
+#
+# WHY THIS EXISTS
+# `FINDERY_WORKSPACES` mounts ONE host directory. That covers the common case — all
+# your repositories under one parent — and it is also the security boundary: the
+# daemon cannot see, and therefore cannot index, anything outside it.
+#
+# When your projects live on several drives, add them here. Each root needs two
+# things that must agree:
+#   1. a read-only bind mount, so the daemon can read the files
+#   2. an entry in FINDERY_MOUNTS, so a hit comes back as a path YOU can open
+#
+# Forgetting (2) is the classic mistake: indexing works, but every search result
+# cites `/workspaces2/...`, which exists nowhere on your machine.
+
+services:
+  findery:
+    volumes:
+      # The root from .env is already mounted by docker-compose.yml; these are
+      # additions, not replacements.
+      - D:/work:/workspaces2:ro
+      - C:/Users/users/Documents/notes:/workspaces3:ro
+    environment:
+      # Semicolon-separated, `host=container`. List every mount, including the
+      # one from .env — this variable replaces the value set in the base file.
+      FINDERY_MOUNTS: ${FINDERY_WORKSPACES}=/workspaces;D:/work=/workspaces2;C:/Users/users/Documents/notes=/workspaces3
+
+  # Mirror the same two blocks here if you use the `gpu` profile.
+  # findery-gpu:
+  #   volumes:
+  #     - D:/work:/workspaces2:ro
+  #   environment:
+  #     FINDERY_MOUNTS: ${FINDERY_WORKSPACES}=/workspaces;D:/work=/workspaces2

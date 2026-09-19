@@ -1,0 +1,141 @@
+# findery — one warm model, many projects, many clients.
+#
+# Profiles:
+#   (default)  CPU embedding runtime + daemon        docker compose up -d
+#   gpu        CUDA embedding runtime + daemon       docker compose --profile gpu up -d
+#   qdrant     adds a local Qdrant vector database   docker compose --profile qdrant up -d
+#
+# Two ways to run this.
+#
+#   RECOMMENDED — model in Docker, daemon on your machine:
+#       make up-model && make run
+#     The daemon sees your real filesystem, so a project can live on any disk
+#     and `findery init` works from any directory. Nothing to mount, nothing to map.
+#
+#   ALL-DOCKER — everything in containers:
+#       set FINDERY_WORKSPACES in .env, then `make up`
+#     The daemon only sees what is bind-mounted, so every project must live
+#     under FINDERY_WORKSPACES. Extra roots: docker-compose.override.yml.example.
+
+name: findery
+
+# The daemon's environment, shared by the CPU and GPU variants. Only the
+# embedding endpoint differs between them, and it is overridden per service —
+# a YAML merge inside `environment` keeps everything else in one place.
+x-daemon-env: &daemon-env
+  FINDERY_BIND: 0.0.0.0:8077
+  FINDERY_DATA_DIR: /data
+  FINDERY_EXPORT_DIR: /data/exports
+  FINDERY_API_TOKEN: ${FINDERY_API_TOKEN:-}
+  FINDERY_LOG: ${FINDERY_LOG:-info,tower_http=warn}
+  # Lets every hit come back as a path the human can actually open.
+  FINDERY_MOUNTS: ${FINDERY_WORKSPACES:-.}=/workspaces
+  # --- embedding runtime (local by default, remote by configuration) --------
+  FINDERY_EMBED_BACKEND: ${FINDERY_EMBED_BACKEND:-openai_compat}
+  FINDERY_EMBED_MODEL: ${FINDERY_EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+  FINDERY_EMBED_DIM: ${FINDERY_EMBED_DIM:-1024}
+  FINDERY_EMBED_API_KEY: ${FINDERY_EMBED_API_KEY:-}
+  FINDERY_EMBED_BATCH_SIZE: ${FINDERY_EMBED_BATCH_SIZE:-32}
+  FINDERY_EMBED_CONCURRENCY: ${FINDERY_EMBED_CONCURRENCY:-2}
+  # --- vector store ---------------------------------------------------------
+  FINDERY_STORE_BACKEND: ${FINDERY_STORE_BACKEND:-sqlite}
+  FINDERY_QDRANT_URL: ${FINDERY_QDRANT_URL:-http://qdrant:6333}
+  FINDERY_QDRANT_API_KEY: ${FINDERY_QDRANT_API_KEY:-}
+
+x-daemon: &daemon
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: findery:${FINDERY_VERSION:-latest}
+  restart: unless-stopped
+  volumes:
+    # Read-only: the daemon indexes source, it never writes to it.
+    # Only meaningful for the all-Docker path; the native daemon ignores it.
+    - ${FINDERY_WORKSPACES:-.}:/workspaces:ro
+    - findery-data:/data
+
+x-tei: &tei
+  restart: unless-stopped
+  # Published on the host so a daemon running natively can reach the model.
+  # That is the default setup: no bind mount, no path translation, and a
+  # project may live on any disk.
+  ports:
+    - "${FINDERY_TEI_PORT:-8080}:80"
+  command:
+    - --model-id=${FINDERY_EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+    - --port=80
+    - --max-client-batch-size=${FINDERY_EMBED_BATCH_SIZE:-32}
+    - --auto-truncate
+  volumes:
+    - hf-cache:/data
+  environment:
+    HF_TOKEN: ${HF_TOKEN:-}
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:80/health"]
+    interval: 10s
+    timeout: 5s
+    # First start downloads the weights; 30 x 10 s covers a slow link.
+    retries: 30
+    start_period: 180s
+
+services:
+  # The model. Loaded once, resident, shared by every project and every client.
+  tei:
+    <<: *tei
+    image: ${FINDERY_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+
+  tei-gpu:
+    <<: *tei
+    profiles: ["gpu"]
+    image: ${FINDERY_TEI_GPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.8}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # A local vector database. Optional: the SQLite backend needs no service at
+  # all and stays exact up to a few hundred thousand chunks. Switch to this when
+  # a corpus outgrows a full scan, or when several machines share one index.
+  qdrant:
+    profiles: ["qdrant"]
+    image: ${FINDERY_QDRANT_IMAGE:-qdrant/qdrant:v1.12.4}
+    restart: unless-stopped
+    ports:
+      - "${FINDERY_QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__API_KEY: ${FINDERY_QDRANT_API_KEY:-}
+
+  findery:
+    <<: *daemon
+    ports:
+      - "${FINDERY_PORT:-8077}:8077"
+    environment:
+      <<: *daemon-env
+      FINDERY_EMBED_BASE_URL: ${FINDERY_EMBED_BASE_URL:-http://tei:80}
+    depends_on:
+      tei:
+        condition: service_healthy
+
+  # Same daemon, wired to the GPU runtime. Started only by the `gpu` profile,
+  # so the two never fight over the published port.
+  findery-gpu:
+    <<: *daemon
+    profiles: ["gpu"]
+    ports:
+      - "${FINDERY_PORT:-8077}:8077"
+    environment:
+      <<: *daemon-env
+      FINDERY_EMBED_BASE_URL: ${FINDERY_EMBED_BASE_URL:-http://tei-gpu:80}
+    depends_on:
+      tei-gpu:
+        condition: service_healthy
+
+volumes:
+  findery-data:
+  hf-cache:
+  qdrant-data:
