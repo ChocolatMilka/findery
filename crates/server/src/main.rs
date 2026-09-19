@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "findery",
+    name = "finderyd",
     version,
-    about = "Local semantic index for codebases"
+    about = "findery daemon — indexes codebases and serves the search API"
 )]
 struct Args {
     /// Configuration file. Missing is fine: the defaults are a working setup.
