@@ -55,6 +55,11 @@ when the model is not up. The daemon still serves everything that does not need
 a vector — see `.claude/docs/embed/README.md` on degraded start.
 
 ### `POST /v1/shutdown`
+
+Also what `findery config set` uses to make a written setting take effect: the
+daemon read its configuration at boot, so the only way to apply a change is to
+let it be replaced.
+
 Asks the daemon to stop, gracefully: it stops accepting connections, finishes
 what is in flight, and exits.
 

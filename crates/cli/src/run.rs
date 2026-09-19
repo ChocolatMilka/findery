@@ -1,15 +1,16 @@
-//! Command dispatch, and the "which project am I in" resolution.
+//! Command dispatch: one arm per subcommand, each a call and a render.
 //!
 //! Kept apart from `main.rs` so the argument surface reads as a table of
-//! commands rather than a table of commands wrapped around their bodies.
+//! commands rather than a table of commands wrapped around their bodies, and
+//! apart from `scope.rs`, which answers "which project am I in" (CONV-029).
 
 use crate::render;
-use crate::{Cli, Command, DaemonAction, DocAction, Scope};
+use crate::scope::{absolute, current_project, derive_id, parse_mode, resolve};
+use crate::{Cli, Command, ConfigAction, DaemonAction, DocAction};
 use findery_client::Client;
 use findery_core::api::{AddDocument, ExportRequest, RegisterProject, SyncRequest, WatchRequest};
 use findery_core::ids::ProjectId;
-use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchMode, SearchRequest};
-use findery_core::path_map;
+use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchRequest};
 use findery_core::prompt::QueryTask;
 use findery_core::{Error, Result};
 use std::io::Read;
@@ -24,7 +25,10 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
     // Everything but the diagnostic and the lifecycle commands needs a daemon.
     // Starting it here is what removes the "keep a terminal open" step: the user
     // never learns that a daemon exists.
-    if !matches!(cli.command, Command::Doctor | Command::Daemon { .. }) {
+    if !matches!(
+        cli.command,
+        Command::Doctor | Command::Daemon { .. } | Command::Config { .. }
+    ) {
         if cli.no_spawn {
             // SAFETY: set before any request, on the single CLI thread.
             unsafe { std::env::set_var("FINDERY_NO_SPAWN", "1") };
@@ -280,6 +284,38 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
 
         Command::Doctor => crate::doctor::run(&client, json).await?,
 
+        // Editing a local file needs no daemon, but a daemon already running
+        // read its settings at boot and would keep serving the old ones.
+        // Stopping it here is what makes `config set` take effect; the next
+        // command starts a fresh one.
+        Command::Config { action } => {
+            let shadowed = match action {
+                ConfigAction::Set { key, value } => {
+                    let shadowed = crate::config::set(&key, &value, json)?;
+                    warn_if_shadowed(shadowed);
+                    true
+                }
+                ConfigAction::Unset { key } => {
+                    warn_if_shadowed(crate::config::unset(&key, json)?);
+                    true
+                }
+                ConfigAction::Show => {
+                    crate::config::show(json)?;
+                    false
+                }
+                ConfigAction::Path => {
+                    crate::config::path(json)?;
+                    false
+                }
+            };
+            if shadowed && findery_client::daemon::probe(client.base_url()).await {
+                client.stop_daemon().await?;
+                if !json {
+                    println!("(the daemon is restarting to pick this up)");
+                }
+            }
+        }
+
         Command::Daemon { action } => match action {
             DaemonAction::Start => {
                 if findery_client::daemon::ensure_running(&client).await? {
@@ -320,86 +356,18 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// Resolves the project a command applies to.
-async fn resolve(client: &Client, scope: &Scope) -> Result<ProjectId> {
-    if let Some(explicit) = &scope.project {
-        return ProjectId::new(explicit.clone());
-    }
-    let projects = client.list_projects().await?;
-    current_project(&projects).ok_or_else(|| {
-        let cwd = cwd().unwrap_or_else(|_| "the current directory".into());
-        Error::Invalid(format!(
-            "no indexed project contains `{cwd}`\n  \
-             run `findery init` here, or name one with `-p <project>` (`findery projects` lists them)"
-        ))
-    })
-}
-
-/// The registered project whose root contains the current directory.
+/// Says when a written setting will not take effect.
 ///
-/// The deepest match wins, so a project nested inside another one is picked
-/// over its parent.
-fn current_project(projects: &[findery_core::model::Project]) -> Option<ProjectId> {
-    let cwd = cwd().ok()?;
-    let mut best: Option<(usize, ProjectId)> = None;
-    for project in projects {
-        if !path_map::is_within(&project.host_root, &cwd) {
-            continue;
-        }
-        let depth = path_map::normalize(&project.host_root).len();
-        if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-            best = Some((depth, project.id.clone()));
-        }
-    }
-    best.map(|(_, id)| id)
-}
-
-/// Picks an id for a new project, refusing to hijack an existing one.
-async fn derive_id(client: &Client, root: &str) -> Result<ProjectId> {
-    let name = path_map::normalize(root)
-        .rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or("project")
-        .to_string();
-    let id = ProjectId::slugify(&name)?;
-
-    // An auto-derived id colliding with a different root is almost always an
-    // accident: two directories with the same name on two disks.
-    if let Ok(existing) = client.project(&id).await
-        && !path_map::is_within(&existing.host_root, root)
-        && !path_map::is_within(root, &existing.host_root)
-    {
-        return Err(Error::Invalid(format!(
-            "id `{id}` is already used by {}\n  pick another with `findery init --id <name>`",
-            existing.host_root
-        )));
-    }
-    Ok(id)
-}
-
-/// The current working directory, normalized.
-pub(crate) fn cwd() -> Result<String> {
-    let dir = std::env::current_dir()
-        .map_err(|e| Error::Invalid(format!("cannot read the current directory: {e}")))?;
-    Ok(path_map::normalize(&dir.to_string_lossy()))
-}
-
-/// Absolute, normalized path with Windows verbatim prefixes stripped.
-///
-/// `canonicalize` returns `\\?\C:\…` on Windows, which is correct but useless in
-/// a message and breaks prefix matching against a user-typed path.
-fn absolute(path: &str) -> Result<String> {
-    let resolved = std::fs::canonicalize(path)
-        .map_err(|e| Error::Invalid(format!("cannot resolve `{path}`: {e}")))?;
-    let text = path_map::normalize(&resolved.to_string_lossy());
-    Ok(text.strip_prefix("//?/").unwrap_or(&text).to_string())
-}
-
-fn parse_mode(raw: &str) -> Option<SearchMode> {
-    match raw {
-        "hybrid" => Some(SearchMode::Hybrid),
-        "vector" => Some(SearchMode::Vector),
-        "keyword" => Some(SearchMode::Keyword),
-        _ => None,
-    }
+/// INTENT: the environment overlay wins over the file on purpose — one image
+/// has to serve every deployment — but that makes a successful `config set`
+/// appear to do nothing at all. Naming the variable at the moment of the write
+/// turns a trap back into a rule.
+fn warn_if_shadowed(variable: Option<&'static str>) {
+    let Some(variable) = variable else {
+        return;
+    };
+    eprintln!(
+        "warning: {variable} is set in this environment and overrides what was just \
+         written.\n  Unset it, or the file will keep being ignored."
+    );
 }

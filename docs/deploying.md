@@ -106,18 +106,31 @@ Or ship the three binaries in one directory. `findery` looks for `finderyd`
 no installation at all, and a stale `finderyd` elsewhere on the `PATH` cannot
 shadow the one you shipped.
 
-### What to put in the environment
+### Settings
 
-The only two that are not optional:
+Two commands, and nothing to put in a shell profile:
 
 ```bash
-FINDERY_EMBED_BASE_URL=...   # where the model answers
-FINDERY_EMBED_MODEL=...      # its name, as that runtime reports it
+findery config set url   https://dashscope-intl.aliyuncs.com/compatible-mode
+findery config set model qwen3.7-text-embedding
+findery config set key   <the API key>
 ```
 
-Everything else has a working default. Put them in the user's shell profile, in
-an MDM-pushed environment, or in `/etc/findery/config.toml` — the daemon reads
-that file if it exists, and environment variables override it.
+They are written to `<data-dir>/config.toml`, which the daemon reads at boot;
+`findery config set` restarts it so the change takes effect immediately. The
+value is validated **before** it is written, so a typo or an out-of-range number
+is refused at the prompt rather than becoming a daemon that will not start.
+
+`findery config show` lists what is set, with secrets masked.
+`findery config path` prints the file, for an installer that would rather write
+it directly.
+
+Everything else has a working default. For a fleet you have three options, in
+increasing order of central control: ship a prepared `config.toml`, push
+`/etc/findery/config.toml` (read first when it exists), or set `FINDERY_*`
+environment variables — those still win over both files, which is what makes one
+container image serve every deployment. `findery config set` warns when a
+variable is masking what it just wrote.
 
 ---
 

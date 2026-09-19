@@ -100,16 +100,31 @@ fn load_config(path: &std::path::Path) -> Result<Config> {
     match std::fs::read_to_string(path) {
         Ok(src) => {
             tracing::info!(config = %path.display(), "configuration loaded");
+            return Config::from_toml_str(&src);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(Error::Config(format!(
+                "cannot read `{}`: {e}",
+                path.display()
+            )));
+        }
+    }
+
+    // The system-wide path is for a packaged deployment. A developer's settings
+    // live beside their catalog, where `findery config set` writes them and
+    // where no elevation is needed — see `config::user_config_path`.
+    let user = findery_core::config::user_config_path();
+    match std::fs::read_to_string(&user) {
+        Ok(src) => {
+            tracing::info!(config = %user, "user configuration loaded");
             Config::from_toml_str(&src)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::info!(config = %path.display(), "no configuration file, using defaults");
+            tracing::info!(config = %path.display(), fallback = %user, "no configuration file, using defaults");
             Ok(Config::default())
         }
-        Err(e) => Err(Error::Config(format!(
-            "cannot read `{}`: {e}",
-            path.display()
-        ))),
+        Err(e) => Err(Error::Config(format!("cannot read `{user}`: {e}"))),
     }
 }
 

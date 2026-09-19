@@ -11,6 +11,7 @@ name = "findery"
 path = "src/main.rs"
 
 [dependencies]
+toml               = { workspace = true }
 findery-core   = { workspace = true }
 findery-client = { workspace = true }
 findery-walk   = { workspace = true }

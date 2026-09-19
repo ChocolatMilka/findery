@@ -9,10 +9,12 @@
 //! project's files or the model: whatever it can do, the HTTP API can do, which
 //! keeps the CLI and the MCP bridge honest about being peers.
 
+mod config;
 mod doctor;
 mod push;
 mod render;
 mod run;
+mod scope;
 
 use clap::{Parser, Subcommand};
 
@@ -154,6 +156,11 @@ pub(crate) enum Command {
     Health,
     /// Check the whole setup and say what to fix.
     Doctor,
+    /// Read and write the settings, without touching your shell.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Start, stop or inspect the background daemon.
     Daemon {
         #[command(subcommand)]
@@ -161,6 +168,22 @@ pub(crate) enum Command {
     },
     /// List background jobs, or show one.
     Jobs { id: Option<String> },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ConfigAction {
+    /// Set one setting. `model`, `url`, `key` and `dim` are the short names.
+    Set {
+        /// `model`, or a full path such as `embedder.query_instruction`.
+        key: String,
+        value: String,
+    },
+    /// Return one setting to its default.
+    Unset { key: String },
+    /// List what is set, secrets masked.
+    Show,
+    /// Print the file the settings live in.
+    Path,
 }
 
 #[derive(Subcommand)]

@@ -99,6 +99,7 @@ cd <a project> && findery init  # indexes the current directory
 findery search "where backoff is handled"   # project inferred from the current directory
 findery health                  # what the daemon actually serves
 findery doctor                  # what is missing, and the command that fixes it
+findery config set model …      # settings, validated and written to <data_dir>/config.toml
 finderyd --check                # the config as actually resolved
 ```
 

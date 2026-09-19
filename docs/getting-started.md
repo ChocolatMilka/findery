@@ -120,9 +120,13 @@ survive `docker compose down`, so this happens once.
 provider. Point the daemon at it and move on:
 
 ```bash
-export FINDERY_EMBED_BASE_URL=http://127.0.0.1:11434
-export FINDERY_EMBED_MODEL=qwen3.7-text-embedding
+findery config set url http://127.0.0.1:11434
+findery config set model <the name that runtime reports>
 ```
+
+These are written to a file the daemon reads, not to your shell: they survive
+the terminal, the reboot, and the next person who opens a different one. See
+[step 4bis](#4bis-settings) for the whole surface.
 
 ## 4. The daemon — there is nothing to do
 
@@ -152,6 +156,38 @@ container that owns the process itself.
 A daemon whose model is down still starts, and says so: `findery doctor` reports
 `FAIL model` with the fix, and only the commands that need a vector fail. The
 diagnostic is the last thing that should go down with the model.
+
+## 4bis. Settings
+
+`findery config` writes the file the daemon reads. Nothing goes in your shell,
+so a setting survives the terminal that made it.
+
+```bash
+findery config set model qwen3.7-text-embedding
+findery config set url   https://dashscope-intl.aliyuncs.com/compatible-mode
+findery config set key   <your API key>
+findery config set dim   2560          # 256 … 2560; changing it is a re-index
+
+findery config show                    # what is set, secrets masked
+findery config unset dim               # back to the default
+findery config path                    # the file itself
+```
+
+`model`, `url`, `key`, `dim`, `store`, `token`, `bind`, `instruction` and
+`extensions` are short names; anything else takes its full path, such as
+`search.rrf_k` or `embedder.query_instruction`.
+
+Three things it does that a text editor does not:
+
+* **It refuses a value the daemon would reject**, before writing. A typo is
+  answered with the list of real field names; `batch_size 0` is answered with
+  the rule it breaks. You cannot write a file that stops the daemon booting.
+* **It restarts the daemon**, because the daemon read its settings at boot and
+  would otherwise keep serving the old ones.
+* **It warns when an environment variable masks what you just wrote.** The
+  `FINDERY_*` overlay still wins — that is what lets one container image serve
+  every deployment — so it names the variable instead of letting the write look
+  like it did nothing.
 
 ## 5. Index a project
 
@@ -252,14 +288,16 @@ being too large or not UTF-8) and `embeddings_computed` versus
 
 ### Changing a setting
 
-The daemon that started itself inherited the environment of the command that
-started it. Exporting a variable now changes nothing for a daemon already
-running — restart it:
+Use `findery config set`; it writes the file and restarts the daemon for you.
+See [step 4bis](#4bis-settings).
+
+Only `FINDERY_LOG` still has to be an environment variable, because it is read
+before any configuration exists:
 
 ```bash
 findery daemon stop
-export FINDERY_LOG=debug          # or FINDERY_EMBED_MODEL, FINDERY_STORE_BACKEND…
-findery status                    # starts a daemon that sees the new value
+export FINDERY_LOG=debug
+findery status                    # starts a daemon that sees it
 ```
 
 `finderyd --check` prints the configuration as it actually resolves, without

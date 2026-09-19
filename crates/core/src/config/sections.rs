@@ -238,6 +238,21 @@ pub fn default_data_dir() -> String {
 /// It is deliberately not the whole overlay: a configuration *file* can also
 /// move the data directory, and only the daemon reads that. Clients that need
 /// certainty ask the daemon.
+/// The configuration file a user owns, next to their catalog.
+///
+/// INTENT: settings had only two homes, and neither belonged to the user. A
+/// path like `/etc/findery/config.toml` means nothing on Windows and needs root
+/// on Linux; environment variables live in a shell profile the daemon may never
+/// read, and vanish from the next terminal. A file beside the catalog is
+/// writable, per-user, survives a reboot, and is somewhere both the CLI and the
+/// daemon can agree on without being told.
+///
+/// Naming it here rather than in either of them is the point: two definitions
+/// of "where the settings live" is a setting that silently does nothing.
+pub fn user_config_path() -> String {
+    format!("{}/config.toml", data_dir_from_env())
+}
+
 pub fn data_dir_from_env() -> String {
     std::env::var("FINDERY_DATA_DIR")
         .ok()

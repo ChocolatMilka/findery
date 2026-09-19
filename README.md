@@ -134,7 +134,7 @@ Nothing is hardcoded. Three examples, all in `.env`:
 
 ```bash
 # Local, provided (default)
-FINDERY_EMBED_MODEL=qwen3.7-text-embedding
+FINDERY_EMBED_MODEL=qwen3.7-text-embedding   # or: findery config set model …
 FINDERY_EMBED_DIM=1024
 
 # A local runtime you already have (Ollama, llama.cpp, LM Studio, vLLM…)

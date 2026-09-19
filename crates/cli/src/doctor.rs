@@ -140,7 +140,7 @@ async fn collect(client: &Client) -> Vec<Check> {
             "cd into a project and run: findery init",
         )),
         Ok(projects) => {
-            let cwd = crate::run::cwd().unwrap_or_default();
+            let cwd = crate::scope::cwd().unwrap_or_default();
             // The deepest match wins, exactly as command dispatch resolves it,
             // so the diagnostic never names a project the commands would not use.
             match projects

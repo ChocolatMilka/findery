@@ -85,21 +85,37 @@ from one to the other costs a walk and no embedding at all.
 `finderyd --check` prints the configuration as actually resolved. One
 `catalog.db` holds every project; it is the file worth backing up.
 
-### The environment is read once, at start
-
-A daemon inherits the environment of whatever started it — your shell, or the
-MCP client that launched `findery-mcp`. Changing a `FINDERY_*` variable in a
-shell afterwards has no effect on a daemon already running:
+### Settings live in a file, not in your shell
 
 ```bash
-findery daemon stop
-export FINDERY_EMBED_MODEL=…
-findery status          # the next command starts one that sees it
+findery config set model qwen3.7-text-embedding
+findery config show
+findery config unset dim
+findery config path
 ```
 
-This is also why an MCP-launched daemon should get its settings from the
-`env` block of `.mcp.json` rather than from a shell profile the client may
-never read.
+Written to `<data_dir>/config.toml`, validated before the write, and the daemon
+is restarted so it takes effect. `model`, `url`, `key`, `dim`, `store`, `token`,
+`bind`, `instruction` and `extensions` are short names for the common keys;
+everything else takes its dotted path.
+
+The precedence has three levels, narrowest last:
+
+| | Read | Wins over |
+|---|---|---|
+| `/etc/findery/config.toml` | if it exists | nothing |
+| `<data_dir>/config.toml` | when the first does not | the packaged file |
+| `FINDERY_*` | always | both |
+
+The environment staying on top is deliberate: one container image has to serve
+every deployment. It is also why `findery config set` warns when a variable is
+masking what it just wrote.
+
+A daemon reads all of this **once, at boot**, and inherits the environment of
+whatever started it — your shell, or the MCP client that launched
+`findery-mcp`. That is why an MCP-launched daemon should take its settings from
+the file, or from the `env` block of `.mcp.json`, never from a shell profile the
+client may never read.
 
 ---
 
