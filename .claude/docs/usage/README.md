@@ -82,6 +82,22 @@ from one to the other costs a walk and no embedding at all.
 `finderyd --check` prints the configuration as actually resolved. One
 `catalog.db` holds every project; it is the file worth backing up.
 
+### The environment is read once, at start
+
+A daemon inherits the environment of whatever started it — your shell, or the
+MCP client that launched `findery-mcp`. Changing a `FINDERY_*` variable in a
+shell afterwards has no effect on a daemon already running:
+
+```bash
+findery daemon stop
+export FINDERY_EMBED_MODEL=…
+findery status          # the next command starts one that sees it
+```
+
+This is also why an MCP-launched daemon should get its settings from the
+`env` block of `.mcp.json` rather than from a shell profile the client may
+never read.
+
 ---
 
 ## 2. Everyday commands

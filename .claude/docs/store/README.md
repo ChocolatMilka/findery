@@ -138,9 +138,15 @@ translation would be worse than a second pass over a few hundred lines.
 
 ```bash
 docker compose --profile qdrant up -d qdrant   # the only container you need
-FINDERY_STORE_BACKEND=qdrant FINDERY_QDRANT_URL=http://127.0.0.1:6333 finderyd
-findery sync
+findery daemon stop                            # the running one holds the old backend
+export FINDERY_STORE_BACKEND=qdrant
+export FINDERY_QDRANT_URL=http://127.0.0.1:6333
+findery sync                                   # starts a daemon on the new backend
 ```
+
+The `stop` is not optional: a daemon started earlier inherited the environment
+of the command that started it, and exporting a variable afterwards leaves it
+serving from SQLite.
 
 The catalog does not move, so **the switch re-embeds nothing**: every vector is
 already in the content-addressed cache and gets upserted into the new store.

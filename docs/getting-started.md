@@ -237,7 +237,20 @@ being too large or not UTF-8) and `embeddings_computed` versus
 | sync re-embeds everything | the model or dimension changed, which opens a new cache namespace |
 | first index feels endless | it is the one slow step; `findery jobs` shows progress |
 
-`FINDERY_LOG=debug finderyd` gives the full trace.
+### Changing a setting
+
+The daemon that started itself inherited the environment of the command that
+started it. Exporting a variable now changes nothing for a daemon already
+running — restart it:
+
+```bash
+findery daemon stop
+export FINDERY_LOG=debug          # or FINDERY_EMBED_MODEL, FINDERY_STORE_BACKEND…
+findery status                    # starts a daemon that sees the new value
+```
+
+`finderyd --check` prints the configuration as it actually resolves, without
+binding anything.
 
 ---
 
