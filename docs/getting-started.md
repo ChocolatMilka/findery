@@ -111,21 +111,34 @@ export FINDERY_EMBED_BASE_URL=http://127.0.0.1:11434
 export FINDERY_EMBED_MODEL=qwen3-embedding:0.6b
 ```
 
-## 4. Start the daemon
+## 4. The daemon — there is nothing to do
 
-```bash
-finderyd
+There is no command here. The first `findery` you type notices that nothing is
+answering and starts `finderyd` in the background:
+
+```
+(started the daemon in the background)
 ```
 
-Keep it running — its own terminal, a background service, whatever you prefer.
-Check it from anywhere:
+No terminal to keep open, no service to install. It writes to
+`<data-dir>/finderyd.log` and stays up until the machine restarts.
+
+Only a **local** daemon starts itself. If `FINDERY_SERVER_URL` points at another
+machine, a failure to reach it is reported, never replaced by a local one
+answering from an empty index.
 
 ```bash
-findery health
-# ready · model Qwen/Qwen3-Embedding-0.6B (1024 dims) · store sqlite · 0 project(s)
+findery doctor        # what is up, what is not, and the command for each
+findery daemon stop   # when you want it gone
+findery daemon start  # when you want it back
 ```
 
-If it says `DEGRADED`, the model is not answering: go back to step 3.
+`FINDERY_NO_SPAWN=1` forbids the automatic start, for a service manager or a
+container that owns the process itself.
+
+A daemon whose model is down still starts, and says so: `findery doctor` reports
+`FAIL model` with the fix, and only the commands that need a vector fail. The
+diagnostic is the last thing that should go down with the model.
 
 ## 5. Index a project
 
@@ -217,7 +230,8 @@ being too large or not UTF-8) and `embeddings_computed` versus
 | Symptom | What to do |
 |---------|-----------|
 | `no indexed project contains …` | `findery init` here, or `-p <id>` |
-| daemon does not answer | start `finderyd`; the error message prints the commands |
+| daemon does not answer | `findery doctor` — it names the cause and the fix |
+| daemon will not start | `<data-dir>/finderyd.log` has the reason; `findery doctor` prints the path |
 | `DEGRADED` / every search returns 502 | the model is down — `docker compose logs tei` |
 | search finds nothing that clearly exists | not synced yet, or a filter is too narrow — check `findery status` |
 | sync re-embeds everything | the model or dimension changed, which opens a new cache namespace |

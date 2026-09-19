@@ -15,12 +15,13 @@ MCP API — so it plugs directly into Claude Code.
 - 📤 JSONL / JSON / raw `float32` export — you're never locked in
 - 📡 Pull or push: the daemon reads your files, or the CLI sends them — so the
   daemon can run in a container, or on another machine, with nothing mounted
-- 🧪 187 tests, clean `clippy -D warnings`, layer watchdog
+- 🧪 206 tests, clean `clippy -D warnings`, layer watchdog
 
 ---
 
 > **New here?** [`docs/getting-started.md`](docs/getting-started.md) walks the
 > whole setup step by step, with sizing tables and a troubleshooting section.
+> **Handing it to a team?** [`docs/deploying.md`](docs/deploying.md).
 
 ## Getting started
 
@@ -28,7 +29,6 @@ MCP API — so it plugs directly into Claude Code.
 git clone <this-repo> && cd findery
 make install        # findery, finderyd, findery-mcp → ~/.cargo/bin
 make up-model       # the Qwen3 model in Docker (~1.2 GB on first launch)
-finderyd     # the daemon, on your machine
 ```
 
 Then, in **any project, on any disk**:
@@ -39,8 +39,12 @@ findery init                              # indexes the current directory
 findery search "where is retry handled"   # the project is inferred from the directory
 ```
 
-That's it. No path to type, no mount to declare: the daemon runs on your
-machine, it sees your real filesystem.
+That's it. No path to type, no mount to declare, **and no daemon to start** —
+the first command notices nothing is listening and starts `finderyd` in the
+background. Nothing to keep open.
+
+Run `findery doctor` whenever something looks wrong: it names what is missing
+and the command that fixes it.
 
 ```bash
 findery projects        # your projects, the current one marked with a *
@@ -191,13 +195,18 @@ Dependencies flow down, data flows back up through `Result`. Verified by
 | [`server/`](.claude/docs/server/README.md) | HTTP API reference |
 | [`mcp/`](.claude/docs/mcp/README.md) | MCP tools and setup |
 
+Two pages sit outside that set, written for readers rather than contributors:
+[`docs/getting-started.md`](docs/getting-started.md) and
+[`docs/deploying.md`](docs/deploying.md) — the latter for handing findery to a
+team.
+
 ---
 
 ## Development
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers
-make test      # 187 tests
+make test      # 206 tests
 make bench     # vector scan measurement
 ```
 

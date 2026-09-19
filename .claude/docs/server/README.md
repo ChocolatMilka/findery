@@ -38,6 +38,10 @@ on `Error::NotFound`, not on an integer it had to go look up.
 ### `GET /healthz`
 Liveness only. No auth, no dependency probe. `200 ok`.
 
+This is what a client probes before starting a daemon: it answers even while the
+embedding runtime is down, so a degraded daemon is never mistaken for an absent
+one and started a second time.
+
 ### `GET /v1/health`
 Readiness: probes the embeddings runtime.
 
@@ -45,6 +49,23 @@ Readiness: probes the embeddings runtime.
 { "ok": true, "model": "Qwen/Qwen3-Embedding-0.6B", "dim": 1024,
   "store_backend": "sqlite", "projects": 3, "embedder_ok": true }
 ```
+
+`ok: false` with `embedder_ok: false` and a `detail` string is the normal answer
+when the model is not up. The daemon still serves everything that does not need
+a vector — see `.claude/docs/embed/README.md` on degraded start.
+
+### `POST /v1/shutdown`
+Asks the daemon to stop, gracefully: it stops accepting connections, finishes
+what is in flight, and exits.
+
+```json
+{ "stopping": true }
+```
+
+INTENT: a daemon that started itself has no terminal to Ctrl-C and no pid anyone
+wrote down. Its own API is the only channel that works identically on Windows,
+macOS and Linux. It requires the bearer token like every other route — a daemon
+anyone on the network can stop is not a daemon.
 
 ### `GET /v1/projects` · `POST /v1/projects`
 

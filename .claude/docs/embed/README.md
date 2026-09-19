@@ -81,6 +81,32 @@ is silently unsearchable, and the only cheap moment to catch that is before
 the first byte is written. `dim = 0` means "ask the runtime". `verify_dim =
 false` disables the probe if startup needs to be offline.
 
+### When the runtime does not answer
+
+An **unreachable** runtime is a different case from a **disagreeing** one, and
+they get different answers.
+
+A width that disagrees is a contradiction the daemon cannot resolve, so it
+refuses to start. A runtime that is merely down tells us nothing about the
+width — so if the width is known from somewhere else, the daemon starts
+*degraded*:
+
+| Width known from | Result |
+|---|---|
+| `dim` in the configuration | starts degraded |
+| the catalog's recorded recipe, when the model name still matches | starts degraded |
+| nowhere | refuses, naming `FINDERY_EMBED_DIM` |
+
+Degraded means: the daemon is up, `/healthz` answers, `/v1/health` reports
+`embedder_ok: false` with the transport error, searches and syncs fail with that
+same error, and everything else works. `findery doctor` reads exactly this and
+tells the user to start their model.
+
+INTENT: the daemon starts itself now, on the user's first command. A daemon that
+refused to boot because the model was down would take the diagnostic down with it
+at precisely the moment it is needed, and the user would see "did not answer
+within 30s" instead of "your model is not running".
+
 ## The cache recipe
 
 ```

@@ -83,7 +83,7 @@ Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
 
 ```bash
 make check                  # fmt-check + clippy -D warnings + test + layers
-make test                   # 187 tests
+make test                   # 206 tests
 make bench                  # measures the vector scan (release)
 make install                # findery + finderyd + MCP bridge into ~/.cargo/bin
 make up-model               # the model alone, in Docker — the daemon runs natively
@@ -94,7 +94,8 @@ make up-gpu / up-qdrant / logs / health / down
 cd <a project> && findery init  # indexes the current directory
 findery search "where backoff is handled"   # project inferred from the current directory
 findery health                  # what the daemon actually serves
-finderyd --check      # the config as actually resolved
+findery doctor                  # what is missing, and the command that fixes it
+finderyd --check                # the config as actually resolved
 ```
 
 ---

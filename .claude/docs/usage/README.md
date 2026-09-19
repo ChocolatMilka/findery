@@ -20,11 +20,23 @@ and costs the bind-mount boundary.
 ```bash
 make install        # findery, finderyd, findery-mcp → ~/.cargo/bin
 make up-model       # the model, in Docker
-finderyd     # the daemon, on this machine
 ```
 
-The daemon sees your real filesystem. **Any path on any disk is indexable**, no
-mount to declare, no path translation. `FINDERY_WORKSPACES` is irrelevant here.
+The daemon is not in that list on purpose: the first `findery` command starts it
+in the background and says so. It sees your real filesystem, so **any path on any
+disk is indexable** — no mount to declare, no path translation.
+`FINDERY_WORKSPACES` is irrelevant here.
+
+| Command | For |
+|---------|-----|
+| `findery doctor` | what is up, what is not, and the command for each |
+| `findery daemon status` | the health line, or `not running` |
+| `findery daemon stop` / `start` | explicit control when you want it |
+| `FINDERY_NO_SPAWN=1` | forbid the automatic start (service manager, container) |
+
+Only a loopback daemon is ever started automatically. A `FINDERY_SERVER_URL`
+pointing elsewhere is someone else's server: failing to reach it is reported,
+never replaced by a local daemon answering from an empty index.
 
 ### All-Docker
 
