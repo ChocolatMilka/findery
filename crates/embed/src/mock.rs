@@ -1,6 +1,6 @@
 //! Deterministic offline embedder.
 //!
-//! INTENT: every test above L1, and `sec doctor` on a machine with no runtime
+//! INTENT: every test above L1, and `findery doctor` on a machine with no runtime
 //! reachable, needs vectors that behave like vectors — stable, normalized, and
 //! closer for similar text — without a model. This is that, and it is never a
 //! silent fallback: selecting it is an explicit `backend = "mock"`.

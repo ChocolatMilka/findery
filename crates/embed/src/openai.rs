@@ -37,7 +37,14 @@ impl OpenAiCompatEmbedder {
     /// Probing is not ceremony: a corpus half-embedded at 1024 dims and half at
     /// 2560 is silently unsearchable, and the only cheap moment to catch that
     /// is before the first byte is written.
-    pub async fn connect(cfg: EmbedderConfig) -> Result<Self> {
+    ///
+    /// An unreachable runtime is *not* fatal as long as the width is known —
+    /// from the configuration, or from `known_dim`, which the caller reads off
+    /// an existing catalog. The daemon starts, `/v1/health` reports the model as
+    /// down, and only the operations that actually need a vector fail. A daemon
+    /// that refused to boot would instead take the diagnostic down with it, at
+    /// the exact moment the user needs it.
+    pub async fn connect(cfg: EmbedderConfig, known_dim: Option<usize>) -> Result<Self> {
         let mut http = reqwest::Client::builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .user_agent(concat!("findery/", env!("CARGO_PKG_VERSION")));
@@ -58,20 +65,54 @@ impl OpenAiCompatEmbedder {
             permits,
         };
 
+        // Everything we could fall back on if the runtime does not answer.
+        let assumed = (me.cfg.dim != 0).then_some(me.cfg.dim).or(known_dim);
+        let mut verified = true;
+
         if me.cfg.dim == 0 || me.cfg.verify_dim {
-            let probed = me.probe_dim().await?;
-            if me.cfg.dim != 0 && me.cfg.dim != probed {
-                return Err(Error::Config(format!(
-                    "embedder.dim is {} but `{}` returned {} dimensions; \
-                     fix the config or set send_dimensions=true",
-                    me.cfg.dim, me.cfg.model, probed
-                )));
+            match me.probe_dim().await {
+                Ok(probed) => {
+                    if me.cfg.dim != 0 && me.cfg.dim != probed {
+                        return Err(Error::Config(format!(
+                            "embedder.dim is {} but `{}` returned {} dimensions; \
+                             fix the config or set send_dimensions=true",
+                            me.cfg.dim, me.cfg.model, probed
+                        )));
+                    }
+                    me.dim = probed;
+                }
+                Err(e) => match assumed {
+                    Some(dim) => {
+                        tracing::warn!(
+                            endpoint = %me.endpoint,
+                            model = %me.cfg.model,
+                            dim,
+                            detail = %e,
+                            "embedding runtime unreachable; starting degraded"
+                        );
+                        me.dim = dim;
+                        verified = false;
+                    }
+                    None => {
+                        return Err(Error::Config(format!(
+                            "`{}` is unreachable and the vector width is unknown, so nothing \
+                             can be opened: start the embedding runtime, or set \
+                             FINDERY_EMBED_DIM to the width `{}` produces ({e})",
+                            me.endpoint, me.cfg.model
+                        )));
+                    }
+                },
             }
-            me.dim = probed;
         } else {
             me.dim = me.cfg.dim;
         }
-        tracing::info!(model = %me.cfg.model, endpoint = %me.endpoint, dim = me.dim, "embedder ready");
+        tracing::info!(
+            model = %me.cfg.model,
+            endpoint = %me.endpoint,
+            dim = me.dim,
+            "{}",
+            if verified { "embedder ready" } else { "embedder configured but not answering" }
+        );
         Ok(me)
     }
 

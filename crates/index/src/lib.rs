@@ -48,8 +48,18 @@ impl Indexer {
     /// then the catalog, then the store.
     pub async fn new(cfg: Config) -> Result<Arc<Self>> {
         cfg.validate()?;
-        let embedder = findery_embed::build(&cfg.embedder).await?;
+        // The catalog comes first because it remembers the width: an index built
+        // earlier lets the daemon start even while the embedding runtime is
+        // down, which is what keeps `findery doctor` answerable.
         let catalog = findery_store::open_catalog(&cfg.store)?;
+        let remembered = catalog.get_meta("embedding_recipe").await?;
+        let known_dim = remembered
+            .as_deref()
+            .and_then(|r| r.rsplit_once(':'))
+            .and_then(|(model, dim)| (model == cfg.embedder.model).then(|| dim.parse().ok()))
+            .flatten();
+
+        let embedder = findery_embed::build(&cfg.embedder, known_dim).await?;
         let store = findery_store::build_vector_store(&cfg.store, catalog.clone())?;
 
         let recipe = format!("{}:{}", embedder.model(), embedder.dim());
