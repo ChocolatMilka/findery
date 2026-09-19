@@ -27,6 +27,7 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             id,
             ext,
             no_sync,
+            push,
         } => {
             let root = absolute(&path)?;
             let id = match id {
@@ -38,6 +39,7 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                     root: root.clone(),
                     id: Some(id.to_string()),
                     extensions: ext,
+                    push: push.then_some(true),
                     ..Default::default()
                 })
                 .await?;
@@ -47,7 +49,11 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 println!("indexing `{}` at {}", project.id, project.host_root);
             }
             if !no_sync {
-                let report = client.sync_now(&project.id).await?;
+                let report = if project.spec.push {
+                    crate::push::sync(&client, &project).await?
+                } else {
+                    client.sync_now(&project.id).await?
+                };
                 if json {
                     render::json(&report)?;
                 } else {
@@ -99,6 +105,19 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             background,
         } => {
             let id = resolve(&client, &scope).await?;
+            // A project the daemon cannot see is fed by the client. The choice
+            // was made at registration by testing the path, so nobody has to
+            // remember which mode a project is in.
+            let project = client.project(&id).await?;
+            if project.spec.push {
+                let report = crate::push::sync(&client, &project).await?;
+                if json {
+                    render::json(&report)?;
+                } else {
+                    render::sync(&report);
+                }
+                return Ok(());
+            }
             let request = SyncRequest {
                 mode: full.then(|| "full".to_string()),
                 paths: (!paths.is_empty()).then_some(paths),
@@ -207,6 +226,20 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             debounce_ms,
         } => {
             let id = resolve(&client, &scope).await?;
+            let project = client.project(&id).await?;
+            if project.spec.push {
+                if off {
+                    println!("nothing to stop: this project is watched by this command itself");
+                    return Ok(());
+                }
+                // Blocking on purpose: the watcher is this process.
+                return crate::push::watch(
+                    &client,
+                    &project,
+                    std::time::Duration::from_millis(debounce_ms.clamp(100, 60_000)),
+                )
+                .await;
+            }
             let state = client
                 .set_watch(
                     &id,

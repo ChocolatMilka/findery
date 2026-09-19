@@ -9,6 +9,7 @@
 //! project's files or the model: whatever it can do, the HTTP API can do, which
 //! keeps the CLI and the MCP bridge honest about being peers.
 
+mod push;
 mod render;
 mod run;
 
@@ -63,6 +64,10 @@ pub(crate) enum Command {
         /// Register without indexing.
         #[arg(long)]
         no_sync: bool,
+        /// Send file contents to the daemon instead of letting it read them.
+        /// Chosen automatically when the daemon cannot see the directory.
+        #[arg(long)]
+        push: bool,
     },
     /// Search the index.
     Search {

@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 findery-core   = { workspace = true }
 findery-client = { workspace = true }
+findery-walk   = { workspace = true }
+notify         = { workspace = true }
 
 clap       = { workspace = true }
 serde      = { workspace = true }
