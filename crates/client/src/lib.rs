@@ -22,11 +22,11 @@
 //! the vocabulary and an HTTP client, not half a daemon.
 
 use findery_core::api::{
-    AddDocument, Deleted, ErrorBody, ExportReport, ExportRequest, HealthReport, Job,
-    RegisterProject, Removed, SyncRequest, SyncResponse, WatchRequest, Watching,
+    AddDocument, Deleted, ErrorBody, ExportReport, ExportRequest, HealthReport, Job, PruneRequest,
+    PushDocuments, RegisterProject, Removed, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use findery_core::ids::ProjectId;
-use findery_core::model::{IndexStats, Project, SearchHit, SearchRequest, SyncReport};
+use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
 use findery_core::{Error, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -159,6 +159,43 @@ impl Client {
                 job.id
             ))),
         }
+    }
+
+    /// What the daemon knows about a project's files.
+    ///
+    /// A pushing client diffs against this so it only sends what changed.
+    pub async fn file_manifest(&self, id: &ProjectId) -> Result<Vec<FileRecord>> {
+        self.send::<(), _>(
+            reqwest::Method::GET,
+            &format!("/v1/projects/{id}/files"),
+            None,
+        )
+        .await
+    }
+
+    /// Pushes documents the client walked and read itself.
+    ///
+    /// This is what lets a daemon index a directory it cannot see — in a
+    /// container, or on another machine entirely.
+    pub async fn push_documents(&self, id: &ProjectId, req: &PushDocuments) -> Result<SyncReport> {
+        self.send(
+            reqwest::Method::POST,
+            &format!("/v1/projects/{id}/documents/batch"),
+            Some(req),
+        )
+        .await
+    }
+
+    /// Tells the daemon every path the client still has; the rest is dropped.
+    pub async fn prune(&self, id: &ProjectId, req: &PruneRequest) -> Result<u64> {
+        let body: Removed = self
+            .send(
+                reqwest::Method::POST,
+                &format!("/v1/projects/{id}/prune"),
+                Some(req),
+            )
+            .await?;
+        Ok(body.removed)
     }
 
     pub async fn add_document(&self, id: &ProjectId, req: &AddDocument) -> Result<SyncReport> {
