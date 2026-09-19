@@ -90,6 +90,10 @@ language, behind the same trait.
 Watchers live in the server's memory: a restart loses them. Store them in
 the catalog and relaunch them at boot.
 
+Worth more now than when it was written: the daemon starts itself and is
+expected to come and go, so "until the next restart" is a shorter promise
+than it used to be.
+
 ### R6 — Prometheus metrics
 `/metrics`: search latency, embeddings computed vs cached, index size. Today
 observability lives in the logs and `SyncReport`.
