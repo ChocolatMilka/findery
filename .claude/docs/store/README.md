@@ -134,6 +134,22 @@ over-fetch (×8, capped at 1024) and filter locally with `CompiledFilter` —
 the **same** semantics as the sqlite backend (CONV-011). An approximate
 translation would be worse than a second pass over a few hundred lines.
 
+### Switching to it
+
+```bash
+docker compose --profile qdrant up -d qdrant   # the only container you need
+FINDERY_STORE_BACKEND=qdrant FINDERY_QDRANT_URL=http://127.0.0.1:6333 finderyd
+findery sync
+```
+
+The catalog does not move, so **the switch re-embeds nothing**: every vector is
+already in the content-addressed cache and gets upserted into the new store.
+
+The daemon notices on its own that the store is empty while the catalog is not,
+upgrades the sync to a full pass and says so in the report. Without that, an
+incremental pass would find every file unchanged, write nothing, and leave
+search silently returning nothing.
+
 ### When to switch
 
 | Signal | Backend |

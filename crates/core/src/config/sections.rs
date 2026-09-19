@@ -242,9 +242,11 @@ pub struct QdrantConfig {
 impl Default for QdrantConfig {
     fn default() -> Self {
         Self {
-            url: "http://qdrant:6333".into(),
+            // Loopback, like the embedder default: the documented setup runs
+            // the daemon natively. Compose overrides this with `http://qdrant:6333`.
+            url: "http://127.0.0.1:6333".into(),
             api_key: None,
-            collection_prefix: "se_".into(),
+            collection_prefix: "findery_".into(),
             timeout_secs: 30,
             scalar_quantization: false,
         }

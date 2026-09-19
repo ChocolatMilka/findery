@@ -339,8 +339,11 @@ mod tests {
     fn collection_names_are_prefixed_per_project() {
         let s = QdrantStore::new(QdrantConfig::default()).expect("client");
         let p = ProjectId::new("axle").expect("id");
-        assert_eq!(s.collection(&p), "se_axle");
-        assert_eq!(s.url("/collections/x"), "http://qdrant:6333/collections/x");
+        assert_eq!(s.collection(&p), "findery_axle");
+        assert_eq!(
+            s.url("/collections/x"),
+            "http://127.0.0.1:6333/collections/x"
+        );
     }
 
     #[test]

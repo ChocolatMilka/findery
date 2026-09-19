@@ -70,9 +70,11 @@ backend = "sqlite"
 # export_dir = "/data/exports"
 
 [store.qdrant]
-url = "http://qdrant:6333"
+# Loopback by default, like the embedder: the documented setup runs the daemon
+# natively. Compose overrides this with `http://qdrant:6333`.
+url = "http://127.0.0.1:6333"
 # api_key = "..."
-collection_prefix = "se_"
+collection_prefix = "findery_"
 timeout_secs = 30
 # 4x smaller vectors for roughly 1% recall loss.
 scalar_quantization = false

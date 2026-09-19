@@ -555,6 +555,7 @@ dependencies = [
  "findery-store",
  "http-body-util",
  "parking_lot",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

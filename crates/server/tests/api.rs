@@ -18,7 +18,8 @@ use tower::ServiceExt;
 struct Harness {
     app: Router,
     project_dir: tempfile::TempDir,
-    _data_dir: tempfile::TempDir,
+    data_dir: tempfile::TempDir,
+    cfg: Config,
 }
 
 async fn harness_with(token: Option<&str>) -> Harness {
@@ -51,11 +52,14 @@ async fn harness_with(token: Option<&str>) -> Harness {
     cfg.server.api_token = token.map(str::to_string);
     cfg.chunk.min_chars = 1;
 
-    let state = findery_server::state_from_config(cfg).await.expect("state");
+    let state = findery_server::state_from_config(cfg.clone())
+        .await
+        .expect("state");
     Harness {
         app: findery_server::app(state),
         project_dir,
-        _data_dir: data_dir,
+        data_dir,
+        cfg,
     }
 }
 
@@ -122,6 +126,33 @@ impl Harness {
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         body["id"].as_str().expect("id").to_string()
+    }
+
+    /// Project statistics.
+    async fn stats(&self, id: &str) -> Value {
+        let (status, body) = self
+            .call("GET", &format!("/v1/projects/{id}/stats"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// Empties the vector store and restarts the daemon over the same catalog.
+    ///
+    /// That is what pointing the daemon at a fresh backend actually looks like:
+    /// the catalog is intact, the store is empty, and the warm matrix is gone
+    /// because the process is new.
+    async fn switch_to_a_fresh_vector_store(&mut self, id: &str) {
+        let db = self.data_dir.path().join("catalog.db");
+        {
+            let conn = rusqlite::Connection::open(&db).expect("open catalog");
+            conn.execute("DELETE FROM vectors WHERE project_id = ?1", [id])
+                .expect("clear vectors");
+        }
+        let state = findery_server::state_from_config(self.cfg.clone())
+            .await
+            .expect("restart");
+        self.app = findery_server::app(state);
     }
 
     /// Runs a synchronous sync and returns its report.
@@ -652,4 +683,51 @@ async fn an_unreachable_root_becomes_a_push_project() {
         .call("POST", "/v1/projects", Some(json!({ "root": h.root() })))
         .await;
     assert_eq!(local["spec"]["push"], false, "{local}");
+}
+
+/// Switching vector backend leaves the catalog full and the new store empty.
+/// An incremental pass would find every file unchanged and write nothing,
+/// leaving search silently broken.
+#[tokio::test]
+async fn an_empty_vector_store_is_rebuilt_instead_of_reported_clean() {
+    let mut h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+
+    let before = h.stats(&id).await;
+    assert!(before["vectors"].as_u64().expect("vectors") > 0, "{before}");
+
+    // Stand in for "the operator pointed the daemon at a fresh backend".
+    h.switch_to_a_fresh_vector_store(&id).await;
+    let empty = h.stats(&id).await;
+    assert_eq!(empty["vectors"], 0, "{empty}");
+    assert!(
+        empty["chunks"].as_u64().expect("chunks") > 0,
+        "the catalog survives: {empty}"
+    );
+
+    let report = h.sync(&id, json!({})).await;
+    assert_eq!(
+        report["mode"], "full",
+        "an incremental request must upgrade itself: {report}"
+    );
+    assert!(
+        report["chunks_written"].as_u64().expect("written") > 0,
+        "{report}"
+    );
+    // Rebuilding costs no embedding: the vectors were cached all along.
+    assert_eq!(report["embeddings_computed"], 0, "{report}");
+    assert!(
+        report["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|w| w
+                .as_str()
+                .is_some_and(|t| t.contains("vector store was empty"))),
+        "the rebuild must be visible, not silent: {report}"
+    );
+
+    let after = h.stats(&id).await;
+    assert_eq!(after["vectors"], before["vectors"], "{after}");
 }

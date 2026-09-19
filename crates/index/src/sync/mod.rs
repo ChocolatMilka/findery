@@ -37,11 +37,32 @@ pub async fn run(idx: &Indexer, project: &Project, mode: SyncMode) -> Result<Syn
         .await?;
     let known = idx.catalog.file_map(&project.id).await?;
 
+    // Switching vector backend leaves the catalog intact and the new store
+    // empty. An incremental pass would then find every file unchanged, write
+    // nothing, and leave search returning nothing — silently. Detect that and
+    // rebuild instead of reporting a successful no-op.
+    let mode = if !matches!(mode, SyncMode::Full)
+        && !known.is_empty()
+        && idx.store.count(&project.id).await.unwrap_or(1) == 0
+    {
+        tracing::warn!(
+            project = %project.id,
+            "vector store is empty but the catalog is not; rebuilding it"
+        );
+        report.mode = SyncMode::Full.as_str().to_string();
+        report
+            .warnings
+            .push("vector store was empty; rebuilt from the catalog".into());
+        SyncMode::Full
+    } else {
+        mode
+    };
+    let full = matches!(mode, SyncMode::Full);
+
     let (candidates, warnings) = collect_candidates(project, &mode).await?;
     report.warnings.extend(warnings);
     report.files_scanned = candidates.len() as u64;
 
-    let full = matches!(mode, SyncMode::Full);
     let mut pending: Vec<Pending> = Vec::new();
     let mut buffered_chunks = 0usize;
     let mut seen: Vec<String> = Vec::with_capacity(candidates.len());
