@@ -11,10 +11,10 @@ findery-core  = { workspace = true }
 findery-chunk = { workspace = true }
 findery-embed = { workspace = true }
 findery-store = { workspace = true }
+findery-walk  = { workspace = true }
 
 blake3      = { workspace = true }
 globset     = { workspace = true }
-ignore      = { workspace = true }
 notify      = { workspace = true }
 parking_lot = { workspace = true }
 serde       = { workspace = true }

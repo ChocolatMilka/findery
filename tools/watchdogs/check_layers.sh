@@ -5,7 +5,7 @@
 # rule nobody can run is a rule that decays, so it is checked mechanically.
 #
 #   L0  findery-core                            the vocabulary, depends on nothing
-#   L1  findery-chunk findery-embed findery-store         one concern each, core only
+#   L1  findery-chunk findery-embed findery-store findery-walk   one concern each, core only
 #   L1  findery-client                          the wire, core only
 #   L2  findery-index                           the engine
 #   L3  findery-server                          the HTTP transport
@@ -21,6 +21,7 @@ declare -A LAYER=(
   [findery-chunk]=1
   [findery-embed]=1
   [findery-store]=1
+  [findery-walk]=1
   [findery-client]=1
   [findery-index]=2
   [findery-server]=3

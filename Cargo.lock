@@ -464,6 +464,8 @@ dependencies = [
  "clap",
  "findery-client",
  "findery-core",
+ "findery-walk",
+ "notify",
  "serde",
  "serde_json",
  "tokio",
@@ -517,8 +519,8 @@ dependencies = [
  "findery-core",
  "findery-embed",
  "findery-store",
+ "findery-walk",
  "globset",
- "ignore",
  "notify",
  "parking_lot",
  "serde",
@@ -578,6 +580,16 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "findery-walk"
+version = "0.1.0"
+dependencies = [
+ "findery-core",
+ "globset",
+ "ignore",
+ "tempfile",
 ]
 
 [[package]]

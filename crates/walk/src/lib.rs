@@ -1,4 +1,11 @@
+//! # findery-walk — layer L1
+//!
 //! Filesystem walk: which files of a project are candidates for indexing.
+//!
+//! INTENT: this lives in its own crate because BOTH sides need it. The daemon
+//! walks when it can see the project; a client walks when it cannot, and pushes
+//! the contents over the API. One walk implementation, so the two modes can
+//! never disagree about which files belong to a project.
 //!
 //! INTENT: `.gitignore` is honoured by default, so `target/` — which outweighs
 //! the source by two orders of magnitude — never reaches the model. Every other
