@@ -1,0 +1,20 @@
+[package]
+name                   = "findery-cli"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description            = "L4 - `findery`, the command line client for findery."
+
+[[bin]]
+name = "findery"
+path = "src/main.rs"
+
+[dependencies]
+findery-core   = { workspace = true }
+findery-client = { workspace = true }
+
+clap       = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tokio      = { workspace = true }
