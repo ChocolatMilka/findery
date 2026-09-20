@@ -7,9 +7,11 @@ use crate::dto::{
 };
 use crate::{ApiResult, AppState};
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use findery_core::api::{HealthReport, Job, RegisterProject};
+use findery_core::api::{
+    CatalogInfo, CatalogRemoved, CreateCatalog, HealthReport, Job, RegisterProject,
+};
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
 use findery_store::{ExportFormat, ExportReport};
@@ -33,6 +35,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/documents/batch", post(push_documents))
         .route("/v1/projects/{id}/files", get(file_manifest))
         .route("/v1/projects/{id}/prune", post(prune))
+        .route("/v1/catalogs", get(list_catalogs).post(create_catalog))
+        .route("/v1/catalogs/{name}", delete(delete_catalog))
         .route("/v1/search", post(search))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/jobs", get(list_jobs))
@@ -247,6 +251,38 @@ async fn shutdown(State(state): State<AppState>) -> Json<Stopping> {
     tracing::info!("shutdown requested over the API");
     state.shutdown.notify_one();
     Json(Stopping { stopping: true })
+}
+
+async fn list_catalogs(State(state): State<AppState>) -> ApiResult<Json<Vec<CatalogInfo>>> {
+    Ok(Json(state.indexer.list_catalogs().await?))
+}
+
+async fn create_catalog(
+    State(state): State<AppState>,
+    Json(body): Json<CreateCatalog>,
+) -> ApiResult<Json<CatalogInfo>> {
+    Ok(Json(state.indexer.create_catalog(&body.name).await?))
+}
+
+/// Deletes a catalog, its projects and their vectors.
+///
+/// It goes through the daemon rather than the CLI's own filesystem call: the
+/// daemon is the only process that knows every handle on the file, and a
+/// catalog still open cannot be removed at all.
+async fn delete_catalog(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<CatalogRemoved>> {
+    let removed = state.indexer.forget_catalog(&name).await?;
+    // The watchers of the projects that went with it would otherwise keep
+    // re-syncing an id that no longer resolves.
+    {
+        let mut watches = state.watches.lock();
+        for project in &removed.projects {
+            watches.remove(project.as_str());
+        }
+    }
+    Ok(Json(removed))
 }
 
 async fn list_jobs(State(state): State<AppState>) -> Json<Vec<Job>> {

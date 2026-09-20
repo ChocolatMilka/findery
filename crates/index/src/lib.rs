@@ -1,18 +1,21 @@
 //! # findery-index — layer L2
 //!
-//! The engine. It owns the catalog, the vector store, the embedder and the
+//! The engine. It owns the catalogs, the vector stores, the embedder and the
 //! chunkers, and it is the only place where those four meet. Everything above —
 //! HTTP, MCP, CLI — is a thin translation of [`Indexer`]'s methods.
 //!
 //! INTENT: keeping orchestration in one layer is what lets the transports stay
 //! dumb. A bug in "what sync does" has exactly one home.
 
+pub mod catalogs;
 pub mod jobs;
 pub mod search;
 pub mod sync;
 pub mod watch;
 
 pub use findery_walk as walker;
+
+pub use catalogs::CatalogHandle;
 
 use findery_core::clock::now_unix;
 use findery_core::config::Config;
@@ -21,9 +24,11 @@ use findery_core::model::{
     IndexStats, Project, ProjectSpec, SearchHit, SearchRequest, SyncMode, SyncReport,
 };
 use findery_core::path_map::PathMapper;
-use findery_core::traits::{Embedder, VectorStore};
+use findery_core::traits::Embedder;
 use findery_core::{Error, Result};
-use findery_store::{Catalog, ExportFormat, ExportReport};
+use findery_store::{ExportFormat, ExportReport};
+use parking_lot::RwLock;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -35,51 +40,49 @@ pub use findery_core::api::{HealthReport, RegisterProject};
 
 pub struct Indexer {
     pub cfg: Config,
-    pub catalog: Catalog,
-    pub store: Arc<dyn VectorStore>,
     pub embedder: Arc<dyn Embedder>,
     pub chunkers: findery_chunk::Registry,
     pub jobs: JobRegistry,
+    /// Every catalog the daemon has open, keyed by name.
+    ///
+    /// INTENT: a catalog is a file, so this map is rebuilt from the filesystem
+    /// at boot and then maintained only by the daemon's own writes — one writer,
+    /// so it cannot drift from the disk.
+    catalogs: RwLock<BTreeMap<String, Arc<CatalogHandle>>>,
+    /// Which catalog holds each registered project.
+    ///
+    /// The daemon's own writes cannot put one project in two catalogs —
+    /// registering it elsewhere moves it — so a duplicate here takes a
+    /// hand-edited database, and [`Indexer::home_of`] resolves it to the first
+    /// catalog in order rather than failing.
+    homes: RwLock<HashMap<ProjectId, String>>,
     mapper: PathMapper,
 }
 
 impl Indexer {
-    /// Wires everything together: embedder first (it decides the vector width),
-    /// then the catalog, then the store.
+    /// Wires everything together: the width the vectors already have, then the
+    /// embedder, then every catalog on disk.
     pub async fn new(cfg: Config) -> Result<Arc<Self>> {
         cfg.validate()?;
-        // The catalog comes first because it remembers the width: an index built
-        // earlier lets the daemon start even while the embedding runtime is
-        // down, which is what keeps `findery doctor` answerable.
-        let catalog = findery_store::open_catalog(&cfg.store)?;
-        let remembered = catalog.get_meta("embedding_recipe").await?;
-        let known_dim = remembered
-            .as_deref()
-            .and_then(|r| r.rsplit_once(':'))
-            .and_then(|(model, dim)| (model == cfg.embedder.model).then(|| dim.parse().ok()))
-            .flatten();
-
+        // The width comes from the disk first: an index built earlier lets the
+        // daemon start even while the embedding runtime is down, which is what
+        // keeps `findery doctor` answerable.
+        let known_dim = catalogs::remembered_dim(&cfg.store, &cfg.embedder.model).await?;
         let embedder = findery_embed::build(&cfg.embedder, known_dim).await?;
-        let store = findery_store::build_vector_store(&cfg.store, catalog.clone())?;
-
         let recipe = format!("{}:{}", embedder.model(), embedder.dim());
-        if let Some(previous) = catalog.claim_recipe(&recipe).await? {
-            return Err(Error::Config(format!(
-                "this catalog was built with embedding recipe `{previous}` but the daemon now \
-                 offers `{recipe}`; keep the old settings, point FINDERY_DATA_DIR at a fresh \
-                 directory, or delete the catalog to re-index"
-            )));
-        }
+        // A catalog built with another recipe is opened anyway: the conflict is
+        // refused at the operation that would misuse it, never at boot.
+        let (catalogs, homes) = catalogs::open_all(&cfg, &recipe, embedder.dim()).await?;
 
         let jobs = JobRegistry::new(cfg.server.job_history, cfg.server.job_concurrency);
         let mapper = cfg.path_mapper();
         Ok(Arc::new(Self {
             cfg,
-            catalog,
-            store,
             embedder,
             chunkers: findery_chunk::Registry::new(),
             jobs,
+            catalogs: RwLock::new(catalogs),
+            homes: RwLock::new(homes),
             mapper,
         }))
     }
@@ -96,6 +99,11 @@ impl Indexer {
     // -- projects -----------------------------------------------------------
 
     /// Registers a project, or updates it when the id already exists.
+    ///
+    /// The catalog is chosen here and only here. Naming one the project does not
+    /// currently live in *moves* it — a project is in exactly one catalog, and
+    /// that is what makes `findery init --catalog work` a move rather than a
+    /// silent duplicate.
     pub async fn register(&self, req: RegisterProject) -> Result<Project> {
         if req.root.trim().is_empty() {
             return Err(Error::Invalid("root must not be empty".into()));
@@ -131,7 +139,15 @@ impl Indexer {
             max_file_bytes: req.max_file_bytes.unwrap_or(defaults.max_file_bytes),
             push,
         };
-        let existing = self.catalog.get_project(&id).await?;
+
+        let target = req
+            .catalog
+            .clone()
+            .unwrap_or_else(|| self.cfg.store.default_catalog.clone());
+        let handle = self.ensure_catalog(&target).await?;
+        self.move_project(&id, &target).await?;
+
+        let existing = handle.catalog.get_project(&id).await?;
         let project = Project {
             // A pushed project has no daemon-side path to map back from.
             host_root: if push {
@@ -141,39 +157,76 @@ impl Indexer {
             },
             id,
             name,
+            catalog: target.clone(),
             spec,
             created_at: existing.map(|p| p.created_at).unwrap_or_else(now_unix),
             updated_at: now_unix(),
         };
-        self.catalog.put_project(&project).await?;
-        self.store
+        handle.catalog.put_project(&project).await?;
+        handle
+            .store
             .ensure_project(&project.id, self.embedder.dim())
             .await?;
+        self.remember_home(&project.id, &target);
         Ok(project)
     }
 
+    /// Takes a project out of the catalog it used to live in, when it is moving.
+    ///
+    /// Its vectors go with it: they were built for that catalog's store, and
+    /// leaving them behind would keep paying for an index nothing points at.
+    async fn move_project(&self, id: &ProjectId, target: &str) -> Result<()> {
+        let Ok(current) = self.home_of(id) else {
+            return Ok(());
+        };
+        if current == target {
+            return Ok(());
+        }
+        let previous = self.handle(&current)?;
+        previous.store.drop_project(id).await?;
+        previous.catalog.delete_project(id).await?;
+        self.forget_home(id);
+        Ok(())
+    }
+
+    /// Every registered project, most recently updated first.
     pub async fn list_projects(&self) -> Result<Vec<Project>> {
-        self.catalog.list_projects().await
+        let mut out = Vec::new();
+        for handle in self.handles() {
+            out.extend(handle.catalog.list_projects().await?);
+        }
+        // The catalogs each sorted their own rows; re-sorting here is what makes
+        // one list out of several, and the id tiebreak keeps it deterministic.
+        out.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        Ok(out)
     }
 
     pub async fn get_project(&self, id: &ProjectId) -> Result<Project> {
-        self.catalog.require_project(id).await
+        self.catalog_for(id)?.catalog.require_project(id).await
     }
 
     /// Removes a project, its chunks and its vectors.
     pub async fn forget_project(&self, id: &ProjectId) -> Result<bool> {
+        let handle = self.catalog_for(id)?;
         // The vector store goes first: a catalog row with no vectors is
         // recoverable, an orphaned collection is not.
-        self.store.drop_project(id).await?;
-        self.catalog.delete_project(id).await
+        handle.store.drop_project(id).await?;
+        let removed = handle.catalog.delete_project(id).await?;
+        self.forget_home(id);
+        Ok(removed)
     }
 
     // -- indexing -----------------------------------------------------------
 
     /// Synchronizes a project against the filesystem.
     pub async fn sync(&self, id: &ProjectId, mode: SyncMode) -> Result<SyncReport> {
-        let project = self.catalog.require_project(id).await?;
-        sync::run(self, &project, mode).await
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
+        sync::run(self, &cat, &project, mode).await
     }
 
     /// Adds or refreshes one document. With `text`, the content is taken from
@@ -184,11 +237,12 @@ impl Indexer {
         rel_path: &str,
         text: Option<String>,
     ) -> Result<SyncReport> {
-        let project = self.catalog.require_project(id).await?;
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
         let rel = sanitize_rel(rel_path)?;
         match text {
-            Some(body) => sync::index_inline(self, &project, &rel, &body).await,
-            None => sync::run(self, &project, SyncMode::Paths(vec![rel])).await,
+            Some(body) => sync::index_inline(self, &cat, &project, &rel, &body).await,
+            None => sync::run(self, &cat, &project, SyncMode::Paths(vec![rel])).await,
         }
     }
 
@@ -202,7 +256,8 @@ impl Indexer {
         id: &ProjectId,
         documents: Vec<findery_core::api::AddDocument>,
     ) -> Result<SyncReport> {
-        let project = self.catalog.require_project(id).await?;
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
         let mut cleaned = Vec::with_capacity(documents.len());
         for doc in documents {
             let text = doc.text.ok_or_else(|| {
@@ -210,25 +265,27 @@ impl Indexer {
             })?;
             cleaned.push((sanitize_rel(&doc.path)?, text));
         }
-        sync::push_documents(self, &project, cleaned).await
+        sync::push_documents(self, &cat, &project, cleaned).await
     }
 
     /// Removes pushed files the client no longer has, given everything it saw.
     pub async fn prune(&self, id: &ProjectId, keep: Vec<String>) -> Result<u64> {
-        let project = self.catalog.require_project(id).await?;
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
         let mut wanted = std::collections::HashSet::with_capacity(keep.len());
         for path in keep {
             wanted.insert(sanitize_rel(&path)?);
         }
-        sync::prune(self, &project, &wanted).await
+        sync::prune(&cat, &project, &wanted).await
     }
 
     /// Everything the catalog knows about a project's files.
     ///
     /// A pushing client diffs against this to decide what is worth sending.
     pub async fn file_manifest(&self, id: &ProjectId) -> Result<Vec<findery_core::FileRecord>> {
-        let project = self.catalog.require_project(id).await?;
-        let mut files: Vec<_> = self
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
+        let mut files: Vec<_> = cat
             .catalog
             .file_map(&project.id)
             .await?
@@ -240,9 +297,10 @@ impl Indexer {
 
     /// Drops one document from the index.
     pub async fn remove_document(&self, id: &ProjectId, rel_path: &str) -> Result<u64> {
-        let project = self.catalog.require_project(id).await?;
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
         let rel = sanitize_rel(rel_path)?;
-        sync::forget_file(self, &project, &rel).await
+        sync::forget_file(&cat, &project, &rel).await
     }
 
     // -- querying -----------------------------------------------------------
@@ -252,18 +310,20 @@ impl Indexer {
     }
 
     pub async fn stats(&self, id: &ProjectId) -> Result<IndexStats> {
-        let project = self.catalog.require_project(id).await?;
-        let (files, chunks, last_sync_at) = self.catalog.counts(&project.id).await?;
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
+        let (files, chunks, last_sync_at) = cat.catalog.counts(&project.id).await?;
         Ok(IndexStats {
             project: project.id.to_string(),
+            catalog: cat.name.clone(),
             files,
             chunks,
-            vectors: self.store.count(&project.id).await.unwrap_or(0),
+            vectors: cat.store.count(&project.id).await.unwrap_or(0),
             dim: self.embedder.dim(),
             model: self.embedder.model().to_string(),
-            store_backend: self.store.backend().to_string(),
+            store_backend: cat.store.backend().to_string(),
             last_sync_at,
-            disk_bytes: self.catalog.disk_bytes().await,
+            disk_bytes: cat.catalog.disk_bytes().await,
         })
     }
 
@@ -275,15 +335,16 @@ impl Indexer {
         format: ExportFormat,
         dir: Option<&str>,
     ) -> Result<ExportReport> {
-        let project = self.catalog.require_project(id).await?;
+        let cat = self.catalog_for(id)?;
+        let project = cat.catalog.require_project(id).await?;
         let target = match dir {
             Some(d) => self.mapper.to_container(d),
             None => self.cfg.store.export_dir.clone(),
         };
         findery_store::export_project(
-            &self.catalog,
+            &cat.catalog,
             &project.id,
-            &self.recipe(),
+            &cat.recipe,
             self.embedder.model(),
             format,
             Path::new(&target),
@@ -293,12 +354,12 @@ impl Indexer {
 
     /// Probes the embedding runtime and reports what the daemon is serving.
     pub async fn health(&self) -> Result<HealthReport> {
-        let projects = self
-            .catalog
-            .list_projects()
-            .await
-            .map(|p| p.len())
-            .unwrap_or(0);
+        let mut projects = 0usize;
+        let mut backend = None;
+        for handle in self.handles() {
+            projects += handle.catalog.list_projects().await.map(|p| p.len())?;
+            backend.get_or_insert_with(|| handle.store.backend().to_string());
+        }
         let (embedder_ok, detail) = match self.embedder.health().await {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e.to_string())),
@@ -307,7 +368,7 @@ impl Indexer {
             ok: embedder_ok,
             model: self.embedder.model().to_string(),
             dim: self.embedder.dim(),
-            store_backend: self.store.backend().to_string(),
+            store_backend: backend.unwrap_or_else(|| self.cfg.store.backend.as_str().to_string()),
             projects,
             embedder_ok,
             detail,

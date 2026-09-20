@@ -26,18 +26,33 @@ use crate::schema;
 pub struct Catalog {
     conn: Arc<Mutex<Connection>>,
     path: PathBuf,
+    name: String,
 }
 
 impl Catalog {
     /// Opens (creating if needed) `dir/catalog.db` and migrates it.
     pub fn open(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir)?;
-        let path = dir.join("catalog.db");
-        let conn = Connection::open(&path).map_err(schema::sql)?;
+        Self::open_file(
+            &dir.join("catalog.db"),
+            findery_core::model::DEFAULT_CATALOG,
+        )
+    }
+
+    /// Opens one catalog file, creating it and its directory if needed.
+    ///
+    /// INTENT: the caller owns the path — `findery_core::config::catalog_path`
+    /// decides where a catalog lives — so the layout is one definition shared by
+    /// the daemon that writes it and the CLI that reports it.
+    pub fn open_file(path: &Path, name: &str) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path).map_err(schema::sql)?;
         schema::migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            path,
+            path: path.to_path_buf(),
+            name: name.to_string(),
         })
     }
 
@@ -48,12 +63,22 @@ impl Catalog {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: PathBuf::from(":memory:"),
+            name: findery_core::model::DEFAULT_CATALOG.to_string(),
         })
     }
 
     /// Path of the database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Name this catalog answers to.
+    ///
+    /// Stamped on every [`Project`](findery_core::model::Project) read out of
+    /// it, so the project's catalog is a fact about where the row lives rather
+    /// than a column that could disagree with it.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Runs a closure against the connection on the blocking pool.

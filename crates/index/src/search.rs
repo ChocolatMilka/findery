@@ -16,7 +16,8 @@ use std::collections::HashMap;
 
 /// Runs a search and returns hits sorted by descending score.
 pub async fn search(idx: &Indexer, req: &SearchRequest) -> Result<Vec<SearchHit>> {
-    let project = idx.catalog.require_project(&req.project).await?;
+    let cat = idx.catalog_for(&req.project)?;
+    let project = cat.catalog.require_project(&req.project).await?;
     let cfg = &idx.cfg.search;
 
     let k = req.k.unwrap_or(cfg.default_k).clamp(1, cfg.max_k);
@@ -27,13 +28,17 @@ pub async fn search(idx: &Indexer, req: &SearchRequest) -> Result<Vec<SearchHit>
     let vector_hits = if mode == SearchMode::Keyword {
         Vec::new()
     } else {
+        // A catalog built with another recipe can still be keyword-searched:
+        // only the leg that would compare vectors from two embedding spaces is
+        // refused.
+        cat.ensure_vectors_usable()?;
         // Precedence (free text > preset > daemon default) is resolved in L0,
         // so no transport can invent its own ordering.
         let query = idx
             .embedder
             .embed_query(&req.query, req.resolved_instruction())
             .await?;
-        idx.store
+        cat.store
             .search(&req.project, &query, candidates, &req.filter)
             .await?
     };
@@ -48,7 +53,7 @@ pub async fn search(idx: &Indexer, req: &SearchRequest) -> Result<Vec<SearchHit>
         } else {
             candidates * 2
         };
-        idx.catalog
+        cat.catalog
             .keyword_search(&req.project, &req.query, extra)
             .await?
     };
@@ -59,7 +64,7 @@ pub async fn search(idx: &Indexer, req: &SearchRequest) -> Result<Vec<SearchHit>
     }
 
     let ids: Vec<ChunkId> = fused.iter().map(|f| f.id.clone()).collect();
-    let chunks = idx.catalog.get_chunks(&req.project, &ids).await?;
+    let chunks = cat.catalog.get_chunks(&req.project, &ids).await?;
     let mut by_id: HashMap<String, Chunk> =
         chunks.into_iter().map(|c| (c.id.to_string(), c)).collect();
 
@@ -268,6 +273,7 @@ mod tests {
         let project = Project {
             id: ProjectId::new("demo").expect("id"),
             name: "demo".into(),
+            catalog: findery_core::model::DEFAULT_CATALOG.into(),
             spec: Default::default(),
             host_root: "C:/Users/me/demo/".into(),
             created_at: 0,

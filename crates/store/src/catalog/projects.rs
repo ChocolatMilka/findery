@@ -38,11 +38,12 @@ impl Catalog {
     /// Fetches one project, or `None` when it was never registered.
     pub async fn get_project(&self, id: &ProjectId) -> Result<Option<Project>> {
         let id = id.to_string();
+        let catalog = self.name.clone();
         self.with_conn(move |c| {
             let mut stmt = c.prepare(PROJECT_SELECT).map_err(sql)?;
             let mut rows = stmt.query([&id]).map_err(sql)?;
             match rows.next().map_err(sql)? {
-                Some(row) => Ok(Some(read_project(row)?)),
+                Some(row) => Ok(Some(read_project(row, &catalog)?)),
                 None => Ok(None),
             }
         })
@@ -59,6 +60,7 @@ impl Catalog {
 
     /// Lists projects, most recently updated first.
     pub async fn list_projects(&self) -> Result<Vec<Project>> {
+        let catalog = self.name.clone();
         self.with_conn(move |c| {
             let mut stmt = c
                 .prepare(&format!("{PROJECT_SELECT_ALL} ORDER BY updated_at DESC"))
@@ -66,7 +68,7 @@ impl Catalog {
             let mut rows = stmt.query([]).map_err(sql)?;
             let mut out = Vec::new();
             while let Some(row) = rows.next().map_err(sql)? {
-                out.push(read_project(row)?);
+                out.push(read_project(row, &catalog)?);
             }
             Ok(out)
         })
@@ -161,6 +163,25 @@ impl Catalog {
         .await
     }
 
+    /// Project and chunk counts for the whole catalog.
+    ///
+    /// INTENT: what `GET /v1/catalogs` reports, so it must count rows, not
+    /// files: a catalog with three projects and no chunks is a created-but-
+    /// unindexed one, and the two numbers say so.
+    pub async fn totals(&self) -> Result<(u64, u64)> {
+        self.with_conn(move |c| {
+            let row = c
+                .query_row(
+                    "SELECT (SELECT count(*) FROM projects), (SELECT count(*) FROM chunks)",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .map_err(sql)?;
+            Ok((row.0.max(0) as u64, row.1.max(0) as u64))
+        })
+        .await
+    }
+
     /// File and chunk counts plus the last sync timestamp.
     pub async fn counts(&self, project: &ProjectId) -> Result<(u64, u64, Option<i64>)> {
         let pid = project.to_string();
@@ -227,13 +248,16 @@ const PROJECT_SELECT: &str =
 const PROJECT_SELECT_ALL: &str =
     "SELECT id, name, spec_json, host_root, created_at, updated_at FROM projects";
 
-fn read_project(row: &Row<'_>) -> Result<Project> {
+/// `catalog` is the name of the catalog the row was read out of, not a column:
+/// a project's catalog is where it lives, and a column could disagree with it.
+fn read_project(row: &Row<'_>, catalog: &str) -> Result<Project> {
     let id: String = row.get(0).map_err(sql)?;
     let spec_json: String = row.get(2).map_err(sql)?;
     let spec: ProjectSpec = serde_json::from_str(&spec_json)?;
     Ok(Project {
         id: ProjectId::new(id)?,
         name: row.get(1).map_err(sql)?,
+        catalog: catalog.to_string(),
         spec,
         host_root: row.get(3).map_err(sql)?,
         created_at: row.get(4).map_err(sql)?,
@@ -267,6 +291,7 @@ mod tests {
         Project {
             id: ProjectId::new(id).expect("id"),
             name: id.to_string(),
+            catalog: findery_core::model::DEFAULT_CATALOG.into(),
             spec: ProjectSpec {
                 root: "/workspaces/demo".into(),
                 ..ProjectSpec::default()
@@ -305,6 +330,19 @@ mod tests {
         assert_eq!(got.name, "renamed");
         assert_eq!(got.spec.root, "/workspaces/demo");
         assert_eq!(cat.list_projects().await.expect("list").len(), 1);
+    }
+
+    /// The catalog a project belongs to is read off the file it came from, so a
+    /// row cannot claim one catalog while living in another.
+    #[tokio::test]
+    async fn a_project_reports_the_catalog_it_was_read_out_of() {
+        let cat = Catalog::open_in_memory().expect("catalog");
+        cat.put_project(&project("demo")).await.expect("insert");
+        let got = cat
+            .require_project(&ProjectId::new("demo").expect("id"))
+            .await
+            .expect("get");
+        assert_eq!(got.catalog, cat.name());
     }
 
     #[tokio::test]

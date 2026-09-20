@@ -17,6 +17,7 @@ mod ingest;
 use ingest::{FLUSH_CHUNKS, FLUSH_FILES, Pending, flush, materialize};
 pub use ingest::{forget_file, index_inline, prune, push_documents};
 
+use crate::CatalogHandle;
 use crate::Indexer;
 use findery_core::clock::{now_millis, now_unix};
 use findery_core::ids::ContentHash;
@@ -24,7 +25,12 @@ use findery_core::model::{FileRecord, Lang, Origin, Project, SyncMode, SyncRepor
 use findery_core::{Error, Result};
 
 /// Runs a synchronization pass and returns exactly what it did.
-pub async fn run(idx: &Indexer, project: &Project, mode: SyncMode) -> Result<SyncReport> {
+pub async fn run(
+    idx: &Indexer,
+    cat: &CatalogHandle,
+    project: &Project,
+    mode: SyncMode,
+) -> Result<SyncReport> {
     let started = now_millis();
     let mut report = SyncReport {
         project: project.id.to_string(),
@@ -32,10 +38,13 @@ pub async fn run(idx: &Indexer, project: &Project, mode: SyncMode) -> Result<Syn
         ..SyncReport::default()
     };
 
-    idx.store
+    // A catalog built by another model must not receive vectors of this one:
+    // the two spaces would share a store and neither would be searchable.
+    cat.ensure_vectors_usable()?;
+    cat.store
         .ensure_project(&project.id, idx.embedder.dim())
         .await?;
-    let known = idx.catalog.file_map(&project.id).await?;
+    let known = cat.catalog.file_map(&project.id).await?;
 
     // Switching vector backend leaves the catalog intact and the new store
     // empty. An incremental pass would then find every file unchanged, write
@@ -43,7 +52,7 @@ pub async fn run(idx: &Indexer, project: &Project, mode: SyncMode) -> Result<Syn
     // rebuild instead of reporting a successful no-op.
     let mode = if !matches!(mode, SyncMode::Full)
         && !known.is_empty()
-        && idx.store.count(&project.id).await.unwrap_or(1) == 0
+        && cat.store.count(&project.id).await.unwrap_or(1) == 0
     {
         tracing::warn!(
             project = %project.id,
@@ -108,7 +117,7 @@ pub async fn run(idx: &Indexer, project: &Project, mode: SyncMode) -> Result<Syn
             let mut record = prev.clone();
             record.mtime_ns = candidate.mtime_ns;
             record.size = candidate.size;
-            idx.catalog.put_file(&project.id, &record).await?;
+            cat.catalog.put_file(&project.id, &record).await?;
             report.files_unchanged += 1;
             continue;
         }
@@ -135,12 +144,12 @@ pub async fn run(idx: &Indexer, project: &Project, mode: SyncMode) -> Result<Syn
         });
 
         if pending.len() >= FLUSH_FILES || buffered_chunks >= FLUSH_CHUNKS {
-            flush(idx, project, std::mem::take(&mut pending), &mut report).await?;
+            flush(idx, cat, project, std::mem::take(&mut pending), &mut report).await?;
             buffered_chunks = 0;
         }
     }
     if !pending.is_empty() {
-        flush(idx, project, pending, &mut report).await?;
+        flush(idx, cat, project, pending, &mut report).await?;
     }
 
     // A targeted sync never deletes: the caller asked about specific paths and
@@ -153,13 +162,13 @@ pub async fn run(idx: &Indexer, project: &Project, mode: SyncMode) -> Result<Syn
             if record.origin != Origin::File || seen.contains(path.as_str()) {
                 continue;
             }
-            let removed = forget_file(idx, project, path).await?;
+            let removed = forget_file(cat, project, path).await?;
             report.chunks_deleted += removed;
             report.files_removed += 1;
         }
     }
 
-    idx.catalog.touch_sync(&project.id).await?;
+    cat.catalog.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
     Ok(report)
 }

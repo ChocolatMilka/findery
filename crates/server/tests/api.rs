@@ -155,6 +155,36 @@ impl Harness {
         self.app = findery_server::app(state);
     }
 
+    /// Rewrites the recipe a catalog records, then restarts the daemon over it.
+    ///
+    /// That is what a catalog built by another model looks like to this one: the
+    /// vectors are the old model's, the daemon serves the new one, and only a
+    /// fresh boot reads the changed recipe.
+    async fn claim_a_foreign_recipe(&mut self, catalog: &str, recipe: &str) {
+        let db = if catalog == findery_core::model::DEFAULT_CATALOG {
+            self.data_dir.path().join("catalog.db")
+        } else {
+            self.data_dir
+                .path()
+                .join("catalogs")
+                .join(catalog)
+                .join("catalog.db")
+        };
+        {
+            let conn = rusqlite::Connection::open(&db).expect("open catalog");
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('embedding_recipe', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = ?1",
+                [recipe],
+            )
+            .expect("rewrite recipe");
+        }
+        let state = findery_server::state_from_config(self.cfg.clone())
+            .await
+            .expect("restart");
+        self.app = findery_server::app(state);
+    }
+
     /// Runs a synchronous sync and returns its report.
     async fn sync(&self, id: &str, extra: Value) -> Value {
         let mut body = json!({ "wait": true });
@@ -730,4 +760,84 @@ async fn an_empty_vector_store_is_rebuilt_instead_of_reported_clean() {
 
     let after = h.stats(&id).await;
     assert_eq!(after["vectors"], before["vectors"], "{after}");
+}
+
+/// A catalog whose vectors belong to another embedding space refuses the write
+/// as well as the read, and stays listable, keyword-searchable and deletable.
+///
+/// The foreign recipe keeps this daemon's dimension on purpose: a width check
+/// cannot see this conflict, so only the recipe comparison catches it.
+#[tokio::test]
+async fn a_catalog_built_by_another_model_refuses_a_sync_but_stays_repairable() {
+    let mut h = harness().await;
+    let (status, created) = h
+        .call("POST", "/v1/catalogs", Some(json!({ "name": "work" })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+
+    let (status, project) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({ "root": h.root(), "catalog": "work" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{project}");
+    assert_eq!(project["catalog"], "work", "{project}");
+    let id = project["id"].as_str().expect("id").to_string();
+
+    h.sync(&id, json!({})).await;
+    assert!(h.stats(&id).await["vectors"].as_u64().expect("vectors") > 0);
+
+    h.claim_a_foreign_recipe("work", "another-model:128").await;
+
+    // The write is refused: two embedding spaces must not share a store. A
+    // full pass is asked for on purpose — an incremental one would find nothing
+    // to do and could refuse for the wrong reason.
+    let (status, body) = h
+        .call(
+            "POST",
+            &format!("/v1/projects/{id}/sync"),
+            Some(json!({ "wait": true, "mode": "full" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["message"].as_str().expect("message");
+    assert!(message.contains("another-model:128"), "{message}");
+    assert!(message.contains("findery catalog rm work"), "{message}");
+
+    // Everything that touches no vector keeps working — that is what makes the
+    // conflict readable and the repair reachable.
+    let (status, hits) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(json!({ "project": id, "query": "retry_with_backoff", "mode": "keyword" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{hits}");
+    assert!(
+        !hits.as_array().expect("hits").is_empty(),
+        "the keyword leg has no vector to compare: {hits}"
+    );
+
+    let (status, catalogs) = h.call("GET", "/v1/catalogs", None).await;
+    assert_eq!(status, StatusCode::OK, "{catalogs}");
+    let work = catalogs
+        .as_array()
+        .expect("catalogs")
+        .iter()
+        .find(|c| c["name"] == "work")
+        .expect("work listed");
+    assert!(
+        work["conflict"]
+            .as_str()
+            .is_some_and(|m| m.contains("another-model:128")),
+        "a conflicted catalog is reported, not hidden: {work}"
+    );
+
+    let (status, removed) = h.call("DELETE", "/v1/catalogs/work", None).await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["removed"], true, "{removed}");
+    assert_eq!(removed["projects"], json!([id]), "{removed}");
 }

@@ -7,6 +7,7 @@
 //! cannot drift.
 
 use super::Indexer;
+use crate::CatalogHandle;
 use findery_core::clock::{now_millis, now_unix};
 use findery_core::ids::{ChunkId, ContentHash};
 use findery_core::model::{Chunk, FileRecord, Lang, Origin, Project, RawChunk, SyncReport};
@@ -28,12 +29,14 @@ pub(super) struct Pending {
 /// Indexes one document supplied by the caller, bypassing the filesystem.
 pub async fn index_inline(
     idx: &Indexer,
+    cat: &CatalogHandle,
     project: &Project,
     rel_path: &str,
     text: &str,
 ) -> Result<SyncReport> {
     ingest(
         idx,
+        cat,
         project,
         vec![(rel_path.to_string(), text.to_string())],
         Origin::Inline,
@@ -49,15 +52,17 @@ pub async fn index_inline(
 /// the throughput actually comes from.
 pub async fn push_documents(
     idx: &Indexer,
+    cat: &CatalogHandle,
     project: &Project,
     documents: Vec<(String, String)>,
 ) -> Result<SyncReport> {
-    ingest(idx, project, documents, Origin::Pushed).await
+    ingest(idx, cat, project, documents, Origin::Pushed).await
 }
 
 /// Shared body of inline and pushed ingestion.
 async fn ingest(
     idx: &Indexer,
+    cat: &CatalogHandle,
     project: &Project,
     documents: Vec<(String, String)>,
     origin: Origin,
@@ -77,11 +82,14 @@ async fn ingest(
     if documents.is_empty() {
         return Ok(report);
     }
-    idx.store
+    // A catalog built by another model must not receive vectors of this one:
+    // the two spaces would share a store and neither would be searchable.
+    cat.ensure_vectors_usable()?;
+    cat.store
         .ensure_project(&project.id, idx.embedder.dim())
         .await?;
 
-    let known = idx.catalog.file_map(&project.id).await?;
+    let known = cat.catalog.file_map(&project.id).await?;
     let mut pending = Vec::with_capacity(documents.len());
     let mut buffered = 0usize;
 
@@ -118,14 +126,14 @@ async fn ingest(
         });
 
         if pending.len() >= FLUSH_FILES || buffered >= FLUSH_CHUNKS {
-            flush(idx, project, std::mem::take(&mut pending), &mut report).await?;
+            flush(idx, cat, project, std::mem::take(&mut pending), &mut report).await?;
             buffered = 0;
         }
     }
     if !pending.is_empty() {
-        flush(idx, project, pending, &mut report).await?;
+        flush(idx, cat, project, pending, &mut report).await?;
     }
-    idx.catalog.touch_sync(&project.id).await?;
+    cat.catalog.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
     Ok(report)
 }
@@ -136,35 +144,35 @@ async fn ingest(
 /// to delete what the daemon walked, nor a hand-added inline document — each
 /// side prunes what it fed, and nothing else.
 pub async fn prune(
-    idx: &Indexer,
+    cat: &CatalogHandle,
     project: &Project,
     keep: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let known = idx.catalog.file_map(&project.id).await?;
+    let known = cat.catalog.file_map(&project.id).await?;
     let mut removed = 0u64;
     for (path, record) in &known {
         if record.origin != Origin::Pushed || keep.contains(path.as_str()) {
             continue;
         }
-        forget_file(idx, project, path).await?;
+        forget_file(cat, project, path).await?;
         removed += 1;
     }
     if removed > 0 {
-        idx.catalog.touch_sync(&project.id).await?;
+        cat.catalog.touch_sync(&project.id).await?;
     }
     Ok(removed)
 }
 
 /// Removes one document: chunks, vectors and file record.
-pub async fn forget_file(idx: &Indexer, project: &Project, rel_path: &str) -> Result<u64> {
-    let removed = idx
+pub async fn forget_file(cat: &CatalogHandle, project: &Project, rel_path: &str) -> Result<u64> {
+    let removed = cat
         .catalog
         .delete_file_chunks(&project.id, rel_path)
         .await?;
     if !removed.is_empty() {
-        idx.store.delete(&project.id, &removed).await?;
+        cat.store.delete(&project.id, &removed).await?;
     }
-    idx.catalog
+    cat.catalog
         .delete_file_record(&project.id, rel_path)
         .await?;
     Ok(removed.len() as u64)
@@ -175,6 +183,7 @@ pub async fn forget_file(idx: &Indexer, project: &Project, rel_path: &str) -> Re
 /// Embeds and writes a batch of files.
 pub(super) async fn flush(
     idx: &Indexer,
+    cat: &CatalogHandle,
     project: &Project,
     pending: Vec<Pending>,
     report: &mut SyncReport,
@@ -182,7 +191,9 @@ pub(super) async fn flush(
     if pending.is_empty() {
         return Ok(());
     }
-    let recipe = idx.recipe();
+    // Only a catalog whose stored recipe is this one reaches here, so the cache
+    // key names the recipe the vectors already in it were built with.
+    let recipe = cat.recipe.clone();
 
     // One cache probe for the whole batch, deduplicated: two identical chunks
     // in two files cost one lookup and, on a miss, one embedding.
@@ -195,7 +206,7 @@ pub(super) async fn flush(
             }
         }
     }
-    let mut vectors = idx.catalog.cached_vectors(&recipe, wanted.clone()).await?;
+    let mut vectors = cat.catalog.cached_vectors(&recipe, wanted.clone()).await?;
     report.embeddings_cached += vectors.len() as u64;
 
     let misses: Vec<&Chunk> = {
@@ -229,7 +240,7 @@ pub(super) async fn flush(
             vectors.insert(chunk.content_hash.to_string(), vector.clone());
             to_cache.push((chunk.content_hash.clone(), vector));
         }
-        idx.catalog.put_cached_vectors(&recipe, to_cache).await?;
+        cat.catalog.put_cached_vectors(&recipe, to_cache).await?;
     }
 
     for file in pending {
@@ -254,16 +265,16 @@ pub(super) async fn flush(
             });
         }
 
-        let orphans = idx
+        let orphans = cat
             .catalog
             .replace_file_chunks(&project.id, &path, file.chunks)
             .await?;
         if !orphans.is_empty() {
-            idx.store.delete(&project.id, &orphans).await?;
+            cat.store.delete(&project.id, &orphans).await?;
             report.chunks_deleted += orphans.len() as u64;
         }
-        idx.store.upsert(&project.id, &records).await?;
-        idx.catalog.put_file(&project.id, &file.record).await?;
+        cat.store.upsert(&project.id, &records).await?;
+        cat.catalog.put_file(&project.id, &file.record).await?;
 
         report.chunks_written += records.len() as u64;
         if file.is_new {

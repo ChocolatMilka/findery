@@ -317,6 +317,7 @@ mod tests {
         cat.put_project(&Project {
             id: id.clone(),
             name: "demo".into(),
+            catalog: cat.name().to_string(),
             spec: ProjectSpec::default(),
             host_root: "C:/demo".into(),
             created_at: 1,
