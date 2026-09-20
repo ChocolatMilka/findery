@@ -37,9 +37,9 @@ disk is indexable** — no mount to declare, no path translation.
 | `findery daemon stop` / `start` | explicit control when you want it |
 | `FINDERY_NO_SPAWN=1` | forbid the automatic start (service manager, container) |
 
-Only a loopback daemon is ever started automatically. A `FINDERY_SERVER_URL`
-pointing elsewhere is someone else's server: failing to reach it is reported,
-never replaced by a local daemon answering from an empty index.
+Only a loopback daemon is ever started automatically. An address pointing
+elsewhere is someone else's server: failing to reach it is reported, never
+replaced by a local daemon answering from an empty index.
 
 ### All-Docker
 
@@ -82,8 +82,46 @@ from one to the other costs a walk and no embedding at all.
 | Catalog + vectors | `$FINDERY_DATA_DIR/catalog.db`, default `%LOCALAPPDATA%/findery` (or `~/.local/share/findery`) | volume `findery_findery-data` |
 | Exports | `$FINDERY_DATA_DIR/exports` | `/data/exports` in that volume |
 
-`finderyd --check` prints the configuration as actually resolved. One
-`catalog.db` holds every project; it is the file worth backing up.
+`finderyd --check` prints the configuration as actually resolved.
+
+### Catalogs — more than one index per daemon
+
+A **catalog** is one SQLite file holding projects, chunks, the vector cache and
+the full-text index. A daemon serves as many as you create, and they are
+completely independent: separate projects, separate vectors, separate files.
+
+| Name | Path |
+|------|------|
+| the default one | `<data_dir>/catalog.db` |
+| any other | `<data_dir>/catalogs/<name>/catalog.db` |
+
+```bash
+findery catalog ls                    # what each holds, its recipe, its path
+findery catalog create work           # an empty one, ready to take projects
+findery catalog rm work --force       # projects and vectors go with it
+```
+
+Which catalog a project belongs to is chosen **once**, at registration:
+
+```bash
+findery init --catalog work
+```
+
+and never named again — every later command follows the project. A project's
+catalog is not a column anywhere: it *is* which file holds its row, which is why
+a project can never end up split across two.
+
+`findery catalog rm` refuses while the catalog still holds projects unless
+`--force` is passed, and it goes through the daemon because the daemon holds the
+file open — on Windows a SQLite file a live process has open cannot be removed
+at all.
+
+**When to reach for one.** Two repositories that should not share a file: a
+work index and a personal one, a client's code and your own. Or a model change:
+a new recipe can go in a new catalog, leaving the old index intact and readable
+until you are ready to move. What it is *not* for is search scoping — one
+catalog holding many projects still searches them together, and `-p <id>` is
+the lever for narrowing that.
 
 ### Settings live in a file, not in your shell
 
@@ -117,6 +155,41 @@ whatever started it — your shell, or the MCP client that launched
 the file, or from the `env` block of `.mcp.json`, never from a shell profile the
 client may never read.
 
+### Naming the daemon without an environment variable
+
+The **daemon's** address (what it binds) and a **client's** address (what it
+dials) are two halves of one deployment, so they live in the same file:
+
+```bash
+findery config set server https://findery.internal.example.com
+findery config set token  <the bearer token it asks for>
+```
+
+`server` is the daemon address; `url` is the embedding endpoint. They are easy to
+confuse and mean different things, which is why each has its own short name
+rather than sharing one.
+
+A client resolves its address in this order, narrowest last:
+
+| Layer | How |
+|---|---|
+| the flag | `--server <url>` / `--token <t>`, on any command |
+| the environment | `FINDERY_SERVER_URL` / `FINDERY_API_TOKEN` |
+| the settings file | `server.url` / `server.api_token` |
+| loopback | `http://127.0.0.1:8077`, when none of the above names one |
+
+The point of the file layer is that on Windows naming a daemon otherwise costs a
+`setx` and a new session, and on any platform it is invisible to a process
+started from a shortcut. `findery config set server …` is a command that
+persists, not an export that dies with the terminal.
+
+One asymmetry worth knowing: **`findery-mcp` takes its address from the `env`
+block of `.mcp.json`**, not from this file. Claude Code launches the bridge
+rather than your shell, and an MCP client's `env` block is its native
+configuration mechanism. Leave the block out for a loopback daemon; add
+`FINDERY_SERVER_URL` to it when the daemon is elsewhere. The default both fall
+back to is the same constant, so an unconfigured pair still meets.
+
 ---
 
 ## 2. Everyday commands
@@ -126,17 +199,18 @@ directory. `-p <id>` overrides it, from anywhere.
 
 ```bash
 cd D:/work/my-project
-findery init                       # register + index
+findery init                       # registers the current directory
+findery sync                       # indexes it
 findery search "where is retry handled"
-findery sync                       # after editing — near-instant
 findery status                     # files, chunks, vectors, model, disk
 findery projects                   # all of them, current one marked *
 ```
 
 | Command | What it does |
 |---------|--------------|
-| `findery init [PATH]` | registers a directory and indexes it. `--id` to name it, `--ext rs,md,toml` to choose extensions, `--no-sync` to register only |
+| `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,toml` to choose extensions, `--catalog <name>` to choose its index, `--sync` to index it immediately |
 | `findery sync` | incremental. `--full` ignores the metadata and hash gates (never the vector cache). `--path src/a.rs` targets files. `--background` returns a job id |
+| `findery catalog ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves. `rm` needs `--force` while one holds projects |
 | `findery watch` | re-syncs on file changes, debounced. `--off` stops it |
 | `findery doc add <path> --stdin` | indexes text with no file behind it — notes, decisions, generated docs |
 | `findery doc rm <path>` | drops one document |
@@ -146,6 +220,10 @@ findery projects                   # all of them, current one marked *
 | `findery jobs [id]` | background sync jobs |
 
 `--json` on any command prints the daemon's answer verbatim, for scripting.
+
+**`init` stops at registration.** Indexing is a separate, deliberate step, so a
+repository can be claimed — and its catalog chosen — before any model is
+reachable. `--sync` collapses the two.
 
 ---
 
@@ -262,9 +340,17 @@ FINDERY_EMBED_BASE_URL=https://api.openai.com   FINDERY_EMBED_API_KEY=sk-…
 ```
 
 Changing model or dimension opens a **new** cache namespace
-(`recipe = "<model>:<dim>"`). The daemon refuses to mix two recipes in one
-catalog and says so at startup: keep the old settings, point `FINDERY_DATA_DIR`
-elsewhere, or delete the catalog and re-index.
+(`recipe = "<model>:<dim>"`). A catalog refuses to mix two recipes, and the
+refusal lands on the operation that would mix them — the sync, never the daemon
+boot. That matters: a catalog built by another model still serves keyword search
+and can still be deleted, and a daemon that refused to start would take both of
+those down, including the `findery catalog rm` the message recommends.
+
+The remedies, in order of how much they cost you: index the project into a
+**new catalog** (`findery init --catalog <name>`, leaving the old index intact
+and readable), point `FINDERY_DATA_DIR` at a fresh directory, or delete the
+catalog and re-index. `findery catalog ls` names the conflict on the catalog
+that carries it.
 
 At boot the daemon sends one throwaway input and compares the returned width to
 `FINDERY_EMBED_DIM`. A mismatch is fatal — half a corpus at the wrong width is
@@ -313,12 +399,19 @@ so the whole project re-embeds.
 ## 8. Multiple projects, multiple clients
 
 One daemon serves every project and every client; the model is loaded once. The
-marginal cost of indexing one more repository is a single `findery init`.
+marginal cost of indexing one more repository is a `findery init` plus a
+`findery sync`.
 
-Point a whole team at a shared daemon with `FINDERY_SERVER_URL`, and set
-`FINDERY_API_TOKEN` on both sides — every request then needs
+Point a whole team at a shared daemon with `findery config set server <url>`,
+and `findery config set token <t>` on both sides — every request then needs
 `Authorization: Bearer …`, except `/healthz` so container health checks keep
 working.
+
+**Catalogs split that sharing when it should be split.** One daemon, one model,
+but several independent indexes: a work index and a personal one never share a
+file, and a client pointed at one cannot search the other. What they do *not* do
+is scope a single search — projects inside one catalog are searched together,
+and `-p <id>` is the lever for that.
 
 `FINDERY_JOB_CONCURRENCY` bounds simultaneous syncs so two clients cannot saturate
 the embedding runtime between them.
@@ -333,7 +426,9 @@ the embedding runtime between them.
 | daemon does not answer | `make up-model` then `findery`; the error prints both lines |
 | every search returns 502 | the embedding runtime is down — `findery health` |
 | sync re-embeds everything | the recipe changed, or mtime is 0 on a mounted volume |
+| a sync is refused, naming two recipes | that catalog was built by another model — `findery catalog ls` names it; index into a new catalog, or `findery catalog rm` it |
 | search finds nothing that exists | not synced, or a filter is too strict — check `findery status` |
+| search returns another project's code | it is in the same catalog — catalogs split indexes, `-p <id>` narrows within one |
 | hits cite unopenable paths | all-Docker mode without the matching `FINDERY_MOUNTS` entry |
 
 `FINDERY_LOG=debug findery` for the full trace. `findery search --json` shows the

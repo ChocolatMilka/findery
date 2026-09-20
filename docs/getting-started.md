@@ -140,9 +140,9 @@ answering and starts `finderyd` in the background:
 No terminal to keep open, no service to install. It writes to
 `<data-dir>/finderyd.log` and stays up until the machine restarts.
 
-Only a **local** daemon starts itself. If `FINDERY_SERVER_URL` points at another
-machine, a failure to reach it is reported, never replaced by a local one
-answering from an empty index.
+Only a **local** daemon starts itself. If the address points at another machine,
+a failure to reach it is reported, never replaced by a local one answering from
+an empty index.
 
 ```bash
 findery doctor        # what is up, what is not, and the command for each
@@ -177,6 +177,19 @@ findery config path                    # the file itself
 `extensions` are short names; anything else takes its full path, such as
 `search.rrf_k` or `embedder.query_instruction`.
 
+`url` is the **embedding endpoint**. The daemon's own address is a different
+setting with its own short name:
+
+```bash
+findery config set server https://findery.internal.example.com
+findery config set token  <the bearer token it asks for>
+```
+
+That is how a client on this machine finds its daemon with nothing in the
+shell. The order is `--server` / `--token`, then `FINDERY_SERVER_URL` /
+`FINDERY_API_TOKEN`, then this file, then loopback — so a machine configured
+once stays configured across terminals and reboots.
+
 Three things it does that a text editor does not:
 
 * **It refuses a value the daemon would reject**, before writing. A typo is
@@ -193,17 +206,41 @@ Three things it does that a text editor does not:
 
 ```bash
 cd <your-project>
-findery init
+findery init          # registers the directory
+findery sync          # indexes it
 ```
 
-That is the whole setup. The project id is derived from the directory name, and
-the daemon reads your real filesystem — no mount to declare, no path to type.
+The project id is derived from the directory name, and the daemon reads your
+real filesystem — no mount to declare, no path to type.
+
+**Registration and indexing are two steps on purpose.** A repository can be
+claimed, and its catalog chosen, before any model is reachable — so the setup
+does not fail because the embedding runtime is not up yet. `findery init --sync`
+does both in one go when you know the model is there.
 
 By default it indexes `.rs` and `.md`. To widen:
 
 ```bash
 findery init --ext rs,md,toml,yml,sql
 ```
+
+### More than one index
+
+A daemon serves several **catalogs**: independent SQLite files, each holding its
+own projects, chunks and vectors. Two repositories that should not share a file
+— a work one and a personal one, say — go in two catalogs, and a client can be
+pointed at either.
+
+```bash
+findery catalog create work
+findery init --catalog work
+findery catalog ls                    # what each holds, and where it lives
+```
+
+The catalog is chosen once, at registration. Every later command follows the
+project, so nobody has to remember which index a directory belongs to.
+`findery catalog rm <name>` removes one along with its projects and vectors; it
+refuses while the catalog still holds projects unless you add `--force`.
 
 ## 6. Search
 
@@ -237,8 +274,7 @@ Create `.mcp.json` at the root of the project you want the agent to search:
 {
   "mcpServers": {
     "findery": {
-      "command": "findery-mcp",
-      "env": { "FINDERY_SERVER_URL": "http://127.0.0.1:8077" }
+      "command": "findery-mcp"
     }
   }
 }
@@ -247,6 +283,14 @@ Create `.mcp.json` at the root of the project you want the agent to search:
 Restart Claude Code and type `/mcp`. You should see `search_code` and seven
 other tools. `search_code` becomes the agent's first move when locating
 anything — instead of a glob, four greps and three file reads.
+
+Claude Code launches the bridge, not your shell, so it takes its daemon address
+from the `env` block of this file rather than from your settings. Add it when
+the daemon is not on loopback:
+
+```json
+      "env": { "FINDERY_SERVER_URL": "https://findery.internal.example.com" }
+```
 
 If `findery-mcp` is not on the PATH Claude Code sees, use its absolute path.
 
@@ -284,6 +328,7 @@ being too large or not UTF-8) and `embeddings_computed` versus
 | `DEGRADED` / every search returns 502 | the model is down — `docker compose logs tei` |
 | search finds nothing that clearly exists | not synced yet, or a filter is too narrow — check `findery status` |
 | sync re-embeds everything | the model or dimension changed, which opens a new cache namespace |
+| a sync is refused, naming two recipes | that catalog holds vectors from another model — `findery catalog ls` names the conflict, and keyword search still works there |
 | first index feels endless | it is the one slow step; `findery jobs` shows progress |
 
 ### Changing a setting

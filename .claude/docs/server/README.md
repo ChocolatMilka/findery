@@ -80,11 +80,18 @@ anyone on the network can stop is not a daemon.
   "id": "axle",                       // optional, otherwise derived from the name
   "extensions": ["rs", "md"],         // optional
   "exclude": ["**/generated/**"],     // optional
+  "catalog": "work",                  // optional; `store.default_catalog` otherwise
   "follow_gitignore": true }
 ```
 
 Idempotent on `id`: re-posting will update the definition without losing
 the index.
+
+`catalog` is read at registration only. It selects which catalog file holds the
+project's row, and the answer is carried back on every later read as
+`Project.catalog` — so a client never has to remember it and cannot disagree
+with the daemon about it. Re-posting with a different `catalog` is refused
+rather than silently moving the project between files.
 
 ### `GET | DELETE /v1/projects/{id}`
 `DELETE` removes the project, its chunks and its vectors → `{"deleted":
@@ -92,6 +99,41 @@ true}`.
 
 ### `GET /v1/projects/{id}/stats`
 Counters, model, backend, last sync, catalog size.
+
+### `GET · POST /v1/catalogs` · `DELETE /v1/catalogs/{name}`
+
+The independent indexes the daemon serves. `GET` lists them with what each
+holds:
+
+```json
+[{ "name": "default", "path": "…/catalog.db", "recipe": "qwen3.7-text-embedding:1024",
+   "conflict": null, "projects": 3, "chunks": 41207, "disk_bytes": 138412032,
+   "is_default": true }]
+```
+
+`conflict` is the repair message when a catalog holds vectors built by another
+model, and `null` when it agrees with the daemon. It is reported here rather
+than raised, so a catalog in conflict is still listed, still deletable, and
+still serving keyword search — see `.claude/docs/embed/README.md`.
+
+`POST` takes `{"name": "work"}` and creates one, or reports the one already
+there. `DELETE` removes it **with its projects and vectors**:
+
+```json
+{ "removed": true, "projects_removed": 2, "projects": ["axle", "smalt"] }
+```
+
+Vectors are dropped before the file is removed: a catalog row with no vectors
+self-heals on the next sync, an orphaned collection does not.
+
+It goes through the daemon because the daemon holds the file open, and a SQLite
+file a live process has open cannot be removed — on Windows the unlink fails
+outright. The daemon drops its handle first, which is the one thing a CLI
+deleting the file directly could not do.
+
+The **default** catalog is refused: `default` is the one every install has, and
+the daemon recreates it at boot, so removing it would be a no-op reporting
+success. Delete its projects instead.
 
 ### `POST /v1/projects/{id}/sync`
 

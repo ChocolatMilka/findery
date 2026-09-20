@@ -102,6 +102,9 @@ Executable proof: `crates/server/tests/api.rs`,
 ## What changes a vector
 
 The cache namespace is `recipe = "<model>:<dim>"`. Changing model or
-dimension opens a **new** space; the daemon refuses to mix two recipes in
-the same catalog and says so at startup. This is deliberate: a corpus half
-embedded at 1024 dims and half at 2560 is silently unsearchable.
+dimension opens a **new** space, and a catalog refuses to mix two recipes —
+at the operation, never at boot. This is deliberate: a corpus half embedded
+at 1024 dims and half at 2560 is silently unsearchable, so the mix has to be
+refused; but refusing it at boot would also take down the keyword search and
+the `catalog rm` that repairs it. Detail:
+[`../embed/README.md`](../embed/README.md).

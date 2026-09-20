@@ -15,7 +15,15 @@ swapping it possible: a config change plus a re-sync.
 
 ## 0. Where it lives
 
-One file, `$FINDERY_DATA_DIR/catalog.db`, holding every project.
+One SQLite file per catalog, and a daemon serves as many as you create.
+
+| Catalog | Path |
+|---|---|
+| the default one | `$FINDERY_DATA_DIR/catalog.db` |
+| any other | `$FINDERY_DATA_DIR/catalogs/<name>/catalog.db` |
+
+`catalog_path` / `catalogs_dir` (`config/sections.rs`) are the only places that
+spell those two layouts, so a caller never assembles one by hand.
 
 | | Native daemon *(default)* | All-Docker |
 |---|---|---|
@@ -25,6 +33,12 @@ One file, `$FINDERY_DATA_DIR/catalog.db`, holding every project.
 
 `finderyd --check` prints the resolved paths. `export_dir` follows
 `data_dir` unless it was pinned explicitly.
+
+A project's catalog is **not a column** — it is which file holds its row. The
+name is stamped onto `Project.catalog` when the row is read, so there is no
+second place a project's index could be recorded and no way for the two to
+disagree. That is also what makes `findery catalog rm` a single file deletion
+rather than a cascade.
 
 Measured footprint: **~10.7 kB per chunk at 1024 dims**, so ~535 MB for a
 500k-line codebase. Note that with the `sqlite` backend each vector is stored

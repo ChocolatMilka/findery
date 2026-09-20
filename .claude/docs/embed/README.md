@@ -114,14 +114,34 @@ recipe = "<model>:<dim>"
 ```
 
 This is the vector cache's namespace. Changing model or dimension opens a
-**new** space, and the daemon refuses to mix two recipes in the same
-catalog:
+**new** space, and a catalog refuses to mix two recipes:
 
 ```
-this catalog was built with embedding recipe `qwen3.7-text-embedding:1024`
-but the daemon now offers `text-embedding-3-large:3072`; keep the old settings,
-point FINDERY_DATA_DIR at a fresh directory, or delete the catalog to re-index
+catalog `default` holds vectors built with `qwen3.7-text-embedding:1024`, but
+this daemon serves `text-embedding-3-large:3072`; re-index it — `findery catalog
+rm default` then `findery init --catalog default` — or start the daemon with the
+embedder settings it was built with
 ```
+
+**The refusal lands on the operation, never on the boot.** A catalog whose
+recipe disagrees is opened anyway; `CatalogHandle::conflicted` records the
+disagreement and `ensure_vectors_usable` raises it at every operation that would
+mix two vector spaces — the vector leg of a search, and each of the three write
+entry points: `sync::run`, `index_inline` and `push_documents`. Everything that
+touches no vector keeps working: keyword search, project listing, `findery
+catalog ls` (which prints the conflict), and `findery catalog rm`.
+
+INTENT: refusing at boot removed the very door the message recommends. The
+daemon never came up, so the `rm` the user was told to run could not run, and
+one stale catalog took the whole index — including the BM25 leg that was still
+perfectly good — down with it.
+
+The write half matters as much as the read half, and the store's own width check
+cannot cover it: `SqliteVectorStore::warm` compares dimensions, so it sees a
+`1024`-dim corpus meeting a `2560`-dim embedder, but it is blind to two models
+that happen to share a width. Only the recipe comparison catches that one, and
+it has to be asked before the first write — a sync that reaches `flush` has
+already put the new space's vectors beside the old ones.
 
 ## Throughput, batching, retries
 

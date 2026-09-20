@@ -33,6 +33,12 @@ SQLite file.
 chunks, vectors, the cache) and `finderyd.log`. Deleting it is a full reset and
 costs one re-index.
 
+A daemon can serve several catalogs. The default one is `catalog.db` at the root
+of the data directory; every other name lives at `catalogs/<name>/catalog.db`.
+They are independent — separate files, separate projects, separate vectors —
+which is what lets you keep a team's code out of a personal index without
+running a second daemon. `findery catalog ls` prints each one and its path.
+
 ---
 
 ## The one decision you have to make
@@ -69,13 +75,19 @@ is the usual answer for a team: one thing to operate, and it is stateless.
 
 ### C. One shared daemon
 
-Everyone points `FINDERY_SERVER_URL` at a central `finderyd`. One index for the
-whole team, one machine to operate.
+Everyone points at a central `finderyd`. One index for the whole team, one
+machine to operate.
 
 ```bash
-export FINDERY_SERVER_URL=https://findery.internal.example.com
-export FINDERY_API_TOKEN=...
+findery config set server https://findery.internal.example.com
+findery config set token  <the bearer token it asks for>
 ```
+
+Those write to the settings file, so they survive the terminal, the reboot and
+the next person who opens a different shell. `FINDERY_SERVER_URL` and
+`FINDERY_API_TOKEN` still win over them — that is what lets one container image
+serve every deployment — and `findery config set` warns when a variable is
+masking what it just wrote.
 
 The daemon on another machine cannot read anyone's disk, so clients walk and
 push their own files — which is exactly how findery already works whenever the
@@ -140,15 +152,22 @@ variable is masking what it just wrote.
 cd their-project
 findery init
 # (started the daemon in the background)
-# indexing `their-project` at /home/x/their-project
-# incremental in 21 s — scanned 78 · +78 · chunks +1165 · 1165 embeddings computed
-#
-# ready — try: findery search "<your question>"
+# registered `their-project` at /home/x/their-project (catalog default)
+# run `findery sync` when you are ready to index it
+
+findery sync
+# incremental in 21 s — scanned 78 · unchanged 0 · +78 ~0 -0 · chunks +1165 -0 ·
+#   embeddings 1165 computed / 0 cached
 
 findery search "where do we validate an invoice"
 ```
 
-Two commands, and one of them is a search. That is the whole onboarding.
+Three commands, and the last one is a search. That is the whole onboarding.
+
+`init` stops at registration on purpose: a repository can be claimed, and its
+catalog chosen, before any model is reachable — so the onboarding does not stall
+on an embedding runtime that is not up yet. `findery init --sync` collapses the
+two when you know it is.
 
 ### Claude Code
 
@@ -182,7 +201,8 @@ FAIL model        qwen3.7-text-embedding (1024 dims) · store sqlite — connect
        → start your embedding runtime (LM Studio, Ollama, `make up-model`),
        → then check FINDERY_EMBED_BASE_URL and FINDERY_EMBED_MODEL
 OK   here         `their-project` covers this directory (3 project(s) indexed)
-OK   storage      /home/x/.local/share/findery/catalog.db
+OK   catalogs     default (3 project(s))
+OK   storage      /home/x/.local/share/findery
 OK   daemon log   /home/x/.local/share/findery/finderyd.log
 
 1 problem(s) above, each with its fix.
@@ -196,6 +216,12 @@ deliberate. A daemon that refused to boot without its model would take the
 diagnostic down with it at the exact moment it is needed. Instead it starts,
 reports the model as unreachable, and fails only the commands that need a
 vector.
+
+The `catalogs` line is where a recipe conflict surfaces — a catalog holding
+vectors built by a different model than the one now configured. It is reported
+here with its repair rather than raised at boot, because refusing to start would
+take the whole index down over one catalog, including the keyword search that
+still works and the `findery catalog rm` that fixes it.
 
 | What the user says | What it is |
 |---|---|
@@ -248,9 +274,16 @@ Replace the binaries and run `findery daemon stop`. The next command starts the
 new one.
 
 The index survives an upgrade. It does **not** survive changing the embedding
-model or its dimension — the catalog records the recipe it was built with and
+model or its dimension — a catalog records the recipe it was built with and
 refuses to mix two vector spaces, which is the correct answer but means a
 re-index. Plan model changes the way you would plan a schema migration.
+
+The refusal lands on the operation that would mix them, never on the daemon
+boot: a catalog built by another model still serves keyword search and can still
+be deleted, and taking the whole daemon down over one catalog would remove both
+of those — including the `findery catalog rm` the message recommends. A new
+model can also simply go in a **new catalog**, leaving the old index intact and
+readable until you are ready to move.
 
 ---
 

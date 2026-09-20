@@ -20,15 +20,28 @@ all of them:
 {
   "mcpServers": {
     "findery": {
-      "command": "C:/Users/users/RustroverProjects/findery/target/release/findery-mcp",
-      "env": {
-        "FINDERY_SERVER_URL": "http://127.0.0.1:8077",
-        "FINDERY_API_TOKEN": ""
-      }
+      "command": "C:/Users/users/RustroverProjects/findery/target/release/findery-mcp"
     }
   }
 }
 ```
+
+Add an `env` block only when the daemon is not on loopback:
+
+```json
+      "env": {
+        "FINDERY_SERVER_URL": "https://findery.internal.example.com",
+        "FINDERY_API_TOKEN": "<the bearer token it asks for>"
+      }
+```
+
+INTENT: Claude Code launches this process, not a shell, so the `env` block of
+`.mcp.json` is the bridge's configuration file — it is where an MCP server is
+configured, not a workaround for a missing one. The default it falls back to is
+`findery_core::config::DEFAULT_SERVER_URL`, the same constant the CLI reads out
+of the settings file, so an unconfigured pair still meets on loopback. Note the
+asymmetry: `findery config set server …` names the daemon for the **CLI**, not
+for this bridge. Point both when the daemon is remote.
 
 ### Or through Docker, with nothing to install
 

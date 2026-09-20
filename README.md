@@ -44,13 +44,18 @@ Then, in **any project, on any disk**:
 
 ```bash
 cd D:/work/my-project
-findery init                              # indexes the current directory
+findery init                              # registers the current directory
+findery sync                              # indexes it
 findery search "where is retry handled"   # the project is inferred from the directory
 ```
 
-That's it. No path to type, no mount to declare, **and no daemon to start** —
-the first command notices nothing is listening and starts `finderyd` in the
-background. Nothing to keep open.
+No path to type, no mount to declare, **and no daemon to start** — the first
+command notices nothing is listening and starts `finderyd` in the background.
+Nothing to keep open.
+
+`init` and `sync` are two steps on purpose: a repository can be registered and
+its catalog chosen **before** any model is reachable. `findery init --sync`
+does both in one go when you are ready.
 
 Run `findery doctor` whenever something looks wrong: it names what is missing
 and the command that fixes it.
@@ -61,6 +66,7 @@ findery status          # files, chunks, vectors
 findery sync            # after coding — near instant
 findery watch           # or let it resync on its own
 findery search -p axle "retry"    # target another project from anywhere
+findery catalog ls      # the independent indexes this daemon serves
 ```
 
 ### The two ways to run this
@@ -81,8 +87,39 @@ Docker is the model.
 
 The all-Docker mode needs no mounts either: when the daemon cannot see a
 directory, the CLI reads it and sends the contents. That is also what lets the
-daemon live on **another machine** — point `FINDERY_SERVER_URL` at it and index
+daemon live on **another machine** — `findery config set server <url>` and index
 normally.
+
+### Naming a daemon
+
+The address lives in the same settings file as everything else, so a client
+finds its daemon without an environment variable:
+
+```bash
+findery config set server https://findery.internal.example.com
+findery config set token  <the bearer token it asks for>
+```
+
+Precedence, narrowest last: `--server` / `--token`, then `FINDERY_SERVER_URL` /
+`FINDERY_API_TOKEN`, then the settings file, then loopback. The environment
+stays on top so one container image can serve every deployment; `findery config
+set` warns when a variable is masking what it just wrote.
+
+### More than one index
+
+A daemon can serve several **catalogs** — independent SQLite files, each with
+its own projects and vectors. Useful when a work repository and a personal one
+should not share a file, or when a client must not search another team's code.
+
+```bash
+findery catalog create work
+findery init --catalog work          # this project lives in `work`
+findery catalog ls                   # what each one holds, and its path
+findery catalog rm work --force      # projects and vectors go with it
+```
+
+The catalog is chosen once, at registration: every later command follows the
+project, so nobody has to remember which index a directory belongs to.
 
 ## Plugging into Claude Code
 
@@ -92,8 +129,7 @@ normally.
 {
   "mcpServers": {
     "findery": {
-      "command": "C:/Users/users/RustroverProjects/findery/target/release/findery-mcp",
-      "env": { "FINDERY_SERVER_URL": "http://127.0.0.1:8077" }
+      "command": "C:/Users/users/RustroverProjects/findery/target/release/findery-mcp"
     }
   }
 }
@@ -101,6 +137,11 @@ normally.
 
 Eight tools appear, including `search_code`, which becomes the agent's first
 reflex for locating code — in place of `glob` + `grep` + three `Read`.
+
+The bridge is launched by Claude Code rather than by your shell, so it takes its
+daemon address from the `env` block of this file — add
+`"env": { "FINDERY_SERVER_URL": "https://findery.internal.example.com" }` when
+the daemon is not on loopback. Leave it out for a local one.
 
 Details and the Docker variant: [`.claude/docs/mcp/README.md`](.claude/docs/mcp/README.md).
 
