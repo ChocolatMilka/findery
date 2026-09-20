@@ -2,19 +2,24 @@
 //!
 //! INTENT: this module parses and validates but never reads a file — the
 //! binaries own the filesystem. `from_toml_str` + `apply_env` keeps L0 pure and
-//! keeps the whole configuration surface testable without a tempdir.
+//! keeps the whole configuration surface testable without a tempdir. The
+//! overlay itself lives in [`env`], where one table names every variable and
+//! the setting it overrides.
 
+mod env;
 mod sections;
 
+pub use env::{ENV_OVERRIDES, EnvOverride, env_var_for};
 pub use sections::{
-    ChunkConfig, EmbedderBackend, EmbedderConfig, ProjectDefaults, QdrantConfig, SearchConfig,
-    ServerConfig, StoreBackend, StoreConfig, data_dir_from_env, default_data_dir, user_config_path,
+    ChunkConfig, DEFAULT_SERVER_URL, EmbedderBackend, EmbedderConfig, ProjectDefaults,
+    QdrantConfig, SearchConfig, ServerConfig, StoreBackend, StoreConfig, catalog_path,
+    catalogs_dir, data_dir_from_env, default_data_dir, user_config_path,
 };
 
+use crate::model::is_catalog_name;
 use crate::path_map::{Mount, PathMapper};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// Root configuration of the daemon.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -36,130 +41,6 @@ impl Config {
     /// deliberately a working single-node setup.
     pub fn from_toml_str(src: &str) -> Result<Self> {
         toml::from_str(src).map_err(|e| Error::Config(format!("invalid TOML: {e}")))
-    }
-
-    /// Overlays `FINDERY_*` environment variables onto the parsed configuration.
-    ///
-    /// Docker Compose sets these; they must win over the baked-in file so one
-    /// image can serve every deployment shape.
-    pub fn apply_env(&mut self) -> Result<()> {
-        self.apply_env_with(|k| std::env::var(k).ok())
-    }
-
-    /// Same as [`Config::apply_env`] with an injected lookup, for tests.
-    pub fn apply_env_with(&mut self, get: impl Fn(&str) -> Option<String>) -> Result<()> {
-        if let Some(v) = get("FINDERY_BIND") {
-            self.server.bind = v;
-        }
-        if let Some(v) = get("FINDERY_API_TOKEN") {
-            self.server.api_token = if v.is_empty() { None } else { Some(v) };
-        }
-        if let Some(v) = get("FINDERY_JOB_CONCURRENCY") {
-            self.server.job_concurrency = parse_num("FINDERY_JOB_CONCURRENCY", &v)?;
-        }
-
-        if let Some(v) = get("FINDERY_EMBED_BACKEND") {
-            self.embedder.backend = EmbedderBackend::parse(&v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_BASE_URL") {
-            self.embedder.base_url = v;
-        }
-        if let Some(v) = get("FINDERY_EMBED_MODEL") {
-            self.embedder.model = v;
-        }
-        if let Some(v) = get("FINDERY_EMBED_API_KEY") {
-            self.embedder.api_key = if v.is_empty() { None } else { Some(v) };
-        }
-        if let Some(v) = get("FINDERY_EMBED_DIM") {
-            self.embedder.dim = parse_num("FINDERY_EMBED_DIM", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_BATCH_SIZE") {
-            self.embedder.batch_size = parse_num("FINDERY_EMBED_BATCH_SIZE", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_CONCURRENCY") {
-            self.embedder.concurrency = parse_num("FINDERY_EMBED_CONCURRENCY", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_TIMEOUT_SECS") {
-            self.embedder.timeout_secs = parse_num("FINDERY_EMBED_TIMEOUT_SECS", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_QUERY_INSTRUCTION") {
-            self.embedder.query_instruction = v;
-        }
-        if let Some(v) = get("FINDERY_EMBED_PATH") {
-            self.embedder.path = v;
-        }
-        if let Some(v) = get("FINDERY_EMBED_AUTH_HEADER") {
-            self.embedder.auth_header = v;
-        }
-        if let Some(v) = get("FINDERY_EMBED_AUTH_PREFIX") {
-            self.embedder.auth_prefix = v;
-        }
-        if let Some(v) = get("FINDERY_EMBED_HEADERS") {
-            self.embedder.extra_headers = parse_headers(&v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_SEND_DIMENSIONS") {
-            self.embedder.send_dimensions = parse_bool("FINDERY_EMBED_SEND_DIMENSIONS", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_VERIFY_DIM") {
-            self.embedder.verify_dim = parse_bool("FINDERY_EMBED_VERIFY_DIM", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_MAX_RETRIES") {
-            self.embedder.max_retries = parse_num("FINDERY_EMBED_MAX_RETRIES", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EMBED_NORMALIZE") {
-            self.embedder.normalize = parse_bool("FINDERY_EMBED_NORMALIZE", &v)?;
-        }
-
-        if let Some(v) = get("FINDERY_STORE_BACKEND") {
-            self.store.backend = StoreBackend::parse(&v)?;
-        }
-        if let Some(v) = get("FINDERY_DATA_DIR") {
-            // Keep exports next to the catalog unless they were pinned too,
-            // otherwise moving the data directory strands them at the default.
-            let moved_default = self.store.export_dir == format!("{}/exports", self.store.data_dir);
-            self.store.data_dir = v;
-            if moved_default {
-                self.store.export_dir = format!("{}/exports", self.store.data_dir);
-            }
-        }
-        if let Some(v) = get("FINDERY_EXPORT_DIR") {
-            self.store.export_dir = v;
-        }
-        if let Some(v) = get("FINDERY_QDRANT_URL") {
-            self.store.qdrant.url = v;
-        }
-        if let Some(v) = get("FINDERY_QDRANT_API_KEY") {
-            self.store.qdrant.api_key = if v.is_empty() { None } else { Some(v) };
-        }
-        if let Some(v) = get("FINDERY_QDRANT_COLLECTION_PREFIX") {
-            self.store.qdrant.collection_prefix = v;
-        }
-
-        if let Some(v) = get("FINDERY_CHUNK_MAX_CHARS") {
-            self.chunk.max_chars = parse_num("FINDERY_CHUNK_MAX_CHARS", &v)?;
-        }
-        if let Some(v) = get("FINDERY_CHUNK_MIN_CHARS") {
-            self.chunk.min_chars = parse_num("FINDERY_CHUNK_MIN_CHARS", &v)?;
-        }
-        if let Some(v) = get("FINDERY_CHUNK_OVERLAP_CHARS") {
-            self.chunk.overlap_chars = parse_num("FINDERY_CHUNK_OVERLAP_CHARS", &v)?;
-        }
-
-        if let Some(v) = get("FINDERY_INCLUDE_HIDDEN") {
-            self.project_defaults.include_hidden = parse_bool("FINDERY_INCLUDE_HIDDEN", &v)?;
-        }
-        if let Some(v) = get("FINDERY_EXTENSIONS") {
-            self.project_defaults.extensions = v
-                .split(',')
-                .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
-                .filter(|e| !e.is_empty())
-                .collect();
-        }
-
-        if let Some(v) = get("FINDERY_MOUNTS") {
-            self.mounts = parse_mounts(&v)?;
-        }
-        Ok(())
     }
 
     /// Rejects configurations that would fail later, at a point where the
@@ -197,6 +78,13 @@ impl Config {
                 "store.qdrant.url is required for the qdrant backend".into(),
             ));
         }
+        if !is_catalog_name(&self.store.default_catalog) {
+            return Err(Error::Config(format!(
+                "store.default_catalog: `{}` is not a catalog name (letters, digits, `-`, `_`, \
+                 `.`; must start with a letter or digit; at most 64 characters)",
+                self.store.default_catalog
+            )));
+        }
         Ok(())
     }
 
@@ -209,61 +97,6 @@ impl Config {
     pub fn embedding_recipe(&self) -> String {
         format!("{}:{}", self.embedder.model, self.embedder.dim)
     }
-}
-
-// ---------------------------------------------------------------------------
-
-fn parse_num<T: std::str::FromStr>(key: &str, raw: &str) -> Result<T> {
-    raw.trim()
-        .parse::<T>()
-        .map_err(|_| Error::Config(format!("{key}: `{raw}` is not a valid number")))
-}
-
-fn parse_bool(key: &str, raw: &str) -> Result<bool> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(true),
-        "0" | "false" | "no" | "off" => Ok(false),
-        other => Err(Error::Config(format!("{key}: `{other}` is not a boolean"))),
-    }
-}
-
-/// Parses `FINDERY_EMBED_HEADERS`, formatted as `Name: value[;Name: value]*`.
-fn parse_headers(raw: &str) -> Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
-    for entry in raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-        let (name, value) = entry.split_once(':').ok_or_else(|| {
-            Error::Config(format!(
-                "FINDERY_EMBED_HEADERS: `{entry}` is not `Name: value`"
-            ))
-        })?;
-        if name.trim().is_empty() {
-            return Err(Error::Config(format!(
-                "FINDERY_EMBED_HEADERS: `{entry}` has an empty name"
-            )));
-        }
-        out.insert(name.trim().to_string(), value.trim().to_string());
-    }
-    Ok(out)
-}
-
-/// Parses `FINDERY_MOUNTS`, formatted as `host=container[;host=container]*`.
-fn parse_mounts(raw: &str) -> Result<Vec<Mount>> {
-    let mut out = Vec::new();
-    for entry in raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-        let (host, container) = entry.split_once('=').ok_or_else(|| {
-            Error::Config(format!("FINDERY_MOUNTS: `{entry}` is not `host=container`"))
-        })?;
-        if host.trim().is_empty() || container.trim().is_empty() {
-            return Err(Error::Config(format!(
-                "FINDERY_MOUNTS: `{entry}` has an empty side"
-            )));
-        }
-        out.push(Mount {
-            host: host.trim().into(),
-            container: container.trim().into(),
-        });
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -331,9 +164,18 @@ mod tests {
 
     #[test]
     fn mounts_parse_and_translate() {
-        let mounts = parse_mounts("C:/Users/me=/workspaces; D:/x=/workspaces/x").expect("parse");
-        assert_eq!(mounts.len(), 2);
-        assert!(parse_mounts("nope").is_err());
+        let mut cfg = Config::default();
+        cfg.apply_env_with(|k| {
+            (k == "FINDERY_MOUNTS").then(|| "C:/Users/me=/workspaces; D:/x=/workspaces/x".into())
+        })
+        .expect("parse");
+        assert_eq!(cfg.mounts.len(), 2);
+
+        let mut bad = Config::default();
+        assert!(
+            bad.apply_env_with(|k| (k == "FINDERY_MOUNTS").then(|| "nope".to_string()))
+                .is_err()
+        );
     }
 
     #[test]

@@ -9,12 +9,29 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Where a client reaches the daemon when nothing tells it otherwise.
+///
+/// INTENT: the address a client dials and the address the daemon binds are two
+/// halves of one deployment, so they live in one file and neither needs an
+/// environment variable to be named. Loopback, because the documented setup runs
+/// the daemon natively; a remote daemon is a `server.url` away.
+pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8077";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     /// `host:port` the HTTP API binds to.
     pub bind: String,
+    /// Address a client dials to reach this daemon.
+    ///
+    /// The daemon itself ignores it: it is the setting that lets `findery` on
+    /// this machine — and the MCP bridge configured alongside it — find the
+    /// daemon without `FINDERY_SERVER_URL` in every shell.
+    pub url: String,
     /// When set, every request must carry `Authorization: Bearer <token>`.
+    ///
+    /// A client reads the same value as its bearer token: one file names the
+    /// daemon and the secret it asks for.
     pub api_token: Option<String>,
     /// Maximum accepted request body.
     pub max_body_bytes: usize,
@@ -28,6 +45,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             bind: "0.0.0.0:8077".into(),
+            url: DEFAULT_SERVER_URL.into(),
             api_token: None,
             max_body_bytes: 32 * 1024 * 1024,
             job_concurrency: 2,
@@ -189,10 +207,15 @@ crate::serde_via_parse!(StoreBackend, result);
 #[serde(default, deny_unknown_fields)]
 pub struct StoreConfig {
     pub backend: StoreBackend,
-    /// Directory holding `catalog.db` and its WAL.
+    /// Directory holding the catalogs and their WAL.
     pub data_dir: String,
     /// Directory `POST /v1/export` writes into.
     pub export_dir: String,
+    /// Catalog a project joins when `init` names none.
+    ///
+    /// INTENT: the default is the catalog every install already has, so a
+    /// single-catalog user never learns the concept exists.
+    pub default_catalog: String,
     pub qdrant: QdrantConfig,
 }
 
@@ -203,8 +226,28 @@ impl Default for StoreConfig {
             backend: StoreBackend::Sqlite,
             export_dir: format!("{data_dir}/exports"),
             data_dir,
+            default_catalog: crate::model::DEFAULT_CATALOG.to_string(),
             qdrant: QdrantConfig::default(),
         }
+    }
+}
+
+/// Directory holding every catalog but the default one.
+pub fn catalogs_dir(data_dir: &str) -> String {
+    format!("{}/catalogs", data_dir.trim_end_matches('/'))
+}
+
+/// Path of one catalog's database file.
+///
+/// INTENT: the default catalog keeps the flat `catalog.db` path it has always
+/// had, so an existing install is not migrated by this feature and a single
+/// catalog never grows a directory level. Named catalogs live one level down,
+/// where their name is the directory and nothing else may be.
+pub fn catalog_path(data_dir: &str, name: &str) -> String {
+    if name == crate::model::DEFAULT_CATALOG {
+        format!("{}/catalog.db", data_dir.trim_end_matches('/'))
+    } else {
+        format!("{}/{name}/catalog.db", catalogs_dir(data_dir))
     }
 }
 
@@ -227,17 +270,6 @@ pub fn default_data_dir() -> String {
         .unwrap_or_else(|| "./.findery".to_string())
 }
 
-/// Where the catalog lives for a process that has not loaded a configuration.
-///
-/// INTENT: clients need to *name* the data directory — in a diagnostic, in an
-/// error pointing at the daemon's log — without opening it. Reading
-/// `FINDERY_DATA_DIR` here is what keeps those messages pointing at the
-/// directory the daemon will actually use; [`default_data_dir`] alone would
-/// send the reader to a file that does not exist.
-///
-/// It is deliberately not the whole overlay: a configuration *file* can also
-/// move the data directory, and only the daemon reads that. Clients that need
-/// certainty ask the daemon.
 /// The configuration file a user owns, next to their catalog.
 ///
 /// INTENT: settings had only two homes, and neither belonged to the user. A
@@ -253,6 +285,17 @@ pub fn user_config_path() -> String {
     format!("{}/config.toml", data_dir_from_env())
 }
 
+/// Where the catalog lives for a process that has not loaded a configuration.
+///
+/// INTENT: clients need to *name* the data directory — in a diagnostic, in an
+/// error pointing at the daemon's log — without opening it. Reading
+/// `FINDERY_DATA_DIR` here is what keeps those messages pointing at the
+/// directory the daemon will actually use; [`default_data_dir`] alone would
+/// send the reader to a file that does not exist.
+///
+/// It is deliberately not the whole overlay: a configuration *file* can also
+/// move the data directory, and only the daemon reads that. Clients that need
+/// certainty ask the daemon.
 pub fn data_dir_from_env() -> String {
     std::env::var("FINDERY_DATA_DIR")
         .ok()

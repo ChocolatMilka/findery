@@ -11,7 +11,13 @@
 
 [server]
 bind = "0.0.0.0:8077"
+# Address a client dials to reach this daemon — `findery`, the MCP bridge, the
+# Rust client. The daemon itself ignores it, which is what lets a client on this
+# machine find the daemon without FINDERY_SERVER_URL in every shell.
+# Point it at another host to share one index with a team.
+url = "http://127.0.0.1:8077"
 # Uncomment to require `Authorization: Bearer <token>` on everything but /healthz.
+# A client reads the same value as its bearer token.
 # api_token = "change-me"
 max_body_bytes = 33554432
 # Concurrent sync jobs. More than the embedding runtime can feed just queues.

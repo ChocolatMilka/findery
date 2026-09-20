@@ -24,9 +24,9 @@
 pub mod daemon;
 
 use findery_core::api::{
-    AddDocument, Deleted, ErrorBody, ExportReport, ExportRequest, HealthReport, Job, PruneRequest,
-    PushDocuments, RegisterProject, Removed, Stopping, SyncRequest, SyncResponse, WatchRequest,
-    Watching,
+    AddDocument, CatalogInfo, CatalogRemoved, CreateCatalog, Deleted, ErrorBody, ExportReport,
+    ExportRequest, HealthReport, Job, PruneRequest, PushDocuments, RegisterProject, Removed,
+    Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
@@ -36,7 +36,11 @@ use serde::de::DeserializeOwned;
 use std::time::Duration;
 
 /// Default daemon address, matching the bundled Docker Compose stack.
-pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8077";
+///
+/// Re-exported from the configuration vocabulary rather than spelled again: the
+/// CLI reads the same default out of a settings file, and two literals would let
+/// `findery config show` disagree with what an unconfigured client dials.
+pub const DEFAULT_BASE_URL: &str = findery_core::config::DEFAULT_SERVER_URL;
 
 /// HTTP client for one daemon.
 #[derive(Clone)]
@@ -97,6 +101,40 @@ impl Client {
 
     pub fn base_url(&self) -> &str {
         &self.base
+    }
+
+    // -- catalogs -----------------------------------------------------------
+
+    /// Every catalog the daemon has open.
+    pub async fn list_catalogs(&self) -> Result<Vec<CatalogInfo>> {
+        self.send::<(), _>(reqwest::Method::GET, "/v1/catalogs", None)
+            .await
+    }
+
+    /// Creates a catalog, or reports the one that is already there.
+    pub async fn create_catalog(&self, name: &str) -> Result<CatalogInfo> {
+        self.send(
+            reqwest::Method::POST,
+            "/v1/catalogs",
+            Some(&CreateCatalog {
+                name: name.to_string(),
+            }),
+        )
+        .await
+    }
+
+    /// Deletes a catalog, its projects and their vectors.
+    ///
+    /// It goes through the daemon because the daemon is the only process that
+    /// knows every handle on the file, and a catalog still open cannot be
+    /// removed at all.
+    pub async fn delete_catalog(&self, name: &str) -> Result<CatalogRemoved> {
+        self.send::<(), _>(
+            reqwest::Method::DELETE,
+            &format!("/v1/catalogs/{name}"),
+            None,
+        )
+        .await
     }
 
     // -- projects -----------------------------------------------------------

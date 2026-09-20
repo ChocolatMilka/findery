@@ -40,6 +40,12 @@ pub struct RegisterProject {
     pub push: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_bytes: Option<u64>,
+    /// Catalog to hold this project, or the configured default.
+    ///
+    /// Chosen once, at registration: every later command follows the project,
+    /// so nobody has to remember which index a directory belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
 }
 
 impl RegisterProject {
@@ -50,6 +56,48 @@ impl RegisterProject {
             ..Self::default()
         }
     }
+}
+
+/// One catalog, as `GET /v1/catalogs` reports it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CatalogInfo {
+    pub name: String,
+    /// Absolute path of the database file.
+    pub path: String,
+    /// The recipe this catalog was built with; `None` while it holds no vectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<String>,
+    /// Why this catalog cannot serve a vector query, when it cannot.
+    ///
+    /// INTENT: a recipe mismatch is reported here rather than raised at boot,
+    /// so the daemon that owns the catalog stays up and can still delete it —
+    /// a conflict you can read about and repair, not a conflict that locks the
+    /// door you would repair it through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
+    pub projects: u64,
+    pub chunks: u64,
+    pub disk_bytes: u64,
+    /// True when a project registering without naming one lands here.
+    pub is_default: bool,
+}
+
+/// `POST /v1/catalogs` — create a catalog.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CreateCatalog {
+    pub name: String,
+}
+
+/// `DELETE /v1/catalogs/{name}` — what the removal swept away.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CatalogRemoved {
+    pub removed: bool,
+    /// Projects that were registered in it, and went with it.
+    pub projects_removed: u64,
+    /// Their ids, so a caller holding per-project state — a watch, a job — can
+    /// let go of it.
+    #[serde(default)]
+    pub projects: Vec<String>,
 }
 
 /// `GET /v1/health` — liveness of the daemon and of what it depends on.
