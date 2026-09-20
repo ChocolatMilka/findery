@@ -92,7 +92,11 @@ async fn collect(client: &Client) -> Vec<Check> {
         let fix = if daemon::is_loopback(&url) {
             "findery daemon start   (or just run any command — it starts itself)".to_string()
         } else {
-            format!("check the server at {url}, or unset FINDERY_SERVER_URL to use a local one")
+            format!(
+                "check the server at {url}; to use a local one instead, \
+                 `findery config set server http://127.0.0.1:8077` (or unset \
+                 FINDERY_SERVER_URL)"
+            )
         };
         checks.push(Check::bad(
             "daemon",
@@ -169,9 +173,35 @@ async fn collect(client: &Client) -> Vec<Check> {
         Err(e) => checks.push(Check::bad("here", e.to_string(), "see the daemon log")),
     }
 
-    // 4. Where the data lives, so nobody has to guess.
+    // 4. The catalogs: how many, and whether any of them holds vectors this
+    // daemon cannot compare. A conflict is reported, not raised, so it belongs
+    // in a diagnostic rather than in a boot failure.
+    match client.list_catalogs().await {
+        Ok(catalogs) => {
+            let summary = if catalogs.is_empty() {
+                "none open".to_string()
+            } else {
+                catalogs
+                    .iter()
+                    .map(|c| format!("{} ({} project(s))", c.name, c.projects))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let conflicts: Vec<String> =
+                catalogs.iter().filter_map(|c| c.conflict.clone()).collect();
+            if conflicts.is_empty() {
+                checks.push(Check::good("catalogs", summary));
+            } else {
+                checks.push(Check::bad("catalogs", summary, conflicts.join("\n")));
+            }
+        }
+        Err(e) => checks.push(Check::bad("catalogs", e.to_string(), "see the daemon log")),
+    }
+
+    // 5. Where the data lives, so nobody has to guess. The catalog files
+    // themselves are named by `findery catalog ls`.
     let data_dir = findery_core::config::data_dir_from_env();
-    checks.push(Check::good("storage", format!("{data_dir}/catalog.db")));
+    checks.push(Check::good("storage", data_dir));
     checks.push(Check::good("daemon log", daemon::log_path()));
 
     checks

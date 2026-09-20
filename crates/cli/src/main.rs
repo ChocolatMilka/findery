@@ -27,11 +27,13 @@ use clap::{Parser, Subcommand};
                   directory is used. Start with `findery init` inside a repository."
 )]
 pub(crate) struct Cli {
-    /// Daemon address.
-    #[arg(long, env = "FINDERY_SERVER_URL", default_value = findery_client::DEFAULT_BASE_URL, global = true)]
-    pub(crate) server: String,
+    /// Daemon address. Defaults to `server.url` in the settings file, then to a
+    /// loopback daemon started on demand.
+    #[arg(long, env = "FINDERY_SERVER_URL", global = true)]
+    pub(crate) server: Option<String>,
 
-    /// Bearer token, when the daemon requires one.
+    /// Bearer token, when the daemon requires one. Defaults to `server.api_token`
+    /// in the settings file.
     #[arg(long, env = "FINDERY_API_TOKEN", global = true)]
     pub(crate) token: Option<String>,
 
@@ -57,7 +59,10 @@ pub(crate) struct Scope {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Index the current directory (or PATH) and sync it.
+    /// Register the current directory (or PATH) as a project.
+    ///
+    /// Indexing is a separate step, so a repository can be registered — and its
+    /// catalog chosen — before a model is reachable.
     Init {
         /// Directory to index. Defaults to the current one.
         #[arg(default_value = ".")]
@@ -68,9 +73,15 @@ pub(crate) enum Command {
         /// Extensions to index, comma-separated. Defaults to `rs,md`.
         #[arg(long, value_delimiter = ',')]
         ext: Option<Vec<String>>,
-        /// Register without indexing.
+        /// Catalog to hold this project. Defaults to `store.default_catalog`.
+        ///
+        /// Chosen once: every later command follows the project, so nobody has
+        /// to remember which index a directory belongs to.
         #[arg(long)]
-        no_sync: bool,
+        catalog: Option<String>,
+        /// Index it now instead of waiting for `findery sync`.
+        #[arg(long)]
+        sync: bool,
         /// Send file contents to the daemon instead of letting it read them.
         /// Chosen automatically when the daemon cannot see the directory.
         #[arg(long)]
@@ -124,6 +135,11 @@ pub(crate) enum Command {
     },
     /// List indexed projects.
     Projects,
+    /// Manage catalogs: independent indexes under one daemon.
+    Catalog {
+        #[command(subcommand)]
+        action: CatalogAction,
+    },
     /// Remove a project, its chunks and its vectors.
     Rm {
         #[command(flatten)]
@@ -172,7 +188,10 @@ pub(crate) enum Command {
 
 #[derive(Subcommand)]
 pub(crate) enum ConfigAction {
-    /// Set one setting. `model`, `url`, `key` and `dim` are the short names.
+    /// Set one setting.
+    ///
+    /// `model`, `server`, `url`, `key` and `dim` are the short names — `server`
+    /// is the daemon address, `url` the embedding endpoint.
     Set {
         /// `model`, or a full path such as `embedder.query_instruction`.
         key: String,
@@ -184,6 +203,27 @@ pub(crate) enum ConfigAction {
     Show,
     /// Print the file the settings live in.
     Path,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum CatalogAction {
+    /// Every catalog the daemon has open, with what each holds.
+    Ls,
+    /// Create one, or report the one that is already there.
+    Create {
+        /// Letters, digits, `-`, `_` and `.`.
+        name: String,
+    },
+    /// Delete a catalog, its projects and their vectors.
+    ///
+    /// It goes through the daemon because the daemon holds the file open, and a
+    /// catalog still open cannot be removed at all.
+    Rm {
+        name: String,
+        /// Delete without asking. Required when it holds projects.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -217,11 +257,17 @@ pub(crate) enum DocAction {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    let server = cli.server.clone();
-    match run::dispatch(cli).await {
+    let endpoint = match run::Endpoint::resolve(&cli) {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            eprintln!("findery: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    match run::dispatch(cli, &endpoint).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("findery: {}", render::explain(&e, &server));
+            eprintln!("findery: {}", render::explain(&e, &endpoint.base_url));
             std::process::ExitCode::FAILURE
         }
     }
@@ -296,18 +342,66 @@ mod tests {
     }
 
     #[test]
-    fn init_defaults_to_the_current_directory_and_indexes() {
+    fn init_registers_without_indexing_unless_asked() {
         let cli = Cli::try_parse_from(["findery", "init"]).expect("parse");
         match cli.command {
             Command::Init {
-                path, id, no_sync, ..
+                path,
+                id,
+                catalog,
+                sync,
+                ..
             } => {
                 assert_eq!(path, ".");
                 assert!(id.is_none());
-                assert!(!no_sync);
+                assert!(catalog.is_none(), "the configured default applies");
+                assert!(!sync, "indexing is a separate, deliberate step");
             }
             _ => panic!("expected init"),
         }
+    }
+
+    #[test]
+    fn init_can_choose_a_catalog_and_index_in_one_go() {
+        let cli =
+            Cli::try_parse_from(["findery", "init", "--catalog", "work", "--sync"]).expect("parse");
+        match cli.command {
+            Command::Init { catalog, sync, .. } => {
+                assert_eq!(catalog.as_deref(), Some("work"));
+                assert!(sync);
+            }
+            _ => panic!("expected init"),
+        }
+    }
+
+    #[test]
+    fn the_catalog_command_names_what_it_acts_on() {
+        let cli = Cli::try_parse_from(["findery", "catalog", "create", "work"]).expect("parse");
+        match cli.command {
+            Command::Catalog {
+                action: CatalogAction::Create { name },
+            } => assert_eq!(name, "work"),
+            _ => panic!("expected catalog create"),
+        }
+        let cli = Cli::try_parse_from(["findery", "catalog", "rm", "work"]).expect("parse");
+        match cli.command {
+            Command::Catalog {
+                action: CatalogAction::Rm { name, force },
+            } => {
+                assert_eq!(name, "work");
+                assert!(!force);
+            }
+            _ => panic!("expected catalog rm"),
+        }
+    }
+
+    #[test]
+    fn no_daemon_address_is_baked_into_the_argument_surface() {
+        // The file has to be able to speak below the flag and the environment,
+        // so clap must not fill the field with a default of its own.
+        let cli = Cli::try_parse_from(["findery", "projects"]).expect("parse");
+        assert!(cli.server.is_none());
+        assert!(cli.token.is_none());
     }
 
     #[test]

@@ -6,8 +6,8 @@
 
 use crate::render;
 use crate::scope::{absolute, current_project, derive_id, parse_mode, resolve};
-use crate::{Cli, Command, ConfigAction, DaemonAction, DocAction};
-use findery_client::Client;
+use crate::{CatalogAction, Cli, Command, ConfigAction, DaemonAction, DocAction};
+use findery_client::{Client, DEFAULT_BASE_URL};
 use findery_core::api::{AddDocument, ExportRequest, RegisterProject, SyncRequest, WatchRequest};
 use findery_core::ids::ProjectId;
 use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchRequest};
@@ -15,9 +15,36 @@ use findery_core::prompt::QueryTask;
 use findery_core::{Error, Result};
 use std::io::Read;
 
-pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
-    let mut client = Client::new(&cli.server)?;
-    if let Some(token) = &cli.token {
+/// Where this invocation talks to, resolved once.
+///
+/// INTENT: the address and the token had two reachable homes — the flag and the
+/// environment — and the environment is the one that costs a `setx` and a new
+/// session on Windows. The settings file the daemon already reads is the third,
+/// and it is what `findery config set server …` writes, so naming a daemon is a
+/// command rather than an export. Order: flag, environment (clap folds both into
+/// [`Cli`]), the file, then loopback.
+pub(crate) struct Endpoint {
+    pub(crate) base_url: String,
+    pub(crate) token: Option<String>,
+}
+
+impl Endpoint {
+    pub(crate) fn resolve(cli: &Cli) -> Result<Self> {
+        let (url, token) = crate::config::connection()?;
+        Ok(Self {
+            base_url: cli
+                .server
+                .clone()
+                .or(url)
+                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            token: cli.token.clone().or(token),
+        })
+    }
+}
+
+pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
+    let mut client = Client::new(&endpoint.base_url)?;
+    if let Some(token) = &endpoint.token {
         client = client.with_token(token.clone());
     }
     let json = cli.json;
@@ -43,7 +70,8 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             path,
             id,
             ext,
-            no_sync,
+            catalog,
+            sync,
             push,
         } => {
             let root = absolute(&path)?;
@@ -56,6 +84,7 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                     root: root.clone(),
                     id: Some(id.to_string()),
                     extensions: ext,
+                    catalog,
                     push: push.then_some(true),
                     ..Default::default()
                 })
@@ -63,20 +92,29 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             if json {
                 render::json(&project)?;
             } else {
-                println!("indexing `{}` at {}", project.id, project.host_root);
+                println!(
+                    "registered `{}` at {} (catalog {})",
+                    project.id, project.host_root, project.catalog
+                );
             }
-            if !no_sync {
-                let report = if project.spec.push {
-                    crate::push::sync(&client, &project).await?
-                } else {
-                    client.sync_now(&project.id).await?
-                };
-                if json {
-                    render::json(&report)?;
-                } else {
-                    render::sync(&report);
-                    println!("\nready — try: findery search \"<your question>\"");
+            // Registration and indexing are two steps on purpose: a catalog can
+            // be chosen and a repository claimed before any model is reachable.
+            if !sync {
+                if !json {
+                    println!("run `findery sync` when you are ready to index it");
                 }
+                return Ok(());
+            }
+            let report = if project.spec.push {
+                crate::push::sync(&client, &project).await?
+            } else {
+                client.sync_now(&project.id).await?
+            };
+            if json {
+                render::json(&report)?;
+            } else {
+                render::sync(&report);
+                println!("\nready — try: findery search \"<your question>\"");
             }
         }
 
@@ -179,6 +217,53 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 render::projects(&list, here.as_deref());
             }
         }
+
+        Command::Catalog { action } => match action {
+            CatalogAction::Ls => {
+                let list = client.list_catalogs().await?;
+                if json {
+                    render::json(&list)?;
+                } else {
+                    render::catalogs(&list);
+                }
+            }
+            CatalogAction::Create { name } => {
+                let info = client.create_catalog(&name).await?;
+                if json {
+                    render::json(&info)?;
+                } else {
+                    println!("{} — {}", info.name, info.path);
+                }
+            }
+            CatalogAction::Rm { name, force } => {
+                // The count is what the decision needs, and reading it is not a
+                // change, so the refusal happens before anything is dropped.
+                let Some(info) = client
+                    .list_catalogs()
+                    .await?
+                    .into_iter()
+                    .find(|c| c.name == name)
+                else {
+                    return Err(Error::NotFound(format!("catalog `{name}`")));
+                };
+                if info.projects > 0 && !force {
+                    return Err(Error::Invalid(format!(
+                        "catalog `{name}` holds {} project(s); removing it removes them and their \
+                         vectors. Re-run with --force to go ahead.",
+                        info.projects
+                    )));
+                }
+                let removed = client.delete_catalog(&name).await?;
+                if json {
+                    render::json(&removed)?;
+                } else {
+                    println!(
+                        "removed `{name}` — {} project(s) went with it",
+                        removed.projects_removed
+                    );
+                }
+            }
+        },
 
         Command::Rm { scope } => {
             let id = resolve(&client, &scope).await?;

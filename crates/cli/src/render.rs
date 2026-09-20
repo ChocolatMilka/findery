@@ -2,7 +2,7 @@
 //! commands rather than a table of commands interleaved with `println!`.
 
 use findery_core::Result;
-use findery_core::api::{ExportReport, HealthReport, Job};
+use findery_core::api::{CatalogInfo, ExportReport, HealthReport, Job};
 use findery_core::model::{IndexStats, Project, SearchHit, SyncReport};
 
 /// Prints any serializable value as indented JSON.
@@ -38,17 +38,52 @@ pub fn projects(list: &[Project], current: Option<&str>) {
         } else {
             " "
         };
-        println!("{here} {:<22} {}", p.id.to_string(), p.host_root);
+        println!(
+            "{here} {:<22} {:<14} {}",
+            p.id.to_string(),
+            p.catalog,
+            p.host_root
+        );
     }
     if current.is_none() {
         println!("\n(no project contains the current directory)");
     }
 }
 
+/// Lists the catalogs the daemon has open, marking the default one.
+///
+/// INTENT: a catalog whose recipe disagrees with the daemon keeps working for
+/// keyword search and can still be deleted, so the conflict is printed here as
+/// the repair instruction it carries rather than as a failure.
+pub fn catalogs(list: &[CatalogInfo]) {
+    if list.is_empty() {
+        println!("no catalog open — the daemon creates the default one at boot");
+        return;
+    }
+    for c in list {
+        println!(
+            "{} {:<22} {:>5} project(s) {:>9} chunk(s) {:>9.1} MB",
+            if c.is_default { "*" } else { " " },
+            c.name,
+            c.projects,
+            c.chunks,
+            c.disk_bytes as f64 / 1e6
+        );
+        println!("    {}", c.path);
+        if let Some(recipe) = &c.recipe {
+            println!("    built with {recipe}");
+        }
+        if let Some(conflict) = &c.conflict {
+            println!("    {conflict}");
+        }
+    }
+}
+
 pub fn stats(s: &IndexStats) {
     println!(
-        "{}: {} files · {} chunks · {} vectors · {} ({} dims) · {} · {:.1} MB",
+        "{} [{}]: {} files · {} chunks · {} vectors · {} ({} dims) · {} · {:.1} MB",
         s.project,
+        s.catalog,
         s.files,
         s.chunks,
         s.vectors,
@@ -90,8 +125,17 @@ pub fn hits(hits: &[SearchHit]) {
         return;
     }
     for (i, hit) in hits.iter().enumerate() {
+        // The fused score is a rank, not a distance: it says nothing about which
+        // leg found the hit, and "keyword only" is a different answer to act on
+        // than "both agree".
+        let legs = match (hit.vector_score, hit.keyword_score) {
+            (Some(v), Some(k)) => format!("  (vec {v:.3} · bm25 {k:.3})"),
+            (Some(v), None) => format!("  (vec {v:.3})"),
+            (None, Some(k)) => format!("  (bm25 {k:.3})"),
+            (None, None) => String::new(),
+        };
         println!(
-            "\n[{}] {:.3}  {}  ({} {})",
+            "\n[{}] {:.3}{legs}  {}  ({} {})",
             i + 1,
             hit.score,
             hit.chunk.locator(),

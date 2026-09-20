@@ -10,8 +10,10 @@
 //! that cannot leave a daemon refusing to boot: the whole document is parsed and
 //! validated as a `Config` **before** it reaches the disk (CONV-023).
 //!
-//! It touches no HTTP. The file is local and so is the edit; the daemon's only
-//! part is being restarted so it reads it.
+//! The read half is [`connection`]: the daemon address and the token live in
+//! that same file, so a client finds its daemon without a shell involved. It
+//! touches no HTTP. The file is local and so is the edit; the daemon's only part
+//! is being restarted so it reads it.
 
 use findery_core::config::{Config, user_config_path};
 use findery_core::{Error, Result};
@@ -24,6 +26,7 @@ use findery_core::{Error, Result};
 const ALIASES: &[(&str, &str)] = &[
     ("model", "embedder.model"),
     ("url", "embedder.base_url"),
+    ("server", "server.url"),
     ("key", "embedder.api_key"),
     ("api-key", "embedder.api_key"),
     ("dim", "embedder.dim"),
@@ -51,6 +54,30 @@ pub fn path(json: bool) -> Result<()> {
     }
     println!("{path}");
     Ok(())
+}
+
+/// The daemon address and token, as the settings file spells them.
+///
+/// INTENT: naming the daemon used to be an environment variable, which on
+/// Windows costs a `setx` and a new session, and on any platform is invisible to
+/// a process started from a shortcut. Reading it out of the same file the daemon
+/// reads is what makes `findery config set server <url>` enough to point every
+/// command on this machine at one daemon — and what lets the token be typed
+/// once, next to the address it belongs to.
+///
+/// Either may be absent: an empty string is "not set", not a setting.
+pub fn connection() -> Result<(Option<String>, Option<String>)> {
+    let document = read(&user_config_path())?;
+    let server = document.get("server").and_then(toml::Value::as_table);
+    let setting = |key: &str| -> Option<String> {
+        server?
+            .get(key)?
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Ok((setting("url"), setting("api_token")))
 }
 
 /// Prints the file as it stands, with secrets masked.
