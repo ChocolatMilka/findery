@@ -81,10 +81,18 @@ Optionally return the N neighboring lines of a chunk, to avoid the follow-up
 `Read` the agent does today when the excerpt is cut too short.
 *Likely shape*: `SearchRequest::context_lines`.
 
-### R4 — Extensions beyond `.rs` / `.md`
-`Lang::Other` already goes through the generic chunker, so `.toml`, `.sql`,
-`.py` work — but without syntactic splitting. A chunker per requested
-language, behind the same trait.
+### R4 — Chunkers for the remaining languages
+Rust, JavaScript/TypeScript, Python, PHP, Markdown and JSON now split
+syntactically. Everything else — `.toml`, `.sql`, `.go`, `.java`, `.yaml` —
+still goes through the generic chunker: usable, but with no symbol, no kind
+and no breadcrumb.
+
+One language is a `Profile` in `findery-chunk` (a `Lexicon`, a keyword table,
+optionally a preamble) plus one line in `Registry`, one entry in
+`DEFAULT_EXTENSIONS` and one arm in `Lang`. For a brace-delimited language
+that is a few dozen lines: `brace.rs` already holds the pipeline. A language
+whose blocks are not braces — Ruby's `end`, Haskell's layout — needs its own
+splitter, as Python has.
 
 ### R5 — Persistent watch
 Watchers live in the server's memory: a restart loses them. Store them in

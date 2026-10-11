@@ -300,7 +300,7 @@ findery projects                   # all of them, current one marked *
 
 | Command | What it does |
 |---------|--------------|
-| `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,toml` to choose extensions, `--bucket <name>` to choose its index, `--sync` to index it immediately |
+| `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,js,py` to choose extensions, `--bucket <name>` to choose its index, `--sync` to index it immediately |
 | `findery sync` | incremental. `--full` ignores the metadata and hash gates (never the vector cache). `--path src/a.rs` targets files. `--background` returns a job id instead of waiting |
 | `findery jobs [id]` | what each background job is doing, and where a running one has got to |
 | `findery bucket ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves. `rm` needs `--force` while one holds projects |
@@ -431,7 +431,7 @@ Four independent levers, applied in this order:
 
 | Lever | Default | Effect |
 |-------|---------|--------|
-| `extensions` | `rs`, `md` | empty means everything that survives the rest |
+| `extensions` | `rs`, `md`, `toml`, `js`, `mjs`, `cjs`, `ts`, `py`, `php`, `json` | empty means everything that survives the rest |
 | `include` | none | globs; narrows to these |
 | `exclude` | build output + secrets | globs; subtracts |
 | `follow_gitignore` | true | honours `.gitignore` even outside a git repo |
@@ -446,13 +446,16 @@ ask about. The default `exclude` list is what keeps credentials out: `.env*`,
 Files that are not valid UTF-8, or above `max_file_bytes` (2 MB), are skipped
 and **reported** in `warnings` — never dropped in silence.
 
-**Chunking quality differs by language.** `.rs` gets a syntactic chunker (one
-chunk per item, with symbol and breadcrumb), `.md` a heading-based one.
-Everything else falls back to line windows: usable, but with no symbol. Adding a
-real chunker for a language is one `Chunker` implementation plus one line in
-`Registry`.
+**Chunking quality differs by language.** `.rs`, `.js`/`.ts`, `.py` and `.php`
+get a syntactic chunker (one chunk per item, with symbol and breadcrumb), `.md`
+a heading-based one. `.json` answers as one chunk while it fits `max_chars`,
+then splits per top-level member, each carrying its key. `.toml` and
+everything else fall back to line windows: usable, but with no symbol. Adding a
+real chunker for a language is a `Profile` in `findery-chunk` — its lexicon, its
+keyword table — one line in `Registry`, one entry in the default `extensions`,
+and one arm in `Lang`: see [`../chunk/README.md`](../chunk/README.md).
 
-Global defaults for every project: `FINDERY_EXTENSIONS=rs,md,toml` and
+Global defaults for every project: `FINDERY_EXTENSIONS=rs,md,js,py` and
 `FINDERY_INCLUDE_HIDDEN=false`.
 
 ---
