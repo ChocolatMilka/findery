@@ -94,10 +94,16 @@ pub fn split_windows(
     out
 }
 
-/// Merges runs of undersized neighbours into one chunk.
+/// Merges runs of undersized, **anonymous** neighbours into one chunk.
 ///
-/// A three-line `impl Display` embedded alone is noise; folded in with the
-/// `use` block and the type it formats, it is a usable fragment.
+/// INTENT: merging is for fragments that carry no identity of their own — a run
+/// of `use`, `import` or stray lines. A chunk that names something is never
+/// folded away, because the merge has no way to give it back what it loses: it
+/// would drop the `kind` a filter selects on and the symbol the full-text index
+/// weights four times over, which is precisely what a search for an exact
+/// identifier (`MAX_RETRIES`, `with_backoff`) relies on.
+///
+/// INVARIANT: every symbol a chunker produced survives `merge_small`.
 pub fn merge_small(chunks: Vec<RawChunk>, cfg: &ChunkConfig) -> Vec<RawChunk> {
     let mut out: Vec<RawChunk> = Vec::with_capacity(chunks.len());
     for chunk in chunks {
@@ -105,18 +111,15 @@ pub fn merge_small(chunks: Vec<RawChunk>, cfg: &ChunkConfig) -> Vec<RawChunk> {
             out.push(chunk);
             continue;
         };
+        let anonymous = prev.symbol.is_none() && chunk.symbol.is_none();
         let both_small = prev.text.len() < cfg.min_chars && chunk.text.len() < cfg.min_chars;
         let fits = prev.text.len() + chunk.text.len() <= cfg.max_chars;
-        let contiguous = chunk.start_line >= prev.start_line;
-        if both_small && fits && contiguous {
+        if anonymous && both_small && fits {
             if !prev.text.ends_with('\n') {
                 prev.text.push('\n');
             }
             prev.text.push_str(&chunk.text);
             prev.end_line = chunk.end_line.max(prev.end_line);
-            prev.kind = ChunkKind::Text;
-            prev.symbol = None;
-            prev.breadcrumb = None;
         } else {
             out.push(chunk);
         }
@@ -165,30 +168,66 @@ mod tests {
         assert_eq!(parts.len(), 1);
     }
 
-    #[test]
-    fn small_neighbours_merge_but_large_ones_do_not() {
-        let mk = |n: usize, line: u32| RawChunk {
-            kind: ChunkKind::Const,
+    fn mk(n: usize, line: u32) -> RawChunk {
+        RawChunk {
+            kind: ChunkKind::Text,
             symbol: None,
             breadcrumb: None,
             start_line: line,
             end_line: line,
             text: "a".repeat(n),
-        };
+        }
+    }
+
+    fn named(n: usize, line: u32, symbol: &str) -> RawChunk {
+        RawChunk {
+            symbol: Some(symbol.into()),
+            breadcrumb: Some(symbol.into()),
+            kind: ChunkKind::Const,
+            ..mk(n, line)
+        }
+    }
+
+    #[test]
+    fn small_neighbours_merge_but_large_ones_do_not() {
         let merged = merge_small(vec![mk(5, 1), mk(5, 2), mk(30, 3)], &cfg());
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text.len(), 11); // 5 + newline + 5
     }
 
     #[test]
+    fn a_named_chunk_is_never_folded_into_its_neighbour() {
+        // Two tiny `use` lines and a two-line `const MAX`: the constant keeps
+        // its own chunk, its kind and its symbol — the exact identifier the
+        // keyword leg exists to find.
+        let merged = merge_small(vec![mk(5, 1), mk(5, 2), named(5, 3, "MAX")], &cfg());
+        assert_eq!(merged.len(), 2);
+        let max = merged.last().expect("kept");
+        assert_eq!(max.symbol.as_deref(), Some("MAX"));
+        assert_eq!(max.kind, ChunkKind::Const);
+        assert_eq!(max.breadcrumb.as_deref(), Some("MAX"));
+        assert_eq!(max.text, "aaaaa");
+    }
+
+    #[test]
+    fn every_symbol_survives_the_merge() {
+        let before = vec![
+            named(5, 1, "MAX"),
+            named(5, 2, "MIN"),
+            mk(5, 3),
+            mk(4, 4),
+            named(9, 5, "render"),
+        ];
+        let after = merge_small(before.clone(), &cfg());
+        let kept: Vec<&str> = after.iter().filter_map(|c| c.symbol.as_deref()).collect();
+        assert_eq!(kept, vec!["MAX", "MIN", "render"], "got {after:?}");
+    }
+
+    #[test]
     fn blank_fragments_are_dropped() {
         let kept = drop_empty(vec![RawChunk {
-            kind: ChunkKind::Text,
-            symbol: None,
-            breadcrumb: None,
-            start_line: 1,
-            end_line: 1,
             text: "}\n\n".into(),
+            ..mk(0, 1)
         }]);
         assert!(kept.is_empty());
     }
