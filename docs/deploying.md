@@ -151,7 +151,6 @@ variable is masking what it just wrote.
 ```bash
 cd their-project
 findery init
-# (started the daemon in the background)
 # registered `their-project` at /home/x/their-project (bucket default)
 # run `findery sync` when you are ready to index it
 

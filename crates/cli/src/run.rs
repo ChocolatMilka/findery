@@ -23,9 +23,11 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
     }
     let json = cli.json;
 
-    // Everything but the diagnostic and the lifecycle commands needs a daemon.
-    // Starting it here is what removes the "keep a terminal open" step: the user
-    // never learns that a daemon exists.
+    // Everything but the diagnostic and the lifecycle commands needs the server.
+    // Starting it here is what removes the "keep a terminal open" step, and it is
+    // deliberately silent: a message about a process the user never asked for is
+    // a message about plumbing, in the middle of their answer. `findery doctor`
+    // is where the plumbing is named, and only when there is something to fix.
     if !matches!(
         cli.command,
         Command::Doctor | Command::Daemon { .. } | Command::Config { .. }
@@ -34,9 +36,7 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
             // SAFETY: set before any request, on the single CLI thread.
             unsafe { std::env::set_var("FINDERY_NO_SPAWN", "1") };
         }
-        if findery_client::daemon::ensure_running(&client).await? {
-            eprintln!("(started the daemon in the background)");
-        }
+        findery_client::daemon::ensure_running(&client).await?;
     }
 
     match cli.command {
@@ -367,11 +367,12 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
                     false
                 }
             };
+            // The server read its settings at boot, so a written setting only
+            // takes effect once it is replaced. Replacing it is plumbing: the
+            // next command starts it again, and saying so would put a sentence
+            // about a process between the user and their own setting.
             if shadowed && findery_client::daemon::probe(client.base_url()).await {
                 client.stop_daemon().await?;
-                if !json {
-                    println!("(the daemon is restarting to pick this up)");
-                }
             }
         }
 

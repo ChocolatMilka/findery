@@ -28,12 +28,12 @@ use clap::{Parser, Subcommand};
                   directory is used. Start with `findery init` inside a repository."
 )]
 pub(crate) struct Cli {
-    /// Daemon address. Defaults to `server.url` in the settings file, then to a
-    /// loopback daemon started on demand.
+    /// Server address. Defaults to `server.url` in the settings file, then to a
+    /// local server started on demand.
     #[arg(long, env = "FINDERY_SERVER_URL", global = true)]
     pub(crate) server: Option<String>,
 
-    /// Bearer token, when the daemon requires one. Defaults to `server.api_token`
+    /// Bearer token, when the server requires one. Defaults to `server.api_token`
     /// in the settings file.
     #[arg(long, env = "FINDERY_API_TOKEN", global = true)]
     pub(crate) token: Option<String>,
@@ -42,7 +42,7 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
-    /// Never start the daemon; fail instead if it is not already running.
+    /// Never start the server; fail instead if it is not already running.
     #[arg(long, global = true, env = "FINDERY_NO_SPAWN")]
     pub(crate) no_spawn: bool,
 
@@ -83,8 +83,8 @@ pub(crate) enum Command {
         /// Index it now instead of waiting for `findery sync`.
         #[arg(long)]
         sync: bool,
-        /// Send file contents to the daemon instead of letting it read them.
-        /// Chosen automatically when the daemon cannot see the directory.
+        /// Send file contents instead of letting the server read them.
+        /// Chosen automatically when the server cannot see the directory.
         #[arg(long)]
         push: bool,
     },
@@ -136,7 +136,7 @@ pub(crate) enum Command {
     },
     /// List indexed projects.
     Projects,
-    /// Manage buckets: independent indexes under one daemon.
+    /// Manage buckets: independent indexes under one server.
     Bucket {
         #[command(subcommand)]
         action: BucketAction,
@@ -169,7 +169,7 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 1500)]
         debounce_ms: u64,
     },
-    /// Daemon and model status.
+    /// What the index answers, and what it serves.
     Health,
     /// Check the whole setup and say what to fix.
     Doctor,
@@ -178,7 +178,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
-    /// Start, stop or inspect the background daemon.
+    /// Start, stop or inspect the background server.
+    ///
+    /// Hidden from `--help`: it starts itself, it stops itself, and the only
+    /// reader of this command is a service manager or someone debugging one.
+    /// Showing it invites the user to manage a process they never asked for.
+    #[command(hide = true)]
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
@@ -192,7 +197,7 @@ pub(crate) enum ConfigAction {
     /// Set one setting.
     ///
     /// `model`, `server`, `url`, `key` and `dim` are the short names — `server`
-    /// is the daemon address, `url` the embedding endpoint.
+    /// is the server address, `url` the embedding endpoint.
     Set {
         /// `model`, or a full path such as `embedder.query_instruction`.
         key: String,
@@ -208,7 +213,7 @@ pub(crate) enum ConfigAction {
 
 #[derive(Subcommand)]
 pub(crate) enum BucketAction {
-    /// Every bucket the daemon has open, with what each holds.
+    /// Every bucket the server has open, with what each holds.
     Ls,
     /// Create one, or report the one that is already there.
     Create {
@@ -217,7 +222,7 @@ pub(crate) enum BucketAction {
     },
     /// Delete a bucket, its projects and their vectors.
     ///
-    /// It goes through the daemon because the daemon holds the file open, and a
+    /// Removal goes through the server, which holds the file open: a bucket
     /// bucket still open cannot be removed at all.
     Rm {
         name: String,
@@ -409,5 +414,43 @@ mod tests {
     fn the_command_surface_stays_parseable() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    /// The server is plumbing: it starts itself, so offering to manage it is
+    /// offering to manage something the user never asked for.
+    #[test]
+    fn the_server_lifecycle_is_reachable_but_not_advertised() {
+        use clap::CommandFactory;
+        let surface = Cli::command();
+        let daemon = surface
+            .get_subcommands()
+            .find(|c| c.get_name() == "daemon")
+            .expect("the escape hatch still exists for a service manager");
+        assert!(daemon.is_hide_set(), "`daemon` must stay out of --help");
+    }
+
+    /// Nothing visible may mention the server by its process name: a command
+    /// that narrates its own plumbing teaches the concept it was meant to hide.
+    ///
+    /// Walks the whole surface rather than a list, because the failure mode is a
+    /// command added later with a careless `///` line — and a list would let it
+    /// through.
+    #[test]
+    fn nothing_visible_ever_names_the_daemon() {
+        use clap::CommandFactory;
+        let surface = Cli::command();
+        for command in surface.get_subcommands() {
+            if command.is_hide_set() {
+                continue;
+            }
+            // `render_long_help` covers the summary, the flag descriptions and
+            // the subcommands in one page — the whole surface a user can read.
+            let name = command.get_name().to_string();
+            let text = command.clone().render_long_help().to_string();
+            assert!(
+                !text.to_lowercase().contains("daemon"),
+                "`{name}` mentions the daemon:\n{text}"
+            );
+        }
     }
 }

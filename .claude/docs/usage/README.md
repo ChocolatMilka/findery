@@ -7,15 +7,8 @@ knob, what it actually changes, and when reaching for it is the right move.
 
 ## 1. Two ways to run it
 
-Both modes run **the same daemon binary**; only its packaging differs. The
-container next to it is never the server — it is a stateless third-party
-inference runtime that turns text into vectors and keeps nothing.
-
-The model is heavy and benefits from a container. The daemon is a 5 MB Rust
-binary with an embedded SQLite — containerizing it on a dev machine buys nothing
-and costs the bind-mount boundary.
-
-### Native daemon — the default
+There is one thing to start, and it is the model. Everything else is a `findery`
+command.
 
 ```bash
 make install        # findery, finderyd, findery-mcp → ~/.cargo/bin
@@ -25,21 +18,36 @@ make up-model       # the model, in Docker
 Without `make` — Windows — the same names work through
 `.\tools\tasks.ps1 install` and `.\tools\tasks.ps1 up-model`.
 
-The daemon is not in that list on purpose: the first `findery` command starts it
-in the background and says so. It sees your real filesystem, so **any path on any
-disk is indexable** — no mount to declare, no path translation.
-`FINDERY_WORKSPACES` is irrelevant here.
+Nothing else is on that list. The first `findery` command in a project starts the
+index server in the background, silently, and every later command reuses it; the
+one you would otherwise keep a terminal open for is not yours to manage. It sees
+your real filesystem, so **any path on any disk is indexable** — no mount to
+declare, no path translation. `FINDERY_WORKSPACES` is irrelevant here.
 
 | Command | For |
 |---------|-----|
 | `findery doctor` | what is up, what is not, and the command for each |
-| `findery daemon status` | the health line, or `not running` |
-| `findery daemon stop` / `start` | explicit control when you want it |
+| `findery health` | whether the index answers, and what it serves |
 | `FINDERY_NO_SPAWN=1` | forbid the automatic start (service manager, container) |
 
-Only a loopback daemon is ever started automatically. An address pointing
-elsewhere is someone else's server: failing to reach it is reported, never
-replaced by a local daemon answering from an empty index.
+`findery daemon start` / `stop` / `status` still exist for a service manager and
+for debugging — they are hidden from `--help`, because a tool that starts itself
+should not invite you to start it.
+
+Only a loopback server is ever started automatically. An address pointing
+elsewhere is someone else's host: failing to reach it is reported, never replaced
+by a local index answering from nothing.
+
+**Why a process at all?** Searching means comparing a query against every chunk,
+from a matrix of normalized vectors held contiguously in RAM. For a large
+codebase that is a few hundred megabytes; a fresh process would spend one to
+three seconds rebuilding it from SQLite before it could compare anything. One
+long-lived process builds it once and answers in milliseconds. That is the whole
+reason, and it is why the process is not something you are asked to think about.
+
+The container beside it is a different thing entirely: a stateless third-party
+inference runtime that turns text into vectors and keeps nothing. It is never the
+index.
 
 ### All-Docker
 

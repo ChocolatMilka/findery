@@ -49,9 +49,9 @@ findery sync                              # indexes it
 findery search "where is retry handled"   # the project is inferred from the directory
 ```
 
-No path to type, no mount to declare, **and no daemon to start** — the first
-command notices nothing is listening and starts `finderyd` in the background.
-Nothing to keep open.
+No path to type, no mount to declare, **and nothing to start** — the first command
+brings the index up in the background and says nothing about it, because it is not
+something you asked to manage. Nothing to keep open.
 
 `init` and `sync` are two steps on purpose: a repository can be registered and
 its bucket chosen **before** any model is reachable. `findery init --sync`
@@ -66,7 +66,7 @@ findery status          # files, chunks, vectors
 findery sync            # after coding — near instant
 findery watch           # or let it resync on its own
 findery search -p axle "retry"    # target another project from anywhere
-findery bucket ls      # the independent indexes this daemon serves
+findery bucket ls      # the independent indexes it serves
 ```
 
 ### The two ways to run this

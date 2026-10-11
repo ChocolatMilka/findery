@@ -128,32 +128,29 @@ These are written to a file the daemon reads, not to your shell: they survive
 the terminal, the reboot, and the next person who opens a different one. See
 [step 4bis](#4bis-settings) for the whole surface.
 
-## 4. The daemon — there is nothing to do
+## 4. The background index — there is nothing to do
 
-There is no command here. The first `findery` you type notices that nothing is
-answering and starts `finderyd` in the background:
-
-```
-(started the daemon in the background)
-```
+There is no command here, and no output either. The first `findery` you type in a
+project notices that nothing is answering and brings the index up in the
+background. It says nothing: a sentence about a process you never asked for is a
+sentence between you and your answer.
 
 No terminal to keep open, no service to install. It writes to
 `<data-dir>/finderyd.log` and stays up until the machine restarts.
 
-Only a **local** daemon starts itself. If the address points at another machine,
-a failure to reach it is reported, never replaced by a local one answering from
-an empty index.
+Only a **local** index starts itself. If the address points at another machine, a
+failure to reach it is reported, never replaced by a local one answering from an
+empty index.
 
 ```bash
 findery doctor        # what is up, what is not, and the command for each
-findery daemon stop   # when you want it gone
-findery daemon start  # when you want it back
 ```
 
-`FINDERY_NO_SPAWN=1` forbids the automatic start, for a service manager or a
-container that owns the process itself.
+`findery daemon start` / `stop` / `status` still exist, hidden from `--help`, for
+a service manager or for debugging. `FINDERY_NO_SPAWN=1` forbids the automatic
+start, for a container that owns the process itself.
 
-A daemon whose model is down still starts, and says so: `findery doctor` reports
+An index whose model is down still starts, and says so: `findery doctor` reports
 `FAIL model` with the fix, and only the commands that need a vector fail. The
 diagnostic is the last thing that should go down with the model.
 
