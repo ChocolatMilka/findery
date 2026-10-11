@@ -6,7 +6,7 @@
 //! is the principle: boundaries come from a lexical pass, never from a guess,
 //! and a `def` inside a triple-quoted string is not a definition.
 
-use crate::text::{drop_empty, merge_small, split_windows};
+use crate::sizing::{drop_empty, merge_small, split_windows};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};

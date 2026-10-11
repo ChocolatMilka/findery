@@ -14,22 +14,13 @@
 
 mod brace;
 mod items;
-pub mod js;
-pub mod json;
-pub mod markdown;
-pub mod php;
-pub mod python;
-pub mod rust;
-pub mod scanner;
-pub mod text;
+pub mod langs;
+mod scanner;
+pub mod sizing;
 
-pub use js::JsChunker;
-pub use json::JsonChunker;
-pub use markdown::MarkdownChunker;
-pub use php::PhpChunker;
-pub use python::PythonChunker;
-pub use rust::RustChunker;
-pub use text::TextChunker;
+pub use langs::{
+    JsChunker, JsonChunker, MarkdownChunker, PhpChunker, PythonChunker, RustChunker, TextChunker,
+};
 
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
@@ -154,7 +145,7 @@ mod tests {
     fn chunking_is_deterministic() {
         let r = Registry::new();
         let cfg = ChunkConfig::default();
-        let src = include_str!("rust.rs");
+        let src = include_str!("langs/rust.rs");
         let a = r.chunk("a.rs", Lang::Rust, src, &cfg).expect("first pass");
         let b = r.chunk("a.rs", Lang::Rust, src, &cfg).expect("second pass");
         assert_eq!(a, b);

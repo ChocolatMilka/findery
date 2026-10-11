@@ -240,7 +240,7 @@ fn every_truncation_of_every_language_keeps_sane_bounds() {
     // back, a regex that never closes. None of them may panic, and none may
     // produce a chunk whose lines point outside the file.
     let sources: &[(&str, &str)] = &[
-        ("a.rs", include_str!("../src/scanner.rs")),
+        ("a.rs", include_str!("../src/scanner/mod.rs")),
         (
             "a.js",
             "const re = /a{2}/g;\nclass C {\n  m() { return `x ${ {a:1} }`; }\n}\n",

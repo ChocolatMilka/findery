@@ -8,7 +8,7 @@
 
 use crate::items::{LineIndex, Span, body_span, split_items};
 use crate::scanner::Lexicon;
-use crate::text::{drop_empty, merge_small, split_windows};
+use crate::sizing::{drop_empty, merge_small, split_windows};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, RawChunk};

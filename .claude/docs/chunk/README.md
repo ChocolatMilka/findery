@@ -18,8 +18,8 @@ for information we throw away immediately.
 
 What we actually need is to **never mistake a brace inside a string, a
 comment, or a raw literal for a structural brace**. That's what
-`scanner.rs` guarantees, for every brace-delimited language, from one
-`Lexicon` per language:
+`scanner/` guarantees, for every brace-delimited language, from one `Lexicon`
+per language (`scanner/lexicon.rs`):
 
 | | Rust | JavaScript / TypeScript | PHP | JSON |
 |---|---|---|---|---|
@@ -112,7 +112,7 @@ fallback, where nothing is claimed about their structure.
 ## The Python chunker
 
 Python has no braces: a block is what is indented further than its header.
-`python.rs` splits on **statements at column zero**, using a line pass that
+`langs/python.rs` splits on **statements at column zero**, using a line pass that
 knows where a bracket is still open, where a triple-quoted string is still
 open and where a backslash continues the line — so a `def` inside a docstring
 is not a definition, and `SETTINGS = { … }` over four lines stays one item.
@@ -150,8 +150,8 @@ table, optionally a preamble — plus one line in `Registry`, one arm in
 `Lang::from_path` / `as_str` / `parse`, and one entry in `DEFAULT_EXTENSIONS`
 (a language nobody walks is a language nobody indexes). For a brace-delimited
 language that is a few dozen lines, since `brace.rs` holds the pipeline; a
-language whose blocks are not braces needs its own splitter, as `python.rs`
-is.
+language whose blocks are not braces needs its own splitter, as
+`langs/python.rs` is.
 
 ## Merging tiny fragments
 

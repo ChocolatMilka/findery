@@ -235,7 +235,7 @@ smallest diff that removes it.
 
 | Symptom | Frequent cause | Where to look |
 |----------|-----------------|-------------|
-| Wrong chunk lines | `LineIndex` or an item whose start absorbs too much trivia | `chunk/scanner.rs` |
+| Wrong chunk lines | `LineIndex` or an item whose start absorbs too much trivia | `chunk/src/scanner/` |
 | An entire `impl` in a single chunk | `max_chars` too high, or `body_span` returning `None` | `chunk/rust.rs` |
 | Empty search despite the code existing | project not synced, or path filter too strict | `findery status`, `filter` |
 | Hits pointing to vanished text | `chunks_fts` desynced | `bucket/chunks.rs` |
