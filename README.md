@@ -40,6 +40,15 @@ script — same names, same commands:
 .\tools\tasks.ps1 help        # every task
 ```
 
+Or take the released installer, which needs neither Rust nor a toolchain — it
+puts the three binaries in `Program Files` and `findery` on your `PATH`:
+
+```powershell
+# download findery-<version>-x64.msi from the latest release, then
+msiexec /i findery-0.1.0-x64.msi
+findery --version
+```
+
 Then, in **any project, on any disk**:
 
 ```bash

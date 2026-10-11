@@ -118,6 +118,17 @@ Or ship the three binaries in one directory. `findery` looks for `finderyd`
 no installation at all, and a stale `finderyd` elsewhere on the `PATH` cannot
 shadow the one you shipped.
 
+On Windows, each release publishes an `.msi` that does exactly that: the three
+binaries into `C:\Program Files\findery`, that directory onto the system `PATH`,
+and nothing else. It is per-machine, so one install serves every account, and
+uninstalling removes the `PATH` entry it added. It needs a new terminal to pick
+the `PATH` up — an already-open shell will not see it.
+
+One consequence worth knowing for a fleet: the daemon starts itself on the first
+`findery` command, so a machine usually has one running. The installer asks the
+Restart Manager to close it before replacing the binaries, which is what keeps an
+upgrade from landing on a locked file.
+
 ### Settings
 
 Two commands, and nothing to put in a shell profile:

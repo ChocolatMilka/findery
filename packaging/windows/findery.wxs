@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  findery — Windows installer (WiX v4+ schema, built with `wix build`).
+
+  Inputs, resolved relative to the working directory at package time:
+
+      artifacts/findery.exe        the CLI
+      artifacts/finderyd.exe       the index server it starts itself
+      artifacts/findery-mcp.exe    the MCP bridge Claude Code launches
+      README.md
+
+  Layout shipped on the user's machine:
+
+      C:\Program Files\findery\findery.exe
+      C:\Program Files\findery\finderyd.exe
+      C:\Program Files\findery\findery-mcp.exe
+      C:\Program Files\findery\README.md
+
+  All three binaries sit in ONE directory, and that is a correctness
+  requirement rather than tidiness: `findery` looks for `finderyd` next to
+  itself before it looks on PATH, so that the pair cannot be split across two
+  builds. An installer that filed them apart would hand the user a CLI talking
+  to a server it never found.
+
+  PATH is modified, and that is the point of the package: this tool is typed as
+  `findery` from inside whatever project directory the user is in. The entry is
+  written as a *system* variable ([INSTALLFOLDER], appended) because the install
+  is per-machine, and it is tied to the component that owns `findery.exe` so
+  that uninstalling removes exactly what was added.
+
+  GUIDs below are STABLE FOR LIFE. Changing `UpgradeCode` makes this package
+  unable to upgrade an earlier one in place; changing a component `Guid` makes
+  the component look like a different component, and it will be duplicated
+  rather than replaced. Both are part of the public ABI of the .msi.
+
+  `$(Version)` is supplied by the caller — `wix build -d Version=x.y.z` — so this
+  file holds no version of its own and cannot drift from the tag. The workflow
+  resolves it from the tag and refuses to build when it disagrees with
+  Cargo.toml; MSI versions are numeric and at most four parts, so a tag like
+  `v0.2.0-rc.1` is turned into an error rather than silently rounded.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="findery"
+           Manufacturer="findery"
+           Version="$(Version)"
+           UpgradeCode="D5F0CF7C-E158-4906-A789-B087524653F8"
+           Scope="perMachine"
+           Compressed="yes"
+           InstallerVersion="500"
+           Language="1033">
+
+    <SummaryInformation Description="findery $(Version) — local semantic index for codebases"
+                        Manufacturer="findery" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of findery is already installed. Uninstall it first, or use Apps &amp; features to remove it." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- The one thing that makes this package non-trivial.
+
+         `finderyd` starts itself on the first `findery` command and stays up,
+         and Windows will not replace a running executable. An upgrade would
+         therefore land on a locked file — the ordinary case here, not an edge
+         one, because the daemon is *designed* to be running, and the user has
+         no reason to know it exists, let alone to stop it first.
+
+         This is the declarative answer: the Restart Manager closes the named
+         process before the files are replaced, instead of the user meeting
+         "files in use". `CloseMessage="no"` because the daemon has no window to
+         carry a message; `RebootPrompt="no"` because a tool the user restarts
+         by typing its name must never ask for a reboot. -->
+    <util:CloseApplication Id="CloseServer"
+                           Target="finderyd.exe"
+                           CloseMessage="no"
+                           RebootPrompt="no" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="findery" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="findery" Level="1" Display="expand"
+             Description="The CLI, the index server and the Claude Code bridge.">
+      <ComponentGroupRef Id="Binaries" />
+      <ComponentRef Id="InstallDirRegistry" />
+      <ComponentRef Id="Readme" />
+    </Feature>
+
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="Binaries" Directory="INSTALLFOLDER">
+
+      <!-- One component per file, so that an upgrade replaces exactly the
+           binaries and nothing else, and so that Windows Installer's
+           component rules hold: a component holds one keypath. -->
+
+      <Component Id="Cli" Guid="DC47CB50-7612-4EE7-9BAC-DEA28E5175E9">
+        <File Id="findery_exe" Source="artifacts/findery.exe" Name="findery.exe" KeyPath="yes" />
+
+        <!-- PATH is the reason this package exists: the tool is typed from
+             inside a project, not from an install directory. `Part="last"`
+             appends, so an existing PATH keeps its order — and its precedence.
+             `System="yes"` writes the machine-wide variable, matching
+             `Scope="perMachine"`; a per-user entry under a per-machine install
+             would be invisible to every other account on the machine.
+             `Permanent="no"` keeps it inside the component, so uninstalling
+             removes it and nothing else does. -->
+        <Environment Id="PathEntry"
+                     Name="PATH"
+                     Value="[INSTALLFOLDER]"
+                     Action="set"
+                     Part="last"
+                     System="yes"
+                     Permanent="no" />
+      </Component>
+
+      <Component Id="Server" Guid="B067DF76-6444-4E30-838E-554F392A06A4">
+        <File Id="finderyd_exe" Source="artifacts/finderyd.exe" Name="finderyd.exe" KeyPath="yes" />
+      </Component>
+
+      <Component Id="McpBridge" Guid="CE0305AE-5F42-4034-8D7A-A7A1A2B33D3F">
+        <File Id="findery_mcp_exe" Source="artifacts/findery-mcp.exe" Name="findery-mcp.exe" KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <!-- A breadcrumb so that anything - the MCP bridge's documentation, a user
+         who moved the install - can find the directory without asking PATH,
+         which a process started before the change may not have reloaded. -->
+    <Component Id="InstallDirRegistry" Guid="AA8AF7E0-FF3C-45D4-B47E-2F907D6505B3"
+               Directory="INSTALLFOLDER">
+      <RegistryKey Root="HKLM" Key="Software\findery">
+        <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </RegistryKey>
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <Component Id="Readme" Guid="29C5E6C7-6381-4199-A66C-BA6816ADFE20"
+               Directory="INSTALLFOLDER">
+      <File Id="readme_md" Source="README.md" Name="README.md" KeyPath="yes" />
+    </Component>
+  </Fragment>
+
+</Wix>

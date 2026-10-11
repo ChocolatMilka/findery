@@ -18,6 +18,15 @@ make up-model       # the model, in Docker
 Without `make` — Windows — the same names work through
 `.\tools\tasks.ps1 install` and `.\tools\tasks.ps1 up-model`.
 
+Windows also has a released `.msi`, for a machine with no Rust toolchain at all:
+it installs the three binaries into `C:\Program Files\findery` and appends that
+directory to the system `PATH`. The binaries go together because `findery`
+resolves `finderyd` next to itself before consulting `PATH` — a CLI split from
+its server is a CLI talking to a build it never found. The installer also closes
+a running `finderyd` before replacing it, since Windows will not overwrite a
+running executable and the daemon starts itself. See
+[`packaging/windows/`](../../../packaging/windows/README.md).
+
 Nothing else is on that list. The first `findery` command in a project starts the
 index server in the background, silently, and every later command reuses it; the
 one you would otherwise keep a terminal open for is not yours to manage. It sees

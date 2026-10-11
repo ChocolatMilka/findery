@@ -102,6 +102,21 @@ No `make` — Windows, for instance? The same task list ships as PowerShell:
 Or the three raw lines: `cargo install --path crates/cli --force`, and the same
 for `crates/server` and `crates/mcp`.
 
+**Windows without a Rust toolchain**: every release publishes an installer.
+
+```powershell
+msiexec /i findery-0.1.0-x64.msi      # the .msi from the latest release
+findery --version                     # on PATH, from a new terminal
+```
+
+It puts the three binaries in `C:\Program Files\findery` and that directory on
+the system `PATH` — all three together, because `findery` looks for `finderyd`
+beside itself rather than on `PATH`, so the pair can never come from two
+builds. The index itself keeps living wherever your projects do; the installer
+places the *tools*, not your data.
+
+The build behind it is [`packaging/windows/`](../packaging/windows/README.md).
+
 ## 3. Start the model
 
 ```bash

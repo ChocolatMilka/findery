@@ -1,0 +1,286 @@
+# Build, package and publish findery.
+#
+# Four jobs, and the split is the point:
+#
+#   check      the constitution, on every push and pull request
+#   windows    the three Windows binaries, once
+#   installer  the .msi, and a real install of it
+#   release    attached to a GitHub Release, on a `v*` tag
+#
+# `check` is deliberately its own job rather than a step of the Windows build:
+# the four watchdogs and the test suite are what decides whether anything ships,
+# and they run in seconds on Linux. A change that fails them must never reach
+# the packaging jobs at all.
+#
+# The MSI is built with WiX v5, pinned. **Not v6 or later**: from v6 the toolset
+# requires accepting the Open Source Maintenance Fee EULA, which is a licensing
+# decision for the project to make and not something a workflow should accept on
+# its behalf. v5 is the last unrestricted release.
+#
+# `windows-latest` rather than cross-compiling: `rusqlite`'s bundled SQLite is C,
+# so a Windows build needs a Windows C toolchain whatever the target triple, and
+# the runner has MSVC. Cross-compiling would buy a container and a set of flags
+# in exchange for nothing.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege. Only `release` writes anything, and it asks for it there.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Cargo's incremental cache fights a CI cache that restores `target/`.
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # The toolset the installer is built with, in one place: the build step and
+  # the extension restore below must agree, and a drifting pair fails obscurely.
+  WIX_VERSION: "5.0.2"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain comes from `rust-toolchain.toml`, including the rustfmt and
+      # clippy components the checklist needs — one version, stated once.
+      - run: rustup show
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # fmt-check + clippy -D warnings + test + layers + sizes. The same command
+      # a contributor runs, so "green locally" and "green in CI" are one claim.
+      - run: make check
+
+  # ---------------------------------------------------------------------------
+  windows:
+    name: windows binaries
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      # The three binaries and nothing else. `findery` finds `finderyd` next to
+      # itself, so they ship together — see the manifest.
+      - run: >
+          cargo build --release
+          -p findery-cli -p findery-server -p findery-mcp
+
+      # Staged under a fixed name so the manifest names a path rather than a
+      # cargo layout: the .wxs can then be built by hand, from anywhere, without
+      # knowing how the binaries were produced.
+      - name: Stage the binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          foreach ($b in @("findery", "finderyd", "findery-mcp")) {
+            Copy-Item "target/release/$b.exe" "artifacts/$b.exe"
+          }
+          Get-ChildItem artifacts | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: artifacts/*.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  installer:
+    name: msi
+    needs: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: artifacts
+
+      - name: Install the WiX toolset
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION
+          $tools = "$env:USERPROFILE\.dotnet\tools"
+          # `GITHUB_PATH` only reaches *later* steps, and the extension below has
+          # to be added by this one — so the current process gets it too.
+          $env:Path = "$tools;$env:Path"
+          $tools | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+          # The Restart Manager integration, used to close a running `finderyd`
+          # before its file is replaced. Pinned to the same version as the tool:
+          # a mismatched pair fails obscurely at build time.
+          wix extension add --global "WixToolset.Util.wixext/$env:WIX_VERSION"
+          wix extension list --global
+
+      # A tag names the release; Cargo.toml names the binary. When they disagree
+      # the installer would be labelled one version and contain another, which is
+      # the kind of thing that is only noticed after it is published.
+      - name: Resolve the version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $raw = $env:GITHUB_REF_NAME
+            if ($raw -notmatch '^v(\d+\.\d+\.\d+(\.\d+)?)$') {
+              throw "tag `$raw` is not v<major>.<minor>.<patch>; MSI versions are numeric and four parts at most"
+            }
+            $version = $Matches[1]
+            $declared = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+                         Select-Object -First 1).Matches[0].Groups[1].Value
+            if ($declared -ne $version) {
+              throw "tag says $version, Cargo.toml says $declared; bump the workspace version or retag"
+            }
+          } else {
+            # A dispatched or branch build still produces an installer, so the
+            # packaging path is exercised before a release depends on it — but it
+            # is versioned as a placeholder nothing should be published under.
+            $version = "0.0.0"
+          }
+          "version=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          wix build -arch x64 `
+                    -ext WixToolset.Util.wixext `
+                    -d Version=$v `
+                    packaging/windows/findery.wxs `
+                    -o "artifacts/findery-$v-x64.msi"
+
+          # A second package, one version older, from the same sources. Installing
+          # it first is the only way to exercise the upgrade path — and the
+          # upgrade is the most fragile part of any .msi: it is where the
+          # `UpgradeCode` decides whether the new package replaces the old one or
+          # sits beside it as a second product.
+          if ($v -ne "0.0.1") {
+            wix build -arch x64 `
+                      -ext WixToolset.Util.wixext `
+                      -d Version=0.0.1 `
+                      packaging/windows/findery.wxs `
+                      -o "artifacts/findery-0.0.1-x64.msi"
+          }
+
+      - name: Install it, run it, upgrade it, remove it
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $msi = "artifacts/findery-$v-x64.msi"
+          $exe = "$env:ProgramFiles\findery\findery.exe"
+
+          function Install($package, $tag) {
+            $log = "msiexec-$tag.log"
+            $p = Start-Process msiexec -ArgumentList "/i", "$package", "/qn", "/norestart", "/l*v", "$log" -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "install ($tag) failed: $($p.ExitCode)" }
+          }
+
+          # What Apps & features would list. One entry, always.
+          function FinderyProducts {
+            @(
+              Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue
+              Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue
+            ) | Where-Object { $_.DisplayName -eq "findery" }
+          }
+
+          if (Test-Path "artifacts/findery-0.0.1-x64.msi") {
+            Install "artifacts/findery-0.0.1-x64.msi" "old"
+            Write-Host "products registered before the upgrade: $((FinderyProducts).Count)"
+          }
+
+          Install $msi "new"
+
+          # An upgrade must REPLACE the old package, not join it. Two registered
+          # products means the `UpgradeCode` did not do its job, and the user is
+          # left with an entry in Apps & features that removes the other one.
+          $count = (FinderyProducts).Count
+          if ($count -ne 1) { throw "$count 'findery' products are registered; the upgrade did not replace the old one" }
+
+          if (-not (Test-Path $exe)) { throw "findery.exe was not installed to Program Files" }
+          foreach ($b in @("findery.exe", "finderyd.exe", "findery-mcp.exe")) {
+            $p = "$env:ProgramFiles\findery\$b"
+            if (-not (Test-Path $p)) { throw "$b is missing; the three ship together" }
+          }
+
+          $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          if ($machinePath -notlike "*\findery*") { throw "the installer did not add itself to PATH" }
+          $entries = ([regex]::Matches($machinePath, [regex]::Escape("$env:ProgramFiles\findery"))).Count
+          if ($entries -ne 1) { throw "PATH holds the install directory $entries times; an upgrade duplicated it" }
+
+          $out = & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "findery --version exited $LASTEXITCODE" }
+          Write-Host "ran: $out"
+
+          # `finderyd --check` prints the configuration as resolved: a real
+          # execution of the second binary rather than a presence check.
+          & "$env:ProgramFiles\findery\finderyd.exe" --check | Select-Object -First 3
+          if ($LASTEXITCODE -ne 0) { throw "finderyd --check exited $LASTEXITCODE" }
+
+          $p = Start-Process msiexec -ArgumentList "/x", "$msi", "/qn", "/norestart", "/l*v", "uninstall.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content uninstall.log -Tail 40; throw "uninstall failed: $($p.ExitCode)" }
+
+          if (Test-Path "$env:ProgramFiles\findery\findery.exe") { throw "uninstall left the binaries behind" }
+          $after = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          if ($after -like "*\findery*") { throw "uninstall left the PATH entry behind" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msi
+          # The release MSI only. The throwaway 0.0.1 above is a test fixture and
+          # publishing it would put a second, older installer on the release page.
+          path: artifacts/findery-${{ steps.version.outputs.version }}-x64.msi
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  release:
+    name: release
+    needs: installer
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      # The only job that writes anything, and the only thing it writes is the
+      # release for the tag it was triggered by.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: msi
+          path: artifacts
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # `gh` rather than a third-party release action: it is on the runner,
+          # it needs no version to keep current, and the token is already here.
+          ls -l artifacts
+          gh release create "$GITHUB_REF_NAME" \
+            --title "findery ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            artifacts/*.msi
