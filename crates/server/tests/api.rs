@@ -442,6 +442,13 @@ async fn bad_requests_get_the_status_they_deserve() {
     let (status, body) = h.call("GET", "/v1/projects/ghost", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["code"], "not_found");
+    // The PAYLOAD travels, not the rendered message: a client that rebuilds
+    // the variant from `code` must render it exactly once.
+    assert_eq!(body["message"], "project `ghost`", "{body}");
+
+    let (status, body) = h.call("GET", "/v1/not-a-route", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["message"], "route", "{body}");
 
     let (status, body) = h
         .call("POST", "/v1/projects", Some(json!({ "root": "   " })))

@@ -269,6 +269,7 @@ impl Indexer {
         };
         Ok(HealthReport {
             ok: embedder_ok,
+            version: env!("CARGO_PKG_VERSION").to_string(),
             model: self.embedder.model().to_string(),
             dim: self.embedder.dim(),
             store_backend: backend.unwrap_or_else(|| self.cfg.store.backend.as_str().to_string()),

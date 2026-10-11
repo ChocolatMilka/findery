@@ -113,7 +113,9 @@ impl ApiError {
     fn with_status(self, status: StatusCode) -> (StatusCode, Json<dto::ErrorBody>) {
         let body = dto::ErrorBody {
             code: self.0.code().to_string(),
-            message: self.0.to_string(),
+            // The payload, not the rendered message: the client rebuilds the
+            // variant from `code` and renders it once (see `Error::detail`).
+            message: self.0.detail(),
         };
         (status, Json(body))
     }

@@ -405,6 +405,12 @@ mod tests {
     fn error_bodies_become_typed_errors() {
         let body = r#"{"code":"not_found","message":"project `x`"}"#;
         assert!(matches!(decode_error(404, body), Error::NotFound(_)));
+        // Rendered once: the server sends the payload, the client adds the one
+        // prefix its variant carries.
+        assert_eq!(
+            decode_error(404, body).to_string(),
+            "not found: project `x`"
+        );
 
         let body = r#"{"code":"invalid","message":"bad glob"}"#;
         assert_eq!(decode_error(400, body).code(), "invalid");

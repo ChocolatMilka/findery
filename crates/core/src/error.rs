@@ -49,6 +49,25 @@ impl Error {
         }
     }
 
+    /// The payload of the error, without the prefix its `Display` adds.
+    ///
+    /// INTENT: this is what travels on the wire, beside the machine-readable
+    /// `code`. A server that sent `Display` instead would send "not found: x"
+    /// under the code `not_found`, and the client rebuilding the variant from
+    /// `code` would render "not found: not found: x".
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Config(m)
+            | Self::Invalid(m)
+            | Self::NotFound(m)
+            | Self::Store(m)
+            | Self::Embed(m)
+            | Self::Internal(m) => m.clone(),
+            Self::Upstream { detail, .. } => detail.clone(),
+            Self::Io(e) => e.to_string(),
+        }
+    }
+
     /// The HTTP status the server layer MUST use for this error.
     ///
     /// INTENT: the mapping lives here (single source of truth) instead of in

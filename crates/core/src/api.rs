@@ -121,6 +121,14 @@ pub struct BucketRemoved {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HealthReport {
     pub ok: bool,
+    /// Version of the daemon binary that answered.
+    ///
+    /// INTENT: a CLI talking to an older daemon cannot tell it from a broken
+    /// one — the symptom is a 404 on a route this build knows exists, which
+    /// points nowhere. The field is itself recent, so a daemon that reports
+    /// NOTHING is the older one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
     pub model: String,
     pub dim: usize,
     pub store_backend: String,

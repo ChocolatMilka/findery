@@ -17,8 +17,13 @@ health check that ends up disabled. The comparison is constant-time.
 Uniform body, status derived from `Error::http_status()` (CONV-010):
 
 ```json
-{ "code": "not_found", "message": "not found: project `axle`" }
+{ "code": "not_found", "message": "project `axle`" }
 ```
+
+`code` names the variant, `message` is its **payload** — never the rendered
+error. A client that branches on `code` rebuilds the variant and renders it
+once; a server that sent `Error::to_string()` here would make every message
+read `not found: not found: project \`axle\``.
 
 | `code` | Status | Meaning |
 |--------|--------|------|
@@ -47,8 +52,14 @@ Readiness: probes the embeddings runtime.
 
 ```json
 { "ok": true, "model": "qwen3.7-text-embedding", "dim": 1024,
-  "store_backend": "sqlite", "projects": 3, "embedder_ok": true }
+  "store_backend": "sqlite", "projects": 3, "embedder_ok": true,
+  "version": "0.1.1" }
 ```
+
+`version` is the version of the **daemon binary** that answered. It is what lets
+a client tell an outdated daemon from a broken one: a daemon that predates a
+route answers 404 on it, and a daemon that predates this field answers without
+it — `findery doctor` reads both as "rebuild and restart me".
 
 `ok: false` with `embedder_ok: false` and a `detail` string is the normal answer
 when the model is not up. The daemon still serves everything that does not need
@@ -78,7 +89,7 @@ anyone on the network can stop is not a daemon.
 // POST — `root` is a HOST path, translated by the mounts
 { "root": "C:/Users/users/RustroverProjects/axle",
   "id": "axle",                       // optional, otherwise derived from the name
-  "extensions": ["rs", "md"],         // optional
+  "extensions": ["rs", "md", "py"],   // optional; defaults to every known language
   "exclude": ["**/generated/**"],     // optional
   "bucket": { "name": "work" },       // optional; see below
   "scopes": { "api": { "paths": ["crates/server/**"] } },  // optional
