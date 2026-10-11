@@ -1,14 +1,8 @@
 //! What a project is, and where it lives.
 //!
-//! INTENT: split from `lib.rs`, which wires the daemon together. Registering a
-//! project is the one operation that decides *everything* about it at once —
-//! how it is fed, which bucket holds its rows, what the walker must refuse to
-//! look at — and that decision deserves to be readable in one piece rather than
-//! interleaved with search and export.
-//!
-//! Entry/exit: the HTTP handler calls [`Indexer::register`]; everything else
-//! here is what registration and deletion need to keep the daemon's maps, the
-//! filesystem and the registry in agreement.
+//! Split from `lib.rs`: registering a project decides everything about it at
+//! once — how it is fed, which bucket holds its rows, what the walker must skip —
+//! and that reads better in one piece than interleaved with search and export.
 
 use crate::Indexer;
 use findery_core::api::RegisterProject;
@@ -59,6 +53,16 @@ impl Indexer {
             !push,
         )?;
         let target = resolved.name.clone();
+        if resolved.substituted {
+            // The requested bucket is on a disk this daemon cannot write, so it
+            // gets a different one. The answer carries what was used, and a
+            // substitution worth making is worth saying out loud.
+            tracing::warn!(
+                project = %id,
+                using = %resolved.path,
+                "the requested bucket is not reachable; using one beside the data directory"
+            );
+        }
 
         let mut spec = ProjectSpec {
             root: container_root,
@@ -114,11 +118,10 @@ impl Indexer {
 
     /// The globs that keep a bucket out of the tree it indexes.
     ///
-    /// INTENT: two locks, and both are needed. `**/.findery/**` covers the
-    /// ordinary case — a bucket inside the project, beside the manifest — and
-    /// the walker prunes that directory structurally anyway. The second covers
-    /// what the walker cannot know: a bucket pointed at an arbitrary path
-    /// *inside* the root, which no fixed pattern can name.
+    /// Two locks, both needed: the fixed pattern covers the ordinary case — the
+    /// walker prunes `.findery` structurally anyway — and the resolved path
+    /// covers a bucket pointed at an arbitrary location *inside* the root, which
+    /// no fixed pattern can name.
     fn exclusions_for(&self, bucket_path: &str, root: &str) -> Vec<String> {
         let mut patterns = vec![".findery/**".to_string(), "**/.findery/**".to_string()];
         let root = root.trim_end_matches(['/', '\\']);

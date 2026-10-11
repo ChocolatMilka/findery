@@ -58,9 +58,8 @@ pub async fn push_documents(
     project: &Project,
     documents: Vec<(String, String)>,
 ) -> Result<SyncReport> {
-    // Nobody polls a pushed batch from here: the client that walked the project
-    // is the one drawing a bar, from its own loop. The engine stays written once
-    // rather than forked into a watched and an unwatched copy.
+    // Nobody polls a pushed batch: the client that walked the project draws its
+    // own bar. The engine stays written once rather than forked in two.
     ingest(
         idx,
         cat,

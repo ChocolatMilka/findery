@@ -2,42 +2,17 @@
 <!--
   findery — Windows installer (WiX v4+ schema, built with `wix build`).
 
-  Inputs, resolved relative to the working directory at package time:
+  Reads, relative to the working directory: artifacts/{findery,finderyd,findery-mcp}.exe
+  and README.md. Installs them side by side into C:\Program Files\findery, and
+  that directory onto the system PATH.
 
-      artifacts/findery.exe        the CLI
-      artifacts/finderyd.exe       the index server it starts itself
-      artifacts/findery-mcp.exe    the MCP bridge Claude Code launches
-      README.md
+  Side by side is a correctness requirement, not tidiness: `findery` looks for
+  `finderyd` next to itself before PATH, so the pair cannot come from two builds.
 
-  Layout shipped on the user's machine:
-
-      C:\Program Files\findery\findery.exe
-      C:\Program Files\findery\finderyd.exe
-      C:\Program Files\findery\findery-mcp.exe
-      C:\Program Files\findery\README.md
-
-  All three binaries sit in ONE directory, and that is a correctness
-  requirement rather than tidiness: `findery` looks for `finderyd` next to
-  itself before it looks on PATH, so that the pair cannot be split across two
-  builds. An installer that filed them apart would hand the user a CLI talking
-  to a server it never found.
-
-  PATH is modified, and that is the point of the package: this tool is typed as
-  `findery` from inside whatever project directory the user is in. The entry is
-  written as a *system* variable ([INSTALLFOLDER], appended) because the install
-  is per-machine, and it is tied to the component that owns `findery.exe` so
-  that uninstalling removes exactly what was added.
-
-  GUIDs below are STABLE FOR LIFE. Changing `UpgradeCode` makes this package
-  unable to upgrade an earlier one in place; changing a component `Guid` makes
-  the component look like a different component, and it will be duplicated
-  rather than replaced. Both are part of the public ABI of the .msi.
-
-  `$(Version)` is supplied by the caller — `wix build -d Version=x.y.z` — so this
-  file holds no version of its own and cannot drift from the tag. The workflow
-  resolves it from the tag and refuses to build when it disagrees with
-  Cargo.toml; MSI versions are numeric and at most four parts, so a tag like
-  `v0.2.0-rc.1` is turned into an error rather than silently rounded.
+  GUIDs are STABLE FOR LIFE — they are the identity Windows Installer knows this
+  package and its components by. Regenerating either duplicates instead of
+  replacing. `$(Version)` comes from `wix build -d Version=x.y.z`, so this file
+  holds no version that could drift from the tag.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
@@ -58,19 +33,11 @@
 
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- The one thing that makes this package non-trivial.
-
-         `finderyd` starts itself on the first `findery` command and stays up,
-         and Windows will not replace a running executable. An upgrade would
-         therefore land on a locked file — the ordinary case here, not an edge
-         one, because the daemon is *designed* to be running, and the user has
-         no reason to know it exists, let alone to stop it first.
-
-         This is the declarative answer: the Restart Manager closes the named
-         process before the files are replaced, instead of the user meeting
-         "files in use". `CloseMessage="no"` because the daemon has no window to
-         carry a message; `RebootPrompt="no"` because a tool the user restarts
-         by typing its name must never ask for a reboot. -->
+    <!-- `finderyd` starts itself and stays up, and Windows will not replace a
+         running executable — so without this, every upgrade lands on a locked
+         file. The Restart Manager closes it first. No close message (it has no
+         window) and no reboot prompt (a tool you restart by typing its name
+         must never ask for one). -->
     <util:CloseApplication Id="CloseServer"
                            Target="finderyd.exe"
                            CloseMessage="no"
@@ -92,21 +59,17 @@
   <Fragment>
     <ComponentGroup Id="Binaries" Directory="INSTALLFOLDER">
 
-      <!-- One component per file, so that an upgrade replaces exactly the
-           binaries and nothing else, and so that Windows Installer's
-           component rules hold: a component holds one keypath. -->
+      <!-- One component per file: an upgrade then replaces exactly the
+           binaries, and each component keeps its single keypath. -->
 
       <Component Id="Cli" Guid="DC47CB50-7612-4EE7-9BAC-DEA28E5175E9">
         <File Id="findery_exe" Source="artifacts/findery.exe" Name="findery.exe" KeyPath="yes" />
 
         <!-- PATH is the reason this package exists: the tool is typed from
-             inside a project, not from an install directory. `Part="last"`
-             appends, so an existing PATH keeps its order — and its precedence.
-             `System="yes"` writes the machine-wide variable, matching
-             `Scope="perMachine"`; a per-user entry under a per-machine install
-             would be invisible to every other account on the machine.
-             `Permanent="no"` keeps it inside the component, so uninstalling
-             removes it and nothing else does. -->
+             inside a project, not from an install directory. Appended, so an
+             existing PATH keeps its order and its precedence; system-wide,
+             matching `Scope="perMachine"`; and tied to this component, so
+             uninstalling removes it and nothing else does. -->
         <Environment Id="PathEntry"
                      Name="PATH"
                      Value="[INSTALLFOLDER]"
@@ -128,9 +91,8 @@
   </Fragment>
 
   <Fragment>
-    <!-- A breadcrumb so that anything - the MCP bridge's documentation, a user
-         who moved the install - can find the directory without asking PATH,
-         which a process started before the change may not have reloaded. -->
+    <!-- A breadcrumb: a process started before the PATH change has not
+         reloaded it, and `findery doctor` should still find the install. -->
     <Component Id="InstallDirRegistry" Guid="AA8AF7E0-FF3C-45D4-B47E-2F907D6505B3"
                Directory="INSTALLFOLDER">
       <RegistryKey Root="HKLM" Key="Software\findery">

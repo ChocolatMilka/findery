@@ -966,6 +966,86 @@ async fn an_unknown_scope_names_the_ones_the_project_declares() {
     );
 }
 
+/// One unopenable bucket must not take the daemon down with it. The others keep
+/// serving, and the one that failed is named rather than swallowed: a bucket
+/// that silently did not open is a project that silently disappeared from every
+/// listing.
+#[tokio::test]
+async fn a_corrupt_bucket_does_not_stop_the_daemon_from_booting() {
+    let h = harness().await;
+    let bad = h.data_dir.path().join("buckets").join("bad");
+    std::fs::create_dir_all(&bad).expect("mkdir");
+    std::fs::write(bad.join("bucket.db"), b"this is not a database").expect("write");
+
+    // A fresh process over the same directories — the boot that has to survive.
+    let state = findery_server::state_from_config(h.cfg.clone())
+        .await
+        .expect("a broken bucket must not refuse the boot");
+    let app = findery_server::app(state);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/v1/health")
+        .body(Body::empty())
+        .expect("request");
+    let response = app.oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("json");
+
+    assert_eq!(body["ok"], true, "the daemon is up: {body}");
+    assert!(
+        body["detail"].as_str().is_some_and(|d| d.contains("bad")),
+        "the bucket that failed is named: {body}"
+    );
+}
+
+/// One file is one bucket, whatever it is called. Two names over one SQLite file
+/// would be two handles and two writers on it, and deleting one would unlink the
+/// file the other is still serving.
+#[tokio::test]
+async fn a_second_name_over_one_file_is_refused() {
+    let h = harness().await;
+    let shared = h.data_dir.path().join("shared.db");
+
+    let (status, first) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({
+                "root": h.root(), "id": "one",
+                "bucket": { "name": "shared", "path": shared.display().to_string() }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    let (status, second) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({
+                "root": h.root(), "id": "two",
+                "bucket": { "name": "another-name", "path": shared.display().to_string() }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{second}");
+    assert!(
+        second["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("already open as `shared`")),
+        "{second}"
+    );
+}
+
 /// The ordinary case, and the one everything else is a departure from: a
 /// project indexed into a bucket that lives inside it.
 #[tokio::test]

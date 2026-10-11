@@ -1,11 +1,8 @@
 //! Running a sync while showing it.
 //!
-//! INTENT: a first index of a large repository takes minutes, and the CLI is the
-//! only place a human is actually watching one. The server has no stream to
-//! offer, so watching is a loop of polls against `GET /v1/jobs/{id}` — and that
-//! loop lives here, at the edge. A streaming route in the API would be a
-//! protocol in service of a progress bar, paid for by every client that never
-//! draws one.
+//! The server has no stream to offer, so watching is a poll loop against
+//! `GET /v1/jobs/{id}` — and it lives here, at the edge. A streaming route would
+//! be a protocol in service of a progress bar.
 
 use findery_client::Client;
 use findery_core::Result;
@@ -15,23 +12,15 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
 use std::time::Duration;
 
-/// How often the CLI asks where a job is.
-///
-/// INTENT: each poll is a full HTTP round trip, and the bar moves in units of
-/// files, which take far longer than this to change. Going faster buys nothing
-/// but load on a daemon that is busy embedding; going slower makes a live bar
-/// feel stuck.
+/// Each poll is an HTTP round trip and the bar moves in units of files, which
+/// take far longer to change than this.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// A live bar, or nothing at all.
+/// A live bar on stderr, or nothing.
 ///
-/// Two refusals, both deliberate:
-///
-/// * **stderr, never stdout** — the same channel as a warning. A pipe and
-///   `--json` must see the answer and nothing else, and a bar on stdout would
-///   end up inside whatever is reading it.
-/// * **nothing when nobody is watching** — redirected output and CI logs get the
-///   summary line they can grep, not a few hundred carriage returns.
+/// Never stdout: a pipe and `--json` must see the answer alone. And never when
+/// nobody is watching — a redirected log gets the summary line, not hundreds of
+/// carriage returns.
 pub(crate) fn bar() -> Option<ProgressBar> {
     if !std::io::stderr().is_terminal() {
         return None;
@@ -50,10 +39,8 @@ pub(crate) fn bar() -> Option<ProgressBar> {
     Some(bar)
 }
 
-/// Draws one snapshot of a job's counters.
-///
-/// The total only appears once the walk has returned, so the bar grows from
-/// "0 of 0" to its real length exactly once, and never runs backwards.
+/// Draws one snapshot. The total appears only once the walk has returned, so the
+/// bar grows to its real length once and never runs backwards.
 fn draw(bar: &ProgressBar, p: &Progress) {
     if p.files_total > 0 {
         bar.set_length(p.files_total);
@@ -68,11 +55,8 @@ fn draw(bar: &ProgressBar, p: &Progress) {
     ));
 }
 
-/// Runs a sync, drawing it while it runs.
-///
-/// With no bar this is a plain call: the request already asked the server to
-/// wait, so the answer comes back complete. With a bar the request asked for a
-/// job, and this loop turns its counters into something a person can read.
+/// Runs a sync, drawing it while it runs. With no bar the request asked the
+/// server to wait, so the answer comes back complete and this is a plain call.
 pub(crate) async fn watch_sync(
     client: &Client,
     project: &ProjectId,
@@ -100,13 +84,8 @@ pub(crate) async fn watch_sync(
     }
 }
 
-/// Runs a project's first index to completion, drawing it when there is a
-/// terminal to draw on.
-///
-/// INTENT: `findery init --sync` is where a large repository is met for the
-/// first time, which makes it the single most important place to show something
-/// moving. It is the same watch loop as `findery sync`, so it is the same
-/// function.
+/// `findery init --sync` is where a large repository is met for the first time,
+/// so it watches the run the same way `findery sync` does.
 pub(crate) async fn sync_now(
     client: &Client,
     project: &ProjectId,
@@ -129,11 +108,8 @@ pub(crate) async fn sync_now(
     }
 }
 
-/// Turns a finished job into this call's answer.
-///
-/// INTENT: a sync that failed must fail *here*, loudly, with a non-zero exit
-/// code. Returning the job would let the CLI print "queued" for work that is
-/// already over and will never happen.
+/// A sync that failed must fail *here*, with a non-zero exit code: returning the
+/// job would let the CLI print "queued" for work that is already over.
 fn terminal(job: findery_core::api::Job) -> Result<SyncResponse> {
     if job.state == JobState::Succeeded {
         return match job.report {

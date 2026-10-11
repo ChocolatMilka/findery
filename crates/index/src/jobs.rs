@@ -22,11 +22,8 @@ pub use findery_core::api::{Job, JobState};
 /// Bounded, in-memory job history.
 pub struct JobRegistry {
     jobs: Mutex<VecDeque<Job>>,
-    /// One set of live counters per non-terminal job.
-    ///
-    /// INTENT: the deque is history and holds finished jobs; these are the
-    /// counters of the ones still running. Keeping them apart is what lets a
-    /// terminal job carry no progress at all.
+    /// Live counters per non-terminal job. Apart from the deque, which is
+    /// history, so a finished job can carry none.
     progress: Mutex<HashMap<String, ProgressHandle>>,
     capacity: usize,
     permits: Arc<Semaphore>,
@@ -77,9 +74,8 @@ impl JobRegistry {
         job
     }
 
-    /// The counters of a running job, for whoever is driving it.
-    ///
-    /// `None` once the job is terminal: its numbers are its report.
+    /// The counters of a running job, for whoever drives it. `None` once it is
+    /// terminal: its numbers are its report.
     pub fn handle(&self, id: &str) -> Option<ProgressHandle> {
         self.progress.lock().get(id).cloned()
     }
@@ -89,8 +85,8 @@ impl JobRegistry {
         self.update(id, |job| job.state = JobState::Running);
     }
 
-    /// Records a successful outcome. The counters go with it: what the job did
-    /// is the report, and a second copy of it could only disagree.
+    /// Records a successful outcome, and drops the counters: what the job did is
+    /// the report, and a second copy could only disagree.
     pub fn succeed(&self, id: &str, report: SyncReport) {
         self.update(id, |job| {
             job.state = JobState::Succeeded;
@@ -144,11 +140,9 @@ impl JobRegistry {
         }
     }
 
-    /// Fills in the counters a job has *right now*, at the moment it is read.
-    ///
-    /// INTENT: the record and the counters are kept apart, so a job can never be
-    /// read back carrying a snapshot from an earlier read. Only a running job
-    /// has counters at all — a queued one has not started, and a finished one is
+    /// Fills in the counters a job has *right now*. The record and the counters
+    /// are kept apart, so a job is never read back with a stale snapshot. Only a
+    /// running job has any: a queued one has not started, a finished one is
     /// described by its report.
     fn stamp(&self, job: &mut Job) {
         job.progress = match job.state {
@@ -186,8 +180,7 @@ mod tests {
         assert!(reg.has_active("demo").is_none());
     }
 
-    /// A running job reports where it is, and the numbers come from the handle
-    /// the sync writes into — never from a copy taken earlier.
+    /// A running job reports where it is, from the handle the sync writes into.
     #[test]
     fn a_running_job_carries_the_counters_it_was_written() {
         let reg = JobRegistry::new(8, 1);
@@ -228,8 +221,8 @@ mod tests {
         );
     }
 
-    /// A failure must not leave counters behind either — a client that saw
-    /// "50/200" on a failed job would read it as progress that is still coming.
+    /// A failure leaves no counters either: "50/200" on a stopped job reads as
+    /// progress that is still coming.
     #[test]
     fn a_failed_job_carries_no_progress_either() {
         let reg = JobRegistry::new(8, 1);

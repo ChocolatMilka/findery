@@ -1,10 +1,9 @@
 //! `findery init` — claim a directory, and leave a manifest behind.
 //!
-//! INTENT: split out of `run.rs` because this is the one command that does two
-//! things rather than one: it registers a project with the daemon, and it writes
-//! the file that makes the project readable by anyone who clones it. Keeping
-//! them next to each other is the point — the second is built from the first's
-//! answer, never from the request, and a reader has to see that to trust it.
+//! Split from `run.rs` because it is the one command that does two things: it
+//! registers the project and it writes the file that makes the project readable
+//! by anyone who clones it. They belong together because the second is built
+//! from the first's *answer*, never from the request.
 
 use crate::render;
 use crate::scope::{absolute, derive_id};

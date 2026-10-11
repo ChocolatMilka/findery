@@ -54,14 +54,13 @@ impl SearchFilter {
             && self.symbol_contains.is_none()
     }
 
-    /// This filter with `on_top` applied over it, dimension by dimension.
+    /// This filter with `on_top` applied over it, dimension by dimension: a
+    /// dimension the request names replaces the scope's, one it leaves empty
+    /// keeps it.
     ///
-    /// INTENT: a dimension the request names replaces the project's; a dimension
-    /// it leaves empty keeps the project's. The alternative — intersecting the
-    /// two — turns `--scope api --lang markdown` into a search that matches
-    /// nothing, and a filter that cannot widen is a filter nobody can escape.
-    /// It is the same shape as the instruction ladder, so there is one rule to
-    /// learn rather than two.
+    /// Intersecting the two instead would turn `--scope api --lang markdown` into
+    /// a search that matches nothing, and a filter nobody can widen is one
+    /// nobody can escape.
     pub fn layer(&self, on_top: &SearchFilter) -> SearchFilter {
         SearchFilter {
             paths: if on_top.paths.is_empty() {
@@ -113,10 +112,9 @@ pub struct SearchRequest {
     pub instruction: Option<String>,
     /// A named restriction the project declared, narrowing the SAME index.
     ///
-    /// INTENT: sent as a name, not as an expanded filter, because the MCP bridge
-    /// is a different process from the CLI and neither should re-read a manifest
-    /// to know what a scope means. The daemon already holds the project's
-    /// definition and is the one component both transports reach.
+    /// Sent as a name, not an expanded filter: the daemon already holds the
+    /// project's definition, and the MCP bridge is a different process that never
+    /// reads a manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
 }
@@ -149,12 +147,9 @@ impl SearchRequest {
         self
     }
 
-    /// The instruction this request resolves to on its own.
-    ///
-    /// INTENT: the precedence lives here, in L0, so the HTTP API, the MCP bridge
-    /// and the CLI cannot disagree about which one wins. `None` means "nothing
-    /// was said here" — the project's default applies next, then the daemon's
-    /// configured one. [`SearchRequest::resolve`] walks the whole ladder.
+    /// The instruction this request resolves to on its own. `None` means nothing
+    /// was said here — the project's default applies next, then the daemon's.
+    /// See [`SearchRequest::resolve`] for the whole ladder.
     pub fn resolved_instruction(&self) -> Option<&str> {
         match (&self.instruction, self.task) {
             (Some(free), _) if !free.trim().is_empty() => Some(free),
@@ -163,15 +158,15 @@ impl SearchRequest {
         }
     }
 
-    /// The filter and instruction this request resolves to, given the project.
+    /// What this request means once the project has had its say. `scope` is the
+    /// filter the project declared under the name the request carried — empty
+    /// when it named none — and `instruction` is the project's own default.
     ///
-    /// This is the single ladder, and it is deliberately kept in L0 rather than
-    /// in the engine: a transport that resolved it differently would be a
-    /// transport that answers a different question. See [`SearchFilter::layer`]
-    /// for what happens when a scope and a filter disagree.
-    pub fn resolve(&self, project: &SearchFilter, instruction: Option<&str>) -> Resolved {
+    /// The ladder is resolved here, in L0, so a transport cannot resolve it
+    /// differently. See [`SearchFilter::layer`] for how the filters combine.
+    pub fn resolve(&self, scope: &SearchFilter, instruction: Option<&str>) -> Resolved {
         Resolved {
-            filter: project.layer(&self.filter),
+            filter: scope.layer(&self.filter),
             instruction: self
                 .resolved_instruction()
                 .or(instruction)

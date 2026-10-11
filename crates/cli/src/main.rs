@@ -88,7 +88,8 @@ pub(crate) enum Command {
         /// Extensions to index, comma-separated. Defaults to `rs,md`.
         #[arg(long, value_delimiter = ',')]
         ext: Option<Vec<String>>,
-        /// Bucket to hold this project. Defaults to `store.default_bucket`.
+        /// Bucket to hold this project, by name. Defaults to a bucket inside
+        /// the project, named after it.
         ///
         /// Chosen once: every later command follows the project, so nobody has
         /// to remember which index a directory belongs to.

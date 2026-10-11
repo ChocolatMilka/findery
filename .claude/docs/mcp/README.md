@@ -20,11 +20,17 @@ all of them:
 {
   "mcpServers": {
     "findery": {
-      "command": "C:/Users/users/RustroverProjects/findery/target/release/findery-mcp"
+      "command": "C:/Program Files/findery/findery-mcp.exe"
     }
   }
 }
 ```
+
+Three spellings of the same path, depending on how it was installed: the one
+above after the Windows `.msi`, `<repo>/target/release/findery-mcp` from a source
+checkout, and whatever `~/.cargo/bin` resolves to after `make install`. Name the
+bridge from the **same build as the server it will talk to** — the bridge is a
+wire, and a wire to a different version is a wire to a different API.
 
 Add an `env` block only when the daemon is not on loopback:
 

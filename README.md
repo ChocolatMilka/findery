@@ -15,7 +15,7 @@ MCP API — so it plugs directly into Claude Code.
 - 📤 JSONL / JSON / raw `float32` export — you're never locked in
 - 📡 Pull or push: the daemon reads your files, or the CLI sends them — so the
   daemon can run in a container, or on another machine, with nothing mounted
-- 🧪 274 tests, clean `clippy -D warnings`, layer watchdog
+- 🧪 281 tests, clean `clippy -D warnings`, layer watchdog
 
 ---
 
@@ -165,11 +165,16 @@ scoring, never a second one.
 {
   "mcpServers": {
     "findery": {
-      "command": "C:/Users/users/RustroverProjects/findery/target/release/findery-mcp"
+      "command": "C:/Program Files/findery/findery-mcp.exe"
     }
   }
 }
 ```
+
+That is the path the installer produces. From a source checkout it is
+`<repo>/target/release/findery-mcp`; from `make install`, whatever
+`~/.cargo/bin` resolves to. Whichever you name, it must be the bridge from the
+same build as the server it talks to.
 
 Nine tools appear, including `search_code`, which becomes the agent's first
 reflex for locating code — in place of `glob` + `grep` + three `Read`.
@@ -292,7 +297,7 @@ team.
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 274 tests
+make test      # 281 tests
 make bench     # vector scan measurement
 ```
 

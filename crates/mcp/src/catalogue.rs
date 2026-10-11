@@ -1,10 +1,8 @@
 //! What the bridge advertises, as `tools/list` returns it.
 //!
-//! INTENT: the schemas are the contract a model reads before it knows anything
-//! else about this server, so they are held apart from the code that answers
-//! them: a description is edited for a reader, an implementation for the borrow
-//! checker, and mixing the two is how a tool ends up documented as something it
-//! no longer does.
+//! Held apart from the code that answers it: a description is edited for a
+//! reader and an implementation for the compiler, and mixing the two is how a
+//! tool ends up documented as something it no longer does.
 
 use serde_json::{Value, json};
 

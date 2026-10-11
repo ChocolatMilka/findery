@@ -32,68 +32,79 @@ pub use sqlite_store::SqliteVectorStore;
 
 /// Moves an install created before the vocabulary change onto the current names.
 ///
-/// INTENT: the file names moved with the vocabulary, and an install that
-/// predates the change still has `catalog.db` and `catalogs/<name>/`. The rename
-/// is done once, here, before anything opens a handle — the only moment it is
-/// safe on every platform. Best-effort by contract: a rename that fails leaves
-/// the old path in place and reports itself, because a bucket nobody can find is
-/// worse than one whose file kept an old name.
-///
-/// Returns the non-fatal failures, as messages (CONV-022).
-pub fn migrate_legacy_layout(cfg: &StoreConfig) -> Vec<String> {
-    let mut warnings = Vec::new();
+/// A move that cannot be made is an error, not a warning: opening *creates*, so
+/// the alternative is a fresh empty database beside the real index with the user
+/// told nothing. Both names present is not a failure — the current one wins.
+pub fn migrate_legacy_layout(cfg: &StoreConfig) -> Result<()> {
     let data_dir = PathBuf::from(cfg.data_dir.trim_end_matches('/'));
 
     let legacy_db = data_dir.join("catalog.db");
     let current_db = data_dir.join("bucket.db");
-    if legacy_db.is_file()
-        && !current_db.exists()
-        && let Err(e) = rename_file_set(&legacy_db, &current_db)
-    {
-        warnings.push(format!(
-            "cannot move {} to {}: {e}",
-            legacy_db.display(),
-            current_db.display()
-        ));
+    // `is_file`, not `exists`: a *directory* named `bucket.db` is not a migrated
+    // bucket, and skipping the move would leave the real index behind.
+    if legacy_db.is_file() && !current_db.is_file() {
+        rename_file_set(&legacy_db, &current_db)
+            .map_err(|e| stranded(&legacy_db, &current_db, e))?;
     }
 
     let legacy_dir = data_dir.join("catalogs");
     let current_dir = PathBuf::from(buckets_dir(&cfg.data_dir));
     let Ok(entries) = std::fs::read_dir(&legacy_dir) else {
-        return warnings;
+        return Ok(());
     };
     for entry in entries.filter_map(|e| e.ok()) {
         let from = entry.path();
-        if !from.is_dir() {
-            continue;
-        }
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let to = current_dir.join(&name);
-        if to.exists() {
+        if !from.is_dir() {
             continue;
         }
-        if let Err(e) = std::fs::create_dir_all(&current_dir)
+        let to = current_dir.join(&name);
+        if to.is_dir() {
+            continue;
+        }
+        let moved = std::fs::create_dir_all(&current_dir)
             .and_then(|()| std::fs::rename(&from, &to))
-            .and_then(|()| rename_file_set(&to.join("catalog.db"), &to.join("bucket.db")))
-        {
-            warnings.push(format!(
-                "cannot move bucket `{name}` from {} to {}: {e}",
-                from.display(),
-                to.display()
-            ));
+            .and_then(|()| rename_file_set(&to.join("catalog.db"), &to.join("bucket.db")));
+        if let Err(e) = moved {
+            return Err(stranded(&from, &to, e));
         }
     }
-    warnings
+    Ok(())
 }
 
-/// Renames a SQLite database together with the journal files named after it.
+/// The refusal a half-migrated install gets. It names both paths and the manual
+/// move, because the cause is usually transient — a held file, a read-only
+/// volume — and the user's next move is to fix it and retry.
+fn stranded(from: &Path, to: &Path, cause: std::io::Error) -> findery_core::Error {
+    findery_core::Error::Store(format!(
+        "cannot move {} to {}: {cause}\n  \
+         this install predates the current file names, and starting on a fresh \
+         database beside them would hide the index you already have; move it by \
+         hand (`mv {} {}`) and start again",
+        from.display(),
+        to.display(),
+        from.display(),
+        to.display()
+    ))
+}
+
+/// Renames a SQLite database together with the journal files named after it —
+/// SQLite derives `-wal` and `-shm` from the database's own name.
 ///
-/// INTENT: SQLite derives `-wal` and `-shm` from the database file name, so
-/// renaming the database alone would detach a write-ahead log that may still
-/// hold committed pages.
+/// A *non-empty* journal is refused: no multi-file rename is atomic, so a
+/// failure between the moves would either detach committed pages from the
+/// database that owns them or leave a journal pointing at a name that is gone.
+/// A cleanly closed database has an empty one or none.
 fn rename_file_set(from: &Path, to: &Path) -> std::io::Result<()> {
+    let wal = with_suffix(from, "-wal");
+    if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
+        return Err(std::io::Error::other(format!(
+            "{} still holds committed pages; close the database cleanly first",
+            wal.display()
+        )));
+    }
     std::fs::rename(from, to)?;
     for suffix in ["-wal", "-shm"] {
         let source = with_suffix(from, suffix);
@@ -117,11 +128,8 @@ pub fn open_bucket(cfg: &StoreConfig, name: &str) -> Result<Bucket> {
 
 /// Opens a bucket at an explicit file, wherever that file is.
 ///
-/// INTENT: a bucket inside the project it indexes, or on a drive it shares, is
-/// the reason the name and the location came apart. The parent directory is
-/// created here rather than by the caller, because "this bucket does not exist
-/// yet" is the ordinary state of a fresh `init` and not an error to route
-/// around.
+/// The parent directory is created here: a bucket that does not exist yet is the
+/// ordinary state of a fresh `init`, not an error to route around.
 pub fn open_bucket_file(path: &str, name: &str) -> Result<Bucket> {
     let file = Path::new(path);
     if let Some(parent) = file.parent()
@@ -185,11 +193,10 @@ pub async fn stored_recipe(cfg: &StoreConfig, name: &str) -> Result<Option<Strin
     open_bucket(cfg, name)?.get_meta("embedding_recipe").await
 }
 
-/// Deletes a bucket and everything in it.
-///
-/// The default bucket is refused: removing it is `findery rm` on each of its
-/// projects, not a rename of the whole install.
-pub fn delete_bucket(cfg: &StoreConfig, name: &str) -> Result<bool> {
+/// Refuses a bucket that may not be removed. Every caller asks this *first*:
+/// removal drops vectors and forgets homes long before it unlinks a file, so a
+/// guard at the end of the path has already cost the user their index.
+pub fn ensure_removable(name: &str) -> Result<()> {
     if name == DEFAULT_BUCKET {
         return Err(findery_core::Error::Config(format!(
             "`{DEFAULT_BUCKET}` is the bucket every install has; delete its projects instead"
@@ -200,6 +207,15 @@ pub fn delete_bucket(cfg: &StoreConfig, name: &str) -> Result<bool> {
             "`{name}` is not a bucket name"
         )));
     }
+    Ok(())
+}
+
+/// Deletes a bucket and everything in it.
+///
+/// The default bucket is refused: removing it is `findery rm` on each of its
+/// projects, not a rename of the whole install.
+pub fn delete_bucket(cfg: &StoreConfig, name: &str) -> Result<bool> {
+    ensure_removable(name)?;
     let dir = PathBuf::from(buckets_dir(&cfg.data_dir)).join(name);
     if !dir.is_dir() {
         return Ok(false);
@@ -216,24 +232,18 @@ pub fn delete_bucket(cfg: &StoreConfig, name: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Deletes a bucket that lives at an explicit path, wherever that is.
-///
-/// The journal files go with it: a `-wal` left beside nothing is a file the user
-/// cannot explain and cannot safely delete. Returns `false` when there was
-/// nothing there — the same answer the derived-path case gives for an absent
-/// bucket, so a caller reports one thing rather than two.
+/// Deletes a bucket that lives at an explicit path, journals included — a `-wal`
+/// left beside nothing is a file the user cannot explain or safely delete.
 pub fn delete_bucket_file(path: &str) -> Result<bool> {
     let file = Path::new(path);
     if !file.is_file() {
         return Ok(false);
     }
     remove_file_set(file)?;
-    if let Some(parent) = file.parent()
-        && parent.read_dir().is_ok_and(|mut d| d.next().is_none())
-    {
-        // A directory left holding nothing is a directory nobody asked for.
-        let _ = std::fs::remove_dir(parent);
-    }
+    // The directory is left alone even when it is now empty. It is the user's:
+    // `bucket.path` may be `D:/team/findery.db`, and removing `D:/team` because
+    // the bucket in it was deleted is deleting something the daemon was never
+    // given.
     Ok(true)
 }
 
@@ -373,7 +383,7 @@ mod tests {
             legacy.set_meta("k", "v").await.expect("write");
         }
 
-        assert!(migrate_legacy_layout(&cfg).is_empty());
+        migrate_legacy_layout(&cfg).expect("migrates");
         assert!(!dir.path().join("catalog.db").exists());
         let moved = open_bucket(&cfg, DEFAULT_BUCKET).expect("moved");
         assert_eq!(moved.get_meta("k").await.expect("read"), Some("v".into()));
@@ -396,7 +406,7 @@ mod tests {
             current.set_meta("k", "current").await.expect("write");
         }
 
-        assert!(migrate_legacy_layout(&cfg).is_empty());
+        migrate_legacy_layout(&cfg).expect("migrates");
         let current = open_bucket(&cfg, DEFAULT_BUCKET).expect("reopen");
         assert_eq!(
             current.get_meta("k").await.expect("read"),
@@ -417,9 +427,87 @@ mod tests {
         std::fs::create_dir_all(&legacy).expect("legacy dir");
         Bucket::open_file(&legacy.join("catalog.db"), "work").expect("legacy bucket");
 
-        assert!(migrate_legacy_layout(&cfg).is_empty());
+        migrate_legacy_layout(&cfg).expect("migrates");
         assert_eq!(list_buckets(&cfg).expect("list"), vec!["work".to_string()]);
         assert!(open_bucket(&cfg, "work").is_ok());
+    }
+
+    /// The failure this whole path exists to prevent. A move that cannot be made
+    /// must stop the boot: nothing downstream ever looks at the old name again,
+    /// and opening *creates* — so the alternative is a fresh empty database
+    /// beside the real index, with the real index orphaned and the user told
+    /// nothing.
+    #[test]
+    fn a_legacy_file_that_cannot_be_moved_stops_the_boot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = StoreConfig {
+            data_dir: dir.path().display().to_string(),
+            ..StoreConfig::default()
+        };
+        Bucket::open_file(&dir.path().join("catalog.db"), DEFAULT_BUCKET).expect("legacy file");
+        // A non-empty directory sits where the migrated file has to land, so the
+        // rename cannot succeed.
+        let blocked = dir.path().join("bucket.db");
+        std::fs::create_dir_all(&blocked).expect("mkdir");
+        std::fs::write(blocked.join("keep"), b"x").expect("write");
+
+        let err = migrate_legacy_layout(&cfg).expect_err("must refuse");
+        let text = err.to_string();
+        assert!(text.contains("catalog.db"), "{text}");
+        assert!(text.contains("mv "), "the refusal names the repair: {text}");
+        assert!(
+            dir.path().join("catalog.db").is_file(),
+            "the index is still where it was"
+        );
+    }
+
+    /// Committed pages are the one thing a rename cannot carry safely, because
+    /// no multi-file rename is atomic.
+    #[test]
+    fn a_journal_holding_pages_refuses_the_move_rather_than_splitting_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = StoreConfig {
+            data_dir: dir.path().display().to_string(),
+            ..StoreConfig::default()
+        };
+        std::fs::write(dir.path().join("catalog.db"), b"db").expect("write");
+        std::fs::write(dir.path().join("catalog.db-wal"), b"committed pages").expect("write");
+
+        let err = migrate_legacy_layout(&cfg).expect_err("must refuse");
+        assert!(err.to_string().contains("committed pages"), "{err}");
+        assert!(dir.path().join("catalog.db").is_file());
+        assert!(
+            dir.path().join("catalog.db-wal").is_file(),
+            "the journal stays with the database it belongs to"
+        );
+    }
+
+    /// An empty journal is what a cleanly closed database leaves, and it must
+    /// not block an ordinary install from moving.
+    #[test]
+    fn an_empty_journal_does_not_block_the_move() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = StoreConfig {
+            data_dir: dir.path().display().to_string(),
+            ..StoreConfig::default()
+        };
+        std::fs::write(dir.path().join("catalog.db"), b"db").expect("write");
+        std::fs::write(dir.path().join("catalog.db-wal"), b"").expect("write");
+
+        migrate_legacy_layout(&cfg).expect("migrates");
+        assert!(dir.path().join("bucket.db").is_file());
+        assert!(dir.path().join("bucket.db-wal").is_file());
+        assert!(!dir.path().join("catalog.db-wal").exists());
+    }
+
+    /// The default bucket is refused *before* anything is touched: the removal
+    /// path drops vectors and forgets homes long before it unlinks a file, so a
+    /// guard at the end would already have cost the user their index.
+    #[test]
+    fn removing_the_default_bucket_is_refused_by_the_first_check() {
+        assert!(ensure_removable(DEFAULT_BUCKET).is_err());
+        assert!(ensure_removable("../etc").is_err());
+        assert!(ensure_removable("work").is_ok());
     }
 
     #[test]

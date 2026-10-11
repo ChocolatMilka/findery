@@ -1,27 +1,29 @@
 //! Where each bucket's file is, for buckets whose name does not say.
 //!
-//! INTENT: a bucket used to be a name, and a name was a directory under the data
-//! directory — discoverable by listing it. It can now be a file anywhere: inside
-//! the project it indexes, on a shared drive, on a volume that moves. Nothing
-//! about such a path can be derived from a name, and the daemon has to open
-//! every bucket at boot to know which projects it serves, so the location has to
-//! be written down somewhere.
-//!
-//! **This is a discovery index, not a second source of truth.** It records where
-//! a bucket's *file* is — a fact about the filesystem that has no other home —
-//! and never which project lives in which bucket, which is and stays "which file
-//! holds the row". It is also self-healing in both directions:
-//!
-//! * named and default buckets are still found by scanning the data directory,
-//!   so losing this file costs only the out-of-place ones;
-//! * an entry whose file has gone is pruned at load and reported, never fatal,
-//!   because a bucket that was deleted between two boots is an ordinary event.
+//! A bucket can now live inside the project it indexes, or on a shared drive, so
+//! its location cannot be derived from its name — and the daemon has to open
+//! every bucket at boot. This is a *discovery index*, not a second source of
+//! truth: it says where a bucket's file is, never which project lives in which
+//! bucket. Named buckets are still found by scanning, so losing this file costs
+//! only the out-of-place ones, and an entry whose file is gone is pruned.
 
 use findery_core::config::StoreConfig;
 use findery_core::{Error, Result};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Serialises a read-modify-write of the registry file.
+///
+/// Registrations are concurrent handlers that `await` in the middle of this, so
+/// two can interleave, both read the old file, and the second write drops the
+/// first entry — a bucket not reopened at boot. Process-wide because the file is.
+fn guard() -> &'static Mutex<()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(Mutex::default)
+}
 
 /// The buckets that do not live where their name says.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -34,9 +36,8 @@ pub struct Registry {
 impl Registry {
     /// Reads the registry, dropping entries whose file has gone.
     ///
-    /// A missing or unreadable file is not an error: it is the ordinary state of
-    /// an install that has never used an out-of-place bucket, and a corrupt one
-    /// costs those locations and nothing else.
+    /// A missing or unreadable file costs those locations and nothing else: not
+    /// an error, since never having used an out-of-place bucket is ordinary.
     pub fn load(cfg: &StoreConfig) -> (Self, Vec<String>) {
         let path = registry_path(cfg);
         let source = match std::fs::read_to_string(&path) {
@@ -80,18 +81,17 @@ impl Registry {
     }
 
     /// Records where a bucket's file is, replacing what was there.
-    ///
-    /// The daemon is the only writer, so a read-modify-write cannot race: there
-    /// is one process, and it does this between two of its own operations.
     pub fn record(cfg: &StoreConfig, name: &str, file: &str) -> Result<()> {
+        let _serialised = guard().lock();
         let (mut registry, _) = Self::load(cfg);
         registry.buckets.insert(name.to_string(), file.to_string());
         registry.save(cfg)
     }
 
-    /// Forgets a bucket. Removing a name that was never recorded is not an
-    /// error — the caller is describing an end state, not a history.
+    /// Forgets a bucket. A name that was never recorded is not an error: the
+    /// caller describes an end state, not a history.
     pub fn forget(cfg: &StoreConfig, name: &str) -> Result<()> {
+        let _serialised = guard().lock();
         let (mut registry, _) = Self::load(cfg);
         if registry.buckets.remove(name).is_none() {
             return Ok(());
@@ -107,8 +107,7 @@ impl Registry {
     fn save(&self, cfg: &StoreConfig) -> Result<()> {
         let path = registry_path(cfg);
         if self.buckets.is_empty() {
-            // Leaving an empty file behind would suggest a registry where there
-            // is none, and the next `load` would read it back as one.
+            // An empty file would suggest a registry where there is none.
             return match std::fs::remove_file(&path) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -124,8 +123,13 @@ impl Registry {
         }
         let rendered = toml::to_string_pretty(self)
             .map_err(|e| Error::Store(format!("cannot render the registry: {e}")))?;
-        std::fs::write(&path, rendered)
-            .map_err(|e| Error::Store(format!("cannot write {}: {e}", path.display())))
+        // Written beside and renamed over: an interrupted write would otherwise
+        // leave a half-file that `load` reads as corrupt, costing every location.
+        let staging = path.with_extension("toml.new");
+        std::fs::write(&staging, rendered)
+            .map_err(|e| Error::Store(format!("cannot write {}: {e}", staging.display())))?;
+        std::fs::rename(&staging, &path)
+            .map_err(|e| Error::Store(format!("cannot replace {}: {e}", path.display())))
     }
 }
 
@@ -166,8 +170,40 @@ mod tests {
         assert_eq!(registry.file_of("team"), None);
     }
 
-    /// A bucket deleted between two boots is an ordinary event, and it must not
-    /// stop the daemon from starting or hide the buckets that are still there.
+    /// Registrations arrive from concurrent HTTP handlers, and the file is a
+    /// read-modify-write of the whole thing. Without a guard, two that overlap
+    /// both read the old contents and the second write drops the first entry —
+    /// which is a bucket that is not reopened at boot, and a project the user can
+    /// no longer search.
+    #[test]
+    fn concurrent_records_do_not_lose_each_other() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = config_in(dir.path());
+        let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        for name in names {
+            std::fs::write(dir.path().join(format!("{name}.db")), b"x").expect("touch");
+        }
+
+        std::thread::scope(|scope| {
+            for name in names {
+                let file = dir.path().join(format!("{name}.db")).display().to_string();
+                let cfg = &cfg;
+                scope.spawn(move || Registry::record(cfg, name, &file).expect("record"));
+            }
+        });
+
+        let (registry, warnings) = Registry::load(&cfg);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            registry.buckets.len(),
+            names.len(),
+            "every record survived: {:?}",
+            registry.buckets
+        );
+    }
+
+    /// A bucket deleted between two boots must not stop the boot, nor hide the
+    /// buckets that are still there.
     #[test]
     fn an_entry_whose_file_is_gone_is_dropped_and_reported() {
         let dir = tempfile::tempdir().expect("tempdir");

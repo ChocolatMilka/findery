@@ -126,15 +126,21 @@ impl BucketHandle {
     }
 }
 
-/// The width a previously built index remembers, when any bucket has one for
-/// the model this daemon is configured to serve.
+/// The width a previously built index remembers, for the model this daemon
+/// serves. Read before the embedder is built, so a daemon whose runtime is down
+/// still starts at the width its vectors were written at.
 ///
-/// INTENT: read before the embedder is built, so a daemon whose runtime is down
-/// starts at the width its vectors were written at instead of refusing to boot.
+/// A bucket whose recipe cannot be read is skipped: this runs before [`open_all`],
+/// which is the pass that decides what to open and what to report.
 pub async fn remembered_dim(cfg: &StoreConfig, model: &str) -> Result<Option<usize>> {
     for name in findery_store::list_buckets(cfg)? {
-        let Some(recipe) = findery_store::stored_recipe(cfg, &name).await? else {
-            continue;
+        let recipe = match findery_store::stored_recipe(cfg, &name).await {
+            Ok(Some(recipe)) => recipe,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(bucket = %name, error = %e, "recipe could not be read; skipped");
+                continue;
+            }
         };
         let Some((stored_model, dim)) = recipe.rsplit_once(':') else {
             continue;
@@ -148,23 +154,28 @@ pub async fn remembered_dim(cfg: &StoreConfig, model: &str) -> Result<Option<usi
     Ok(None)
 }
 
+/// What a daemon opened, and what it could not.
+pub(crate) struct Opened {
+    pub buckets: BTreeMap<String, Arc<BucketHandle>>,
+    pub homes: HashMap<ProjectId, String>,
+    /// Buckets on disk that could not be opened, with the reason. Carried rather
+    /// than logged: a bucket that failed to open is a set of projects that have
+    /// silently vanished from every listing, and [`Indexer::health`] says so.
+    pub broken: Vec<String>,
+}
+
 /// Opens every bucket on disk and rebuilds the project → bucket map.
 ///
-/// A project id registered in two buckets resolves to the first in order
-/// (default, then names alphabetically). The daemon's own writes cannot create
-/// that state — registering into a second bucket moves the project — so it
-/// takes a hand-edited database to reach, and the rule is stated rather than
-/// discovered.
-pub(crate) async fn open_all(
-    cfg: &Config,
-    recipe: &str,
-    dim: usize,
-) -> Result<(
-    BTreeMap<String, Arc<BucketHandle>>,
-    HashMap<ProjectId, String>,
-)> {
+/// A project id in two buckets resolves to the first in order (default, then
+/// names alphabetically); the daemon's own writes cannot create that state.
+///
+/// One unopenable bucket does not stop the daemon — refusing to boot over a
+/// corrupt file would take down every other index *and* the diagnostic that
+/// names it. It is skipped and reported in [`Opened::broken`].
+pub(crate) async fn open_all(cfg: &Config, recipe: &str, dim: usize) -> Result<Opened> {
     let mut buckets = BTreeMap::new();
     let mut homes = HashMap::new();
+    let mut broken = Vec::new();
 
     // Where each bucket's file is, for the ones whose name does not say. An
     // entry whose file has gone is dropped with a warning: a bucket deleted
@@ -172,7 +183,7 @@ pub(crate) async fn open_all(
     // serve every other project.
     let (registry, warnings) = findery_store::registry::Registry::load(&cfg.store);
     for warning in warnings {
-        tracing::warn!("{warning}");
+        broken.push(warning);
     }
 
     let mut locations: BTreeMap<String, Option<String>> = findery_store::list_buckets(&cfg.store)?
@@ -193,13 +204,38 @@ pub(crate) async fn open_all(
     }
 
     for (name, at) in locations {
-        let handle = Arc::new(BucketHandle::open_at(cfg, &name, at.as_deref(), recipe, dim).await?);
-        for project in handle.bucket.list_projects().await? {
-            homes.insert(project.id, name.clone());
+        match open_one(cfg, &name, at.as_deref(), recipe, dim).await {
+            Ok((handle, projects)) => {
+                for project in projects {
+                    homes.insert(project.id, name.clone());
+                }
+                buckets.insert(name, handle);
+            }
+            Err(e) => {
+                tracing::warn!(bucket = %name, error = %e, "bucket could not be opened; skipping it");
+                broken.push(format!("bucket `{name}` could not be opened: {e}"));
+            }
         }
-        buckets.insert(name, handle);
     }
-    Ok((buckets, homes))
+    Ok(Opened {
+        buckets,
+        homes,
+        broken,
+    })
+}
+
+/// Opens one bucket and reads its projects, so that a failure at either step
+/// stays a failure of *this* bucket rather than escaping the loop above.
+async fn open_one(
+    cfg: &Config,
+    name: &str,
+    at: Option<&str>,
+    recipe: &str,
+    dim: usize,
+) -> Result<(Arc<BucketHandle>, Vec<findery_core::model::Project>)> {
+    let handle = Arc::new(BucketHandle::open_at(cfg, name, at, recipe, dim).await?);
+    let projects = handle.bucket.list_projects().await?;
+    Ok((handle, projects))
 }
 
 impl Indexer {
@@ -253,9 +289,7 @@ impl Indexer {
         // below, which is what keeps this future `Send`.
         let existing = self.buckets.read().get(name).cloned();
         if let Some(existing) = existing {
-            // A name already open elsewhere is refused rather than moved under
-            // the feet of whoever is reading through the handle. Saying so
-            // beats silently serving the old file.
+            // Refused, not moved under the feet of whoever reads through it.
             if let Some(at) = at
                 && existing.bucket.path() != Path::new(at)
             {
@@ -270,19 +304,40 @@ impl Indexer {
         let handle = Arc::new(
             BucketHandle::open_at(&self.cfg, name, at, &self.recipe(), self.embedder.dim()).await?,
         );
+        let path = handle.bucket.path().to_path_buf();
+
         // Remembered only when the path is not the one the name derives: the
         // registry exists for the locations nothing else could find.
         let derived = findery_core::config::bucket_path(&self.cfg.store.data_dir, name);
-        if handle.bucket.path() != Path::new(&derived) {
+        if path != Path::new(&derived) {
             findery_store::registry::Registry::record(
                 &self.cfg.store,
                 name,
-                &handle.bucket.path().display().to_string(),
+                &path.display().to_string(),
             )?;
         }
-        self.buckets
-            .write()
-            .insert(name.to_string(), handle.clone());
+
+        // Opening is an `await`, so two registrations can both find the name
+        // absent and both open the file. The first to reach the map wins; the
+        // second drops its handle rather than replacing one others read through.
+        let mut open = self.buckets.write();
+        if let Some(winner) = open.get(name) {
+            return Ok(winner.clone());
+        }
+        // One file is one bucket: a second name over it would be two writers,
+        // and a `bucket rm` unlinking the file the other still serves.
+        if let Some(holder) = open
+            .iter()
+            .find(|(other, handle)| other.as_str() != name && handle.bucket.path() == path)
+            .map(|(other, _)| other.clone())
+        {
+            return Err(Error::Config(format!(
+                "bucket `{name}` points at {}, which is already open as `{holder}`; \
+                 one file is one bucket",
+                path.display()
+            )));
+        }
+        open.insert(name.to_string(), handle.clone());
         Ok(handle)
     }
 
@@ -323,6 +378,10 @@ impl Indexer {
     /// removed at all. Nothing here needs the embedder: this is the door the
     /// recipe conflict used to lock.
     pub async fn forget_bucket(&self, name: &str) -> Result<BucketRemoved> {
+        // Before the first destructive step, not after the last: everything
+        // below drops vectors and forgets homes, and a refusal that arrives once
+        // that has happened is a refusal that already cost the user their index.
+        findery_store::ensure_removable(name)?;
         let handle = self.handle(name)?;
         let projects = handle.bucket.list_projects().await?;
         for project in &projects {

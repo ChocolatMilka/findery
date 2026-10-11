@@ -26,10 +26,8 @@ use findery_core::ids::ContentHash;
 use findery_core::model::{FileRecord, Lang, Origin, Project, SyncMode, SyncReport};
 use findery_core::{Error, Result};
 
-/// Runs a synchronization pass and returns exactly what it did.
-///
-/// `progress` carries the live counters out to whoever is watching; the pass
-/// itself never waits on them.
+/// Runs a synchronization pass and returns exactly what it did. `progress`
+/// carries the counters out to whoever is watching; the pass never waits on it.
 pub async fn run(
     idx: &Indexer,
     cat: &BucketHandle,
@@ -77,7 +75,7 @@ pub async fn run(
     let (candidates, warnings) = collect_candidates(project, &mode).await?;
     report.warnings.extend(warnings);
     report.files_scanned = candidates.len() as u64;
-    // The walk is over, so the denominator exists: from here a watcher can draw
+    // The walk is over, so the denominator exists: a watcher can now draw
     // a proportion instead of a spinner.
     progress.write(|p| {
         p.phase = ProgressPhase::Indexing;
@@ -92,9 +90,9 @@ pub async fn run(
 
     for candidate in candidates {
         seen.push(candidate.rel_path.clone());
-        // Counted before the gates, because a file the gates skip was still
-        // looked at: a bar that only moved for changed files would stand still
-        // through the common case, which is the incremental pass.
+        // Counted before the gates: a file they skip was still looked at, and a
+        // bar that only moved for changed files would stand still through the
+        // common case.
         done += 1;
         if done.is_multiple_of(PROGRESS_FILES) {
             progress.write(|p| {
@@ -207,8 +205,7 @@ pub async fn run(
 
     cat.bucket.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
-    // The final write: whatever the last tick was, the bar lands on the number
-    // the report will show.
+    // The bar lands on the number the report will show.
     progress.write(|p| {
         p.files_done = report.files_scanned;
         p.elapsed_ms = report.duration_ms;

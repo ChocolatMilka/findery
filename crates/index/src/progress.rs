@@ -1,26 +1,19 @@
-//! The live counters of a running job, and who is allowed to write them.
+//! The live counters of a running job.
 //!
-//! INTENT: progress has to travel from inside a sync loop up to a client that is
-//! polling an HTTP route. A callback would be an edge climbing back up the
-//! layers (CONV-005), so there is none: the registry hands the sync a *handle*
-//! it writes into, and reads the same handle back when a client asks. The value
-//! goes down as an argument and comes back up as a return value — the law holds,
-//! and no crate edge is added.
-//!
-//! One writer, one reader, one lock. The handle deliberately holds no `Indexer`
-//! and no store, so it cannot keep anything alive or grow into a second engine.
+//! A callback would be an edge climbing back up the layers (CONV-005), so there
+//! is none: the registry hands the sync a *handle* it writes into and reads back
+//! when a client asks. The value goes down as an argument and comes up as a
+//! return value. The handle holds no `Indexer` and no store, so it cannot grow
+//! into a second engine.
 
 use findery_core::api::{Progress, ProgressPhase};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// How often a pass reports file progress.
-///
-/// INTENT: a run where every file is unchanged performs no flush at all, so a
-/// bar driven only by flushes would sit still for the whole pass. Counting every
-/// file would instead take the lock fifty thousand times to move a bar nobody
-/// can see move. This is the compromise, and it is small enough that a flush —
-/// every 96 files — dominates on a real index.
+/// How often a pass reports file progress when no flush happens first. A pass
+/// where nothing changed flushes nothing, and a bar driven only by flushes would
+/// sit still for all of it; counting every file would take the lock 50k times to
+/// move a bar nobody can see move.
 pub const PROGRESS_FILES: u64 = 512;
 
 /// A shared, writable view of one job's counters.
@@ -30,18 +23,14 @@ pub const PROGRESS_FILES: u64 = 512;
 pub struct ProgressHandle(Arc<Mutex<Progress>>);
 
 impl ProgressHandle {
-    /// A handle nobody reads.
-    ///
-    /// INTENT: the sync is one function with several callers, and only the job
-    /// path has a client watching. Rather than fork the engine in two, the
-    /// callers nobody watches pass this: the sync is written once, and the
-    /// absence of a reader costs one uncontended lock.
+    /// A handle nobody reads, for the callers that have no client watching — so
+    /// the sync is written once instead of forked in two.
     pub fn detached() -> Self {
         Self::default()
     }
 
-    /// Mutates the counters under the lock. The closure must stay trivial —
-    /// it runs on the sync's hot path.
+    /// Mutates the counters under the lock. Keep the closure trivial: it runs on
+    /// the sync's hot path.
     pub fn write(&self, update: impl FnOnce(&mut Progress)) {
         update(&mut self.0.lock());
     }

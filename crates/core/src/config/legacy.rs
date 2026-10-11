@@ -1,15 +1,11 @@
 //! Variables that were renamed, and the sentence that says so.
 //!
-//! INTENT: an environment variable that silently stops being read is the worst
-//! kind of regression — the deployment looks configured and is not, and nothing
-//! in the output contradicts it. Naming the replacement once, at boot, is the
-//! whole pesticide. It is a warning and never an error: the value the old
-//! variable carried is still recoverable from the file the daemon reads.
+//! A variable that silently stops being read leaves a deployment looking
+//! configured while it is inert. Naming the replacement once, at boot, is the
+//! fix — a warning, never an error, since the value is still in the file.
 //!
-//! This lives apart from [`super::env`]'s table because it answers a different
-//! question. The table says which variables are read *now*; this says which ones
-//! stopped being read, and only ever shrinks as renames age out of living
-//! deployments.
+//! Apart from [`super::env`]'s table because it answers another question: that
+//! one says which variables are read now, this one which stopped being.
 
 /// Names a renamed variable that is still set and no longer read.
 ///

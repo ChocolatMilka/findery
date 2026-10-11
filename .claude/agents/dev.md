@@ -296,7 +296,7 @@ Commands:
 
 ```bash
 make check          # fmt-check + clippy -D warnings + test + layers
-make test           # 274 tests
+make test           # 281 tests
 make bench          # vector scan measurement (release required)
 make layers         # R-01…R-04
 cargo test -p findery-index sync::    # target one area

@@ -536,11 +536,12 @@ and `findery config set token <t>` on both sides — every request then needs
 `Authorization: Bearer …`, except `/healthz` so container health checks keep
 working.
 
-**Catalogs split that sharing when it should be split.** One daemon, one model,
-but several independent indexes: a work index and a personal one never share a
-file, and a client pointed at one cannot search the other. What they do *not* do
-is scope a single search — projects inside one bucket are searched together,
-and `-p <id>` is the lever for that.
+**Buckets split that sharing when it should be split.** One server, one model,
+but as many independent indexes as there are bucket files: a work index and a
+personal one never share a file, and a client pointed at one cannot search the
+other. What a bucket does *not* do is scope a single search — projects inside one
+bucket are searched together, and `-p <id>` is the lever for that. Scoping one
+search is what a [scope](#scopes--a-named-restriction-on-the-same-index) is for.
 
 `FINDERY_JOB_CONCURRENCY` bounds simultaneous syncs so two clients cannot saturate
 the embedding runtime between them.

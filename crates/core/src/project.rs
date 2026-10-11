@@ -1,27 +1,17 @@
 //! `.findery/config.toml` — the manifest of one project.
 //!
-//! INTENT: before this file existed, nothing on disk said which index a
-//! directory belonged to. The answer lived in a daemon's database, so a cloned
-//! repository arrived with no way to know what it was, and a command run in a
-//! subdirectory had to ask the daemon and hope. A manifest beside the code makes
-//! the project a thing you can read, commit, and carry — which is the whole
-//! difference between a tool you operate and a service you consult.
+//! A manifest beside the code makes a project a thing you can read, commit and
+//! carry: a cloned repository arrives knowing which index it belongs to, and a
+//! command run in a subdirectory finds it by walking up.
 //!
-//! It holds two kinds of thing, and they are not the same kind:
-//!
-//! * a **request** — which bucket this project should live in. It is honoured at
-//!   registration, and the daemon may substitute (a bucket inside the project is
-//!   impossible when the daemon cannot see the disk). What the daemon answered
-//!   is written back here, so the file never claims something untrue.
-//! * **settings** — scopes and the default instruction, which are genuinely
-//!   per-project and have no other home.
-//!
-//! It is never a source of truth for where a project's rows are: that is which
-//! file holds them, and only the daemon knows it.
+//! It holds a **request** — which bucket to live in, which the daemon may
+//! substitute and whose answer is written back — and **settings** that are
+//! genuinely per-project: scopes and the default instruction. It is never a
+//! source of truth for where a project's rows are; that is which file holds them.
 //!
 //! Like [`crate::config`], this parses and validates but never opens a file.
 
-use crate::config::{Config, StoreConfig, bucket_path};
+use crate::config::{StoreConfig, bucket_path};
 use crate::filter::CompiledFilter;
 use crate::ids::ProjectId;
 use crate::model::{SearchFilter, is_bucket_name};
@@ -43,11 +33,9 @@ pub fn manifest_path(root: &str) -> String {
     )
 }
 
-/// Where a bucket lives.
-///
-/// INTENT: `path` wins when both are present, because naming a location is a
-/// stronger statement than naming a thing. Neither present means the ordinary
-/// case — a bucket inside the project — which is why the default needs no field.
+/// Where a bucket lives. `path` wins when both are present: naming a location is
+/// a stronger statement than naming a thing. Neither present is the ordinary
+/// case — a bucket inside the project.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BucketRef {
@@ -75,11 +63,9 @@ impl BucketRef {
         self.name.is_none() && self.path.is_none()
     }
 
-    /// The `path`, resolved against `root` when it is relative.
-    ///
-    /// INTENT: a manifest is committed and read on another machine, so a
-    /// relative path has to mean the same thing there. Resolving it here, once,
-    /// keeps every caller from inventing its own idea of "relative to what".
+    /// The `path`, resolved against `root` when it is relative — a committed
+    /// manifest is read on another machine, so "relative to what" is answered
+    /// once, here.
     pub fn resolved_path(&self, root: &str) -> Option<String> {
         let path = self.path.as_deref()?;
         if is_absolute(path) {
@@ -107,11 +93,8 @@ impl BucketRef {
     }
 }
 
-/// True for a rooted path on either platform.
-///
-/// INTENT: `C:\shared\team.db` is as absolute as `/shared/team.db`, and treating
-/// the first as relative silently produces `C:\work\axle\C:\shared\team.db` —
-/// a path that exists nowhere, reported as a failure to create a directory.
+/// True for a rooted path on either platform. A Windows path missed here is
+/// silently joined to the project root, producing a path that exists nowhere.
 fn is_absolute(path: &str) -> bool {
     let bytes = path.as_bytes();
     path.starts_with('/')
@@ -124,11 +107,8 @@ fn normalize_separators(path: &str) -> String {
 }
 
 /// What a bucket reference resolves to: the name it is known by, and the file
-/// that holds it.
-///
-/// A name is always present, even when the request gave only a path — a bucket
-/// two projects point at has to be *one* bucket, and the name is what makes it
-/// one. See [`BucketRef::resolve`] for how a path-only request gets one.
+/// that holds it. A name is always present, even for a path-only request — two
+/// projects pointing at one file have to reach *one* bucket.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedBucket {
     pub name: String,
@@ -136,9 +116,11 @@ pub struct ResolvedBucket {
     /// True when the request could not be honoured as written and the daemon
     /// chose a reachable bucket instead.
     ///
-    /// INTENT: this is reported rather than refused, because a bucket inside a
-    /// project the daemon cannot see is a fact about the deployment, not a
-    /// mistake by the user — the same judgement that decides pull versus push.
+    /// The substitution is not refused, because a bucket inside a project the
+    /// daemon cannot see is a fact about the deployment and not a mistake by the
+    /// user — the same judgement that decides pull versus push. This flag is how
+    /// a caller can tell the two apart: `name` and `path` alone look the same
+    /// whether they were asked for or chosen.
     pub substituted: bool,
 }
 
@@ -211,11 +193,10 @@ impl BucketRef {
 
 /// A stable name for a bucket described only by its file.
 ///
-/// INTENT: two projects pointing at the same file must reach the same bucket,
-/// so the name has to be a function of the path and nothing else — no counter,
-/// no clock, no registry lookup. Normalising first keeps `D:/x/team.db` and
-/// `d:/x/team.db` from becoming two buckets over one file. The suffix keeps two
-/// `team.db` in different directories apart without asking anyone to name them.
+/// It has to be a function of the path and nothing else — no counter, no clock —
+/// or two projects over one file would reach two buckets. Normalising first keeps
+/// `D:/x/team.db` and `d:/x/team.db` together; the suffix keeps two `team.db` in
+/// different directories apart.
 fn name_from_path(path: &str) -> Result<String> {
     let normalized = normalize_separators(path).to_lowercase();
     let file = normalized.rsplit('/').next().unwrap_or("bucket");
@@ -260,13 +241,11 @@ impl ProjectConfig {
             .map_err(|e| Error::Config(format!("cannot render the manifest: {e}")))
     }
 
-    /// Rejects a manifest that would fail later, at the point where the failure
-    /// is expensive and confusing.
+    /// Rejects a manifest that would fail later, where the failure is confusing.
     ///
-    /// INTENT: scopes are compiled here rather than at search time (CONV-023). A
+    /// Scopes are compiled here rather than at search time (CONV-023): a
     /// malformed glob is a typo in a committed file, and the moment to name it is
-    /// when it is written — not the first time someone searches with that scope
-    /// and gets a 400 they cannot trace back to a line in a config file.
+    /// while its author is looking at the file.
     pub fn validate(&self) -> Result<()> {
         if !self.project.is_empty() {
             ProjectId::new(self.project.clone())?;
@@ -290,10 +269,9 @@ impl ProjectConfig {
         ProjectId::new(self.project.clone()).ok()
     }
 
-    /// The retrieval intent this project asks for by default.
-    ///
-    /// Mirrors [`crate::model::SearchRequest::resolved_instruction`], and lives
-    /// here so the two levels of precedence cannot be resolved two ways.
+    /// The retrieval intent this project asks for by default. Mirrors
+    /// [`crate::model::SearchRequest::resolved_instruction`] so the two levels of
+    /// precedence cannot be read two ways.
     pub fn resolved_instruction(&self) -> Option<&str> {
         match (&self.instruction, self.task) {
             (Some(free), _) if !free.trim().is_empty() => Some(free),
@@ -303,26 +281,14 @@ impl ProjectConfig {
     }
 }
 
-/// The default manifest a fresh `init` writes.
-///
-/// INTENT: written out rather than left empty, because a file whose every line
-/// is commented is a file that teaches nothing. These four lines are the whole
-/// vocabulary a user needs to change anything.
+/// The manifest a fresh `init` writes: what was decided, and nothing else — a
+/// file of commented-out guesses teaches bad habits.
 pub fn starter_manifest(project: &ProjectId, bucket: &BucketRef) -> ProjectConfig {
     ProjectConfig {
         project: project.to_string(),
         bucket: bucket.clone(),
         ..ProjectConfig::default()
     }
-}
-
-/// True when the daemon's own store configuration already covers this manifest's
-/// bucket, so an `init` need not re-state it.
-///
-/// Kept next to the type rather than in the CLI: the comparison is between a
-/// manifest and a configuration, and both live here.
-pub fn matches_default_bucket(cfg: &Config, bucket: &BucketRef) -> bool {
-    bucket.is_unspecified() || bucket.name.as_deref() == Some(cfg.store.default_bucket.as_str())
 }
 
 #[cfg(test)]

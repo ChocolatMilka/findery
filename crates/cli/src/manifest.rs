@@ -1,14 +1,10 @@
 //! Finding a project's manifest, reading it, and writing it.
 //!
-//! INTENT: the filesystem half of [`findery_core::project`], which parses and
-//! validates but opens nothing (CONV-006). Discovery walks up from a directory
-//! the way `package.json` lookup does, so a command run in a subdirectory finds
-//! the project that owns it without being told — and a repository that has been
-//! cloned arrives knowing what it is.
+//! The filesystem half of [`findery_core::project`], which parses but opens
+//! nothing (CONV-006). Discovery walks up the way `package.json` lookup does.
 //!
-//! Only the CLI reads manifests. The MCP bridge names its project and lets the
-//! daemon answer, which keeps the bridge a wire rather than something with a
-//! working directory.
+//! Only the CLI reads manifests: the MCP bridge names its project and lets the
+//! daemon answer, which keeps the bridge a wire rather than a working directory.
 
 use findery_core::Result;
 use findery_core::model::Project;
@@ -25,9 +21,8 @@ pub(crate) struct Found {
 
 /// The nearest manifest at or above `start`, if there is one.
 ///
-/// A malformed manifest is an error and not a miss: silently searching from a
-/// directory whose manifest cannot be read is worse than saying so, because the
-/// answer would be about a different project than the one asked about.
+/// A malformed manifest is an error and not a miss: searching on would answer
+/// about a different project than the one asked about.
 pub(crate) fn discover(start: &Path) -> Result<Option<Found>> {
     let mut current = Some(start);
     while let Some(dir) = current {
@@ -48,11 +43,10 @@ pub(crate) fn path_of(root: &Path) -> PathBuf {
     root.join(MANIFEST_DIR).join(MANIFEST_FILE)
 }
 
-/// The manifest at exactly this root, or the defaults when there is none.
+/// The manifest at exactly this root, or the defaults.
 ///
-/// INTENT: `init` must not walk up. A manifest *above* the directory being
-/// registered describes a different project, and carrying its scopes into this
-/// one would be the exact mistake the walk-up rule exists to avoid elsewhere.
+/// `init` must not walk up: a manifest above the directory being registered
+/// describes a different project.
 pub(crate) fn read_at(root: &Path) -> Result<ProjectConfig> {
     let path = path_of(root);
     match path.is_file() {
@@ -63,15 +57,13 @@ pub(crate) fn read_at(root: &Path) -> Result<ProjectConfig> {
 
 /// The manifest to record once the daemon has answered.
 ///
-/// INTENT: written from the answer and not from the request. A bucket inside the
-/// project is impossible when the daemon cannot see the disk, so a manifest
-/// built from what was *asked* would describe an index that does not exist —
-/// and the next command would believe it.
+/// From the answer, not the request: a bucket inside the project is impossible
+/// when the daemon cannot see the disk, and a manifest describing the request
+/// would name an index that does not exist.
 ///
-/// A bucket under the project is recorded as a path relative to it, so the
-/// manifest can be committed and mean the same thing after a clone. One
-/// elsewhere keeps its absolute path and its name, which is what makes it
-/// shareable: the name is the identity, the path is where it happens to be.
+/// A bucket under the project is recorded relative to it, so the manifest can be
+/// committed. One elsewhere keeps its absolute path — the name is the identity,
+/// the path is only where it happens to be.
 pub(crate) fn from_registration(
     root: &Path,
     project: &Project,
@@ -100,13 +92,14 @@ fn relative_to(root: &Path, path: &str) -> Option<String> {
     path.strip_prefix(&prefix).map(str::to_string)
 }
 
-/// Writes the manifest, and the one line that keeps the index out of git.
+/// Keeps the bucket out of git without hiding the manifest: `.findery/` holds
+/// one of each, so `*` alone would exclude the very file worth committing.
 ///
-/// INTENT: a bucket inside the project is the default, so the default has to be
-/// something a user can commit the repository without. `.findery/.gitignore`
-/// holding `*` is the convention for exactly this — a generated directory that
-/// belongs to the machine, not the history — and it beats editing the user's
-/// own `.gitignore`, which is theirs.
+/// It sits inside `.findery/` because the project's own `.gitignore` is the
+/// user's, and a tool that appends to it edits someone else's file.
+const IGNORE: &str = "*\n!.gitignore\n!config.toml\n";
+
+/// Writes the manifest, and the one line that keeps the index out of git.
 pub(crate) fn write(root: &Path, config: &ProjectConfig) -> Result<PathBuf> {
     config.validate()?;
     let dir = root.join(MANIFEST_DIR);
@@ -125,7 +118,7 @@ pub(crate) fn write(root: &Path, config: &ProjectConfig) -> Result<PathBuf> {
 
     let ignore = dir.join(".gitignore");
     if !ignore.exists() {
-        std::fs::write(&ignore, "*\n").map_err(|e| {
+        std::fs::write(&ignore, IGNORE).map_err(|e| {
             findery_core::Error::Config(format!("cannot write {}: {e}", ignore.display()))
         })?;
     }
@@ -170,18 +163,16 @@ mod tests {
         assert_eq!(found.config.project, "axle");
     }
 
-    /// A directory with no manifest above it is not an error: it is a project
-    /// that has not been registered, and the caller falls back to asking the
-    /// daemon which project contains it.
+    /// No manifest is a miss, not a failure: the caller falls back to asking the
+    /// daemon which project contains this directory.
     #[test]
     fn a_directory_with_no_manifest_is_a_miss_and_not_a_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(discover(dir.path()).expect("discover").is_none());
     }
 
-    /// The manifest records the bucket the daemon answered with, as a path
-    /// relative to the project when it lives inside it — a committed file has to
-    /// mean the same thing after somebody clones the repository.
+    /// The bucket the daemon answered with, relative when it lives inside the
+    /// project: a committed file has to mean the same thing after a clone.
     #[test]
     fn a_registration_inside_the_project_is_recorded_as_a_relative_path() {
         let project = Project {
@@ -222,9 +213,15 @@ mod tests {
         assert_eq!(back.project, written.project);
         assert_eq!(back.bucket, written.bucket);
 
-        // The index is generated, and the file that says so is written once.
+        // The index is generated and stays out of the history; the manifest is
+        // the point of the whole thing and must not.
         let ignore = dir.path().join(".findery").join(".gitignore");
-        assert_eq!(std::fs::read_to_string(&ignore).expect("ignore"), "*\n");
+        let rules = std::fs::read_to_string(&ignore).expect("ignore");
+        assert!(rules.contains("!config.toml"), "{rules}");
+        assert!(
+            rules.contains("!/.gitignore") || rules.contains("!.gitignore"),
+            "{rules}"
+        );
         std::fs::write(&ignore, "# mine\n").expect("rewrite");
         write(dir.path(), &written).expect("rewrite manifest");
         assert_eq!(

@@ -169,15 +169,12 @@ impl ProgressPhase {
     }
 }
 
-/// Live counters of a running job.
+/// Live counters of a running job. An ingestion that runs for minutes in
+/// silence is indistinguishable from one that has hung, and the fix is a
+/// denominator — which the walk supplies before the first byte is read.
 ///
-/// INTENT: an ingestion that runs for minutes and says nothing is
-/// indistinguishable from one that has hung, and the only honest fix is a
-/// denominator. `files_total` exists before the first byte is read — the walk
-/// happens first — so the bar tracks real progress rather than spinning.
-///
-/// A terminal job carries no progress at all: the numbers that count are in its
-/// [`SyncReport`], and two records of the same fact are free to disagree.
+/// A terminal job carries none: its numbers are its [`SyncReport`], and two
+/// records of one fact are free to disagree.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Progress {
     pub phase: ProgressPhase,
@@ -191,11 +188,8 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// How far along the walk is, in `[0, 1]`.
-    ///
-    /// INTENT: `0 / 0` is not a proportion. A bar that reads "0 of 0 files" until
-    /// the walk returns says less than one that reads 0%, and a bar that runs
-    /// backwards when the total appears is worse than either.
+    /// How far along the walk is, in `[0, 1]`. `0 / 0` is not a proportion, and
+    /// the total stays zero until the walk returns.
     pub fn fraction(&self) -> f32 {
         if self.files_total == 0 {
             return 0.0;
@@ -234,8 +228,7 @@ pub struct Job {
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<i64>,
-    /// Counters of a job that is still running. Absent before it starts and once
-    /// it is terminal.
+    /// Counters of a job that is still running; absent before and after.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

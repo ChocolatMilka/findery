@@ -43,19 +43,15 @@ pub struct Indexer {
     pub embedder: Arc<dyn Embedder>,
     pub chunkers: findery_chunk::Registry,
     pub jobs: JobRegistry,
-    /// Every bucket the daemon has open, keyed by name.
-    ///
-    /// INTENT: a bucket is a file, so this map is rebuilt from the filesystem
-    /// at boot and then maintained only by the daemon's own writes — one writer,
-    /// so it cannot drift from the disk.
+    /// Every bucket the daemon has open, keyed by name. Rebuilt from the
+    /// filesystem at boot, then maintained only by the daemon's own writes.
     buckets: RwLock<BTreeMap<String, Arc<BucketHandle>>>,
-    /// Which bucket holds each registered project.
-    ///
-    /// The daemon's own writes cannot put one project in two buckets —
-    /// registering it elsewhere moves it — so a duplicate here takes a
-    /// hand-edited database, and [`Indexer::home_of`] resolves it to the first
-    /// bucket in order rather than failing.
+    /// Which bucket holds each registered project. A duplicate takes a
+    /// hand-edited database, and [`Indexer::home_of`] takes the first in order.
     homes: RwLock<HashMap<ProjectId, String>>,
+    /// Buckets on disk that could not be opened at boot, as reasons. Set once:
+    /// the daemon keeps serving the others and says so in [`Indexer::health`].
+    broken: Vec<String>,
     mapper: PathMapper,
 }
 
@@ -65,11 +61,8 @@ impl Indexer {
     pub async fn new(cfg: Config) -> Result<Arc<Self>> {
         cfg.validate()?;
         // Before anything opens a handle: an install that predates the current
-        // file names is moved onto them, so the width probe below reads the same
-        // files every later command will.
-        for warning in findery_store::migrate_legacy_layout(&cfg.store) {
-            tracing::warn!("{warning}");
-        }
+        // file names is moved onto them, so every later read sees the same files.
+        findery_store::migrate_legacy_layout(&cfg.store)?;
         // The width comes from the disk first: an index built earlier lets the
         // daemon start even while the embedding runtime is down, which is what
         // keeps `findery doctor` answerable.
@@ -78,7 +71,10 @@ impl Indexer {
         let recipe = format!("{}:{}", embedder.model(), embedder.dim());
         // A bucket built with another recipe is opened anyway: the conflict is
         // refused at the operation that would misuse it, never at boot.
-        let (buckets, homes) = buckets::open_all(&cfg, &recipe, embedder.dim()).await?;
+        let opened = buckets::open_all(&cfg, &recipe, embedder.dim()).await?;
+        for reason in &opened.broken {
+            tracing::warn!("{reason}");
+        }
 
         let jobs = JobRegistry::new(cfg.server.job_history, cfg.server.job_concurrency);
         let mapper = cfg.path_mapper();
@@ -87,8 +83,9 @@ impl Indexer {
             embedder,
             chunkers: findery_chunk::Registry::new(),
             jobs,
-            buckets: RwLock::new(buckets),
-            homes: RwLock::new(homes),
+            buckets: RwLock::new(opened.buckets),
+            homes: RwLock::new(opened.homes),
+            broken: opened.broken,
             mapper,
         }))
     }
@@ -104,11 +101,9 @@ impl Indexer {
 
     // -- indexing -----------------------------------------------------------
 
-    /// Synchronizes a project against the filesystem.
-    ///
-    /// `progress` is written as the pass advances. A caller with nobody watching
-    /// passes [`ProgressHandle::detached`], which costs one uncontended lock and
-    /// keeps the engine written once.
+    /// Synchronizes a project against the filesystem. `progress` is written as
+    /// the pass advances; a caller with nobody watching passes
+    /// [`ProgressHandle::detached`].
     pub async fn sync(
         &self,
         id: &ProjectId,
@@ -260,9 +255,17 @@ impl Indexer {
             projects += handle.bucket.list_projects().await.map(|p| p.len())?;
             backend.get_or_insert_with(|| handle.store.backend().to_string());
         }
-        let (embedder_ok, detail) = match self.embedder.health().await {
+        let (embedder_ok, embedder_detail) = match self.embedder.health().await {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e.to_string())),
+        };
+        // The daemon is up, so `ok` stays true — but a bucket it could not open
+        // is a project gone from every listing, and belongs in the detail line.
+        let detail = match (embedder_detail, self.broken.is_empty()) {
+            (Some(d), false) => Some(format!("{d}; {}", self.broken.join("; "))),
+            (Some(d), true) => Some(d),
+            (None, false) => Some(self.broken.join("; ")),
+            (None, true) => None,
         };
         Ok(HealthReport {
             ok: embedder_ok,
