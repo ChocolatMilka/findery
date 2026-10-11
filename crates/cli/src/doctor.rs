@@ -10,7 +10,7 @@
 
 use findery_client::Client;
 use findery_client::daemon;
-use findery_core::Result;
+use findery_core::{Error, Result};
 
 /// One thing checked, and what to do when it is not right.
 struct Check {
@@ -83,6 +83,37 @@ pub async fn run(client: &Client, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The remedy for one failed call: a route the daemon does not serve is a stale
+/// binary, anything else is worth the log.
+fn fix_for(error: &Error, stale: &str) -> String {
+    match error {
+        Error::NotFound(_) => stale.to_string(),
+        _ => "see the daemon log".to_string(),
+    }
+}
+
+/// What to say when the daemon answered 404 on a route this build asks for.
+///
+/// INTENT: a daemon older than the CLI has no such route, and the symptom —
+/// "not found" on a command that exists — points at nothing. The version it
+/// reports names the cause, and a daemon that reports none is by definition
+/// older than the field itself.
+fn stale_route_fix(daemon_version: Option<&str>) -> String {
+    let cli = env!("CARGO_PKG_VERSION");
+    match daemon_version {
+        Some(v) if v != cli => format!(
+            "the daemon does not serve this route: it runs {v}, this CLI is {cli} — \
+             rebuild and reinstall (`make install`), then restart it (`findery daemon stop`)"
+        ),
+        Some(_) => "the daemon does not serve this route; see its log".to_string(),
+        None => format!(
+            "the daemon does not serve this route and reports no version, so it predates \
+             {cli} — rebuild and reinstall (`make install`), then restart it \
+             (`findery daemon stop`)"
+        ),
+    }
+}
+
 async fn collect(client: &Client) -> Vec<Check> {
     let mut checks = Vec::new();
     let url = client.base_url().to_string();
@@ -108,9 +139,12 @@ async fn collect(client: &Client) -> Vec<Check> {
     }
     checks.push(Check::good("daemon", format!("answering at {url}")));
 
-    // 2. The model, through the daemon.
+    // 2. The model, through the daemon. The version it reports — or the
+    // absence of one — is what tells a stale daemon from a broken one later.
+    let mut daemon_version: Option<String> = None;
     match client.health().await {
         Ok(health) => {
+            daemon_version = (!health.version.is_empty()).then(|| health.version.clone());
             let summary = format!(
                 "{} ({} dims) · store {}",
                 health.model, health.dim, health.store_backend
@@ -135,6 +169,9 @@ async fn collect(client: &Client) -> Vec<Check> {
             "the daemon answers but its readiness check failed; see its log",
         )),
     }
+
+    // What to say when the daemon answered 404 to a route this build knows.
+    let stale = stale_route_fix(daemon_version.as_deref());
 
     // 3. Where the current directory stands.
     match client.list_projects().await {
@@ -170,7 +207,7 @@ async fn collect(client: &Client) -> Vec<Check> {
                 )),
             }
         }
-        Err(e) => checks.push(Check::bad("here", e.to_string(), "see the daemon log")),
+        Err(e) => checks.push(Check::bad("here", e.to_string(), fix_for(&e, &stale))),
     }
 
     // 4. The buckets: how many, and whether any of them holds vectors this
@@ -195,7 +232,7 @@ async fn collect(client: &Client) -> Vec<Check> {
                 checks.push(Check::bad("buckets", summary, conflicts.join("\n")));
             }
         }
-        Err(e) => checks.push(Check::bad("buckets", e.to_string(), "see the daemon log")),
+        Err(e) => checks.push(Check::bad("buckets", e.to_string(), fix_for(&e, &stale))),
     }
 
     // 5. The manifest, when there is one.
@@ -275,5 +312,36 @@ mod tests {
             "starting a local one would answer wrongly: {fix}"
         );
         assert!(fix.contains("FINDERY_SERVER_URL"), "{fix}");
+    }
+
+    #[test]
+    fn a_route_the_daemon_does_not_serve_names_the_stale_binary() {
+        let older = stale_route_fix(Some("0.0.9"));
+        assert!(older.contains("0.0.9"), "{older}");
+        assert!(older.contains(env!("CARGO_PKG_VERSION")), "{older}");
+        assert!(older.contains("make install"), "{older}");
+
+        // A daemon too old to report a version is the older one by definition.
+        let voiceless = stale_route_fix(None);
+        assert!(voiceless.contains("no version"), "{voiceless}");
+        assert!(voiceless.contains("make install"), "{voiceless}");
+
+        let same = stale_route_fix(Some(env!("CARGO_PKG_VERSION")));
+        assert!(same.contains("see its log"), "{same}");
+    }
+
+    #[test]
+    fn a_fix_never_carries_the_indentation_of_its_source() {
+        for fix in [stale_route_fix(None), stale_route_fix(Some("0.0.9"))] {
+            for line in fix.lines() {
+                assert!(!line.starts_with(' '), "indented fix: {fix:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_missing_resource_blames_the_binary() {
+        assert!(fix_for(&Error::NotFound("route".into()), "STALE").contains("STALE"));
+        assert!(fix_for(&Error::Store("disk".into()), "STALE").contains("daemon log"));
     }
 }
