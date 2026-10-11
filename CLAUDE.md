@@ -57,9 +57,11 @@ Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
 ## ⚙️ The seven facts that govern the design
 
 1. **The vector is content-addressed.** Key `(recipe, content_hash)`, never
-   the location. Moving a function, renaming a module, re-cloning the repo
-   or running a `--full`: zero embeddings. That's the project's central
-   economics.
+   the location. Re-running a sync, reordering a file, re-cloning the repo
+   or running a `--full` on an unchanged tree: zero embeddings. A chunk that
+   changed PLACE is another matter, since `content_hash` covers the text
+   actually embedded, `path:` header included — the path is signal, and
+   paying for it is the point. That's the project's central economics.
 2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; a bucket
    refuses to mix two recipes — at the **operation** that would mix them, never
    at boot, so the daemon stays up to report the conflict and to delete the
@@ -98,7 +100,7 @@ cargo +1.99.0 clippy --workspace --all-targets -- -D warnings
 
 ```bash
 make check                  # fmt-check + clippy -D warnings + test + layers
-make test                   # 283 tests
+make test                   # 360 tests
 make bench                  # measures the vector scan (release)
 make install                # findery + finderyd + MCP bridge into ~/.cargo/bin
 make up-model               # the model alone, in Docker — the daemon runs natively

@@ -91,9 +91,19 @@ tuning job. RRF fuses them with no calibration.
 | 2 | `content_hash` unchanged | chunking |
 | 3 | `(recipe, content_hash)` cached | **embedding** |
 
-Gate 3 is the one that matters. Move a function, rename a module, re-clone
-the repo, run a `--full`: the text is identical, so the vector is reused
-and the GPU stays idle.
+Gate 3 is the one that matters — for whatever the text of the chunk is
+identical. Re-run a sync, run a `--full`, re-clone the repository to the same
+relative path, or reorder a file: the chunks are the same text, so the vectors
+are reused and the GPU stays idle.
+
+**What it does not cover**, because `content_hash` covers the text actually
+embedded and that text opens on `path: …`: renaming a file, moving a function
+to another file, or renaming a module *file* changes the path, and the chunks
+concerned are embedded again. That is deliberate — the path is signal, and
+`"where is the rate limit handled"` is answered by
+`middleware/rate_limit.rs` as much as by its body. The project's own
+`findery-chunk` changes invalidate it the same way: any change to how a file
+is split re-embeds what it split.
 
 Executable proof: `crates/server/tests/api.rs`,
 `a_second_sync_costs_no_embedding_at_all` and

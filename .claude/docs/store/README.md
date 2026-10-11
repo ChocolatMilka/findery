@@ -73,16 +73,21 @@ this connection**.
 
 ### The vector cache — the heart of the economics
 
-Keyed `(recipe, content_hash)`, never the location. Consequences:
+Keyed `(recipe, content_hash)`, never the location. Consequences — and the
+boundary of the claim, since `content_hash` covers the embedded text with its
+`path:` header:
 
-- moving a function between files: free
-- renaming a module: free
-- re-cloning the repo: free
+- re-running a sync on an unchanged repo: **zero embeddings**
 - `sync --full` on an unchanged repo: **zero embeddings**
+- re-cloning the repo to the same relative path: free
+- reordering chunks inside a file: free
+- moving a function to another file, renaming a file, renaming a module:
+  **not** free — the path is part of the text that was embedded, and it is
+  signal, not noise
 
-`gc_embeddings()` exists but is **never** automatic: the cache is precisely
-what makes a moved file free, collecting it eagerly would defeat its own
-purpose.
+`gc_embeddings()` exists but is **never** automatic: a cache collected eagerly
+would defeat its own purpose, since the same fragment comes back the moment a
+branch is switched back.
 
 ---
 

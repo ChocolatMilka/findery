@@ -8,9 +8,11 @@
 //! 3. chunk hash found in the content-addressed cache — the fragment already
 //!    has a vector under this recipe, nothing is embedded.
 //!
-//! INTENT: gate 3 is what makes moving a function between files, renaming a
-//! module or re-cloning the repository free. Vectors are keyed by content and
-//! by recipe, never by location.
+//! INTENT: gate 3 is what makes re-running a sync, running a `--full` or
+//! re-cloning the repository free. Vectors are keyed by content and by recipe,
+//! never by location — and the content that is hashed is the text actually
+//! embedded, `path:` header included, so a fragment that MOVED is re-embedded.
+//! The path is signal; that cost is the point of it.
 
 mod ingest;
 

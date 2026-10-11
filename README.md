@@ -14,8 +14,8 @@ With it, one call, tens of milliseconds, and a citation.
   identifier, fused by rank: `"where is retrying handled"` and `"with_backoff"`
   both land, with no second index and no re-tuning
 - ⚡ **Re-syncing is free** — the three gates make an unchanged repo cost
-  **zero embeddings**: vectors are keyed by content, so moving a function,
-  renaming a module or re-cloning costs nothing either
+  **zero embeddings**: vectors are keyed by content, so a re-clone, a `--full`
+  or a file reordered cost nothing either
 - 📡 **Works with nothing mounted** — the daemon reads your files, or the CLI
   reads them and pushes the contents: a container, another machine, any disk
 - 🔒 **No lock-in on the model** — Qwen3 out of the box, or any local runtime
@@ -24,7 +24,7 @@ With it, one call, tens of milliseconds, and a citation.
   run) or Qdrant (HNSW) when you outgrow it
 - 📤 **Your vectors, exportable** — JSONL / JSON / raw `float32`, so you are
   never locked in
-- 🦀 100% Rust, a five-layer workspace, 283 tests, `clippy -D warnings`, layer
+- 🦀 100% Rust, a five-layer workspace, 360 tests, `clippy -D warnings`, layer
   watchdog
 
 **On this page** — [use it](#use-it) ·
@@ -345,7 +345,7 @@ Dependencies flow down, data flows back up through `Result`. Verified by
 | [`usage/`](.claude/docs/usage/README.md) | every flag, every knob, and when to reach for it |
 | [`overview/pipeline.md`](.claude/docs/overview/pipeline.md) | from file to cited hit |
 | [`overview/layers.md`](.claude/docs/overview/layers.md) | the law of the layers |
-| [`chunk/`](.claude/docs/chunk/README.md) | Rust and Markdown chunking |
+| [`chunk/`](.claude/docs/chunk/README.md) | Chunking per language, lexical scanner, merging |
 | [`embed/`](.claude/docs/embed/README.md) | models, Qwen3 instruction, providers |
 | [`store/`](.claude/docs/store/README.md) | bucket, backends, measurements, export |
 | [`index/`](.claude/docs/index/README.md) | sync, hybrid search, jobs, watch |
@@ -408,7 +408,7 @@ including why an **embedded** ANN index was measured and then ruled out — is i
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 283 tests
+make test      # 360 tests
 make bench     # vector scan measurement
 ```
 

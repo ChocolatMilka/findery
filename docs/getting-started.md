@@ -359,8 +359,9 @@ faster.
 
 The first index is the only slow moment. Everything after is incremental, and
 re-indexing an unchanged repository costs **zero** embeddings — vectors are keyed
-by content, so moving a function, renaming a module or re-cloning the repo is
-free.
+by content, so re-cloning the repo or running a `--full` is free. Moving a
+function to another file is the exception: the path is part of the text that was
+embedded, deliberately, so the fragments that moved are embedded again.
 
 Two numbers worth reading in the sync report: `warnings` (files skipped for
 being too large or not UTF-8) and `embeddings_computed` versus

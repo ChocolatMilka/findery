@@ -2,9 +2,13 @@
 //! SQLite vector store.
 //!
 //! INTENT: `embeddings` is keyed by `(recipe, content_hash)` and by nothing
-//! else. Move a function to another file, rename the file, move the whole crate
-//! — the text is identical, so the vector is reused and the GPU stays idle.
-//! This single table is what makes a re-sync of an unchanged repository free.
+//! else. Re-run a sync, re-clone the repository, reorder a file — the embedded
+//! text is identical, so the vector is reused and the GPU stays idle. This
+//! single table is what makes a re-sync of an unchanged repository free.
+//!
+//! The key does NOT survive a change of LOCATION: `content_hash` covers the
+//! text that is embedded, which opens on `path: …`. Moving a function to
+//! another file re-embeds it, and on purpose — the path is signal.
 
 use super::{Bucket, blob_to_vec, vec_to_blob};
 use crate::schema::sql;
