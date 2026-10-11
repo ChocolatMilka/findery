@@ -198,7 +198,45 @@ async fn collect(client: &Client) -> Vec<Check> {
         Err(e) => checks.push(Check::bad("buckets", e.to_string(), "see the daemon log")),
     }
 
-    // 5. Where the data lives, so nobody has to guess. The bucket files
+    // 5. The manifest, when there is one.
+    //
+    // The file records the bucket the daemon *answered with*, so a disagreement
+    // means it was edited by hand or the project was registered elsewhere since.
+    // The daemon wins — its answer is which file holds the row — and the fix is
+    // the command that rewrites the file from it.
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(Some(found)) = crate::manifest::discover(&cwd)
+        && let Ok(projects) = client.list_projects().await
+    {
+        let root = found.root.display().to_string().replace('\\', "/");
+        let path = crate::manifest::path_of(&found.root).display().to_string();
+        match (
+            projects.iter().find(|p| p.host_root == root),
+            found.config.bucket.name.as_deref(),
+        ) {
+            (Some(project), Some(declared)) if declared != project.bucket => {
+                checks.push(Check::bad(
+                    "manifest",
+                    format!(
+                        "{path} says bucket `{declared}`, but the daemon holds `{}` in `{}`",
+                        project.id, project.bucket
+                    ),
+                    "findery init        (rewrites the manifest from the daemon's answer)",
+                ));
+            }
+            (Some(project), _) => checks.push(Check::good(
+                "manifest",
+                format!("{path} → `{}`", project.id),
+            )),
+            (None, _) => checks.push(Check::bad(
+                "manifest",
+                format!("{path} names a project the daemon does not have"),
+                "findery init        (registers this directory again)",
+            )),
+        }
+    }
+
+    // 6. Where the data lives, so nobody has to guess. The bucket files
     // themselves are named by `findery bucket ls`.
     let data_dir = findery_core::config::data_dir_from_env();
     checks.push(Check::good("storage", data_dir));

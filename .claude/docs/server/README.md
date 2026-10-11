@@ -80,18 +80,35 @@ anyone on the network can stop is not a daemon.
   "id": "axle",                       // optional, otherwise derived from the name
   "extensions": ["rs", "md"],         // optional
   "exclude": ["**/generated/**"],     // optional
-  "bucket": "work",                  // optional; `store.default_bucket` otherwise
+  "bucket": { "name": "work" },       // optional; see below
+  "scopes": { "api": { "paths": ["crates/server/**"] } },  // optional
+  "instruction": "Given …",           // optional; this project's default intent
   "follow_gitignore": true }
 ```
 
 Idempotent on `id`: re-posting will update the definition without losing
 the index.
 
-`bucket` is read at registration only. It selects which bucket file holds the
-project's row, and the answer is carried back on every later read as
-`Project.bucket` — so a client never has to remember it and cannot disagree
-with the daemon about it. Re-posting with a different `bucket` is refused
-rather than silently moving the project between files.
+`bucket` is read at registration only, and it is a **reference**, not a name:
+
+| Sent | Resolved to |
+|------|-------------|
+| absent | a bucket inside the project, named after it |
+| `{"name": "work"}` | `<data_dir>/buckets/work/bucket.db`, shared by whoever names it |
+| `{"path": "D:/shared/team.db"}` | that file. Relative paths resolve against the project root |
+| `{"name": "team", "path": "D:/shared/team.db"}` | that file, under that name |
+
+Every bucket ends up with a name, even one described only by a path: two
+projects pointing at one file must reach *one* bucket, so the name is derived
+from the path when none was given.
+
+The resolution needs to know whether the daemon can write inside the project,
+which it decides the same way it decides pull versus push. A root it cannot
+reach — a container, another machine — makes a project-local bucket impossible,
+so the request is honoured as far as it can be and the daemon answers with a
+bucket named after the project. The answer, never the request, is what a client
+should record: `Project.bucket` is carried back on every later read, so a client
+cannot disagree with the daemon about it.
 
 ### `GET | DELETE /v1/projects/{id}`
 `DELETE` removes the project, its chunks and its vectors → `{"deleted":
@@ -173,11 +190,23 @@ host path, translated by the mounts.
   "k": 8,
   "mode": "hybrid",                 // "vector" | "keyword" | "hybrid"
   "task": "symbol",                 // retrieval intent — see embed/README.md
-  "instruction": "Given …",         // free-form, overrides `task`
+  "instruction": "Given …",         // free-form, overrides `task` and the project's
+  "scope": "api",                   // a restriction the project declared, by name
   "filter": { "paths": ["crates/**"], "langs": ["rust"],
               "kinds": ["function", "method"], "symbol_contains": "retry" },
   "max_snippet_chars": 1200 }
 ```
+
+`scope` is a **name**, and the daemon is what turns it into a filter — it holds
+the project's definition, and the MCP bridge is a different process that never
+reads a manifest. An unknown name is a 400 that lists the ones that exist.
+The scope is layered per dimension: a `filter` the request supplies replaces the
+scope's value for the dimensions it names, and keeps the scope's for the rest.
+
+`instruction` and `query` are the two halves of what the model reads
+(`Instruct: …` / `Query: …`). Both are always sent; the precedence is
+`instruction` > `task` > the project's manifest > the daemon's configured
+default.
 
 Response: an array of `SearchHit`, descending.
 

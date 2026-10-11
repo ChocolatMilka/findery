@@ -36,7 +36,8 @@ pub fn catalogue() -> Value {
                                         covering a behaviour, `config` for a setting or env var, `error` for a message or \
                                         panic. Picking the right one measurably improves the ranking."
                     },
-                    "instruction": { "type": "string", "description": "Free-form instruction for the embedding model, overriding `task`. Describe the TASK, not the query." },
+                    "instruction": { "type": "string", "description": "Free-form instruction for the embedding model, overriding `task` and the project's default. Describe the TASK, not the query. It is the first half of the pair Qwen reads as \"Instruct: …\\nQuery: …\" — the second half is `query`, and both are sent." },
+                    "scope": { "type": "string", "description": "A named restriction the project declares (e.g. a subtree, a language). Applied before scoring on the same index. An unknown name is refused and lists the ones that exist." },
                     "max_snippet_chars": { "type": "integer", "description": "Per-excerpt budget. Lower it to spend fewer tokens." }
                 },
                 "required": ["project", "query"]

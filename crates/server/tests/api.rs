@@ -860,6 +860,112 @@ async fn a_bucket_built_by_another_model_refuses_a_sync_but_stays_repairable() {
     assert_eq!(removed["projects"], json!([id]), "{removed}");
 }
 
+/// A scope narrows the same index. It is a filter applied before scoring, not a
+/// second index and not a cut applied after the ranking — which is what the
+/// caller can tell apart by what comes back.
+#[tokio::test]
+async fn a_scope_narrows_the_same_index_without_a_second_one() {
+    let h = harness().await;
+    let (status, project) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({
+                "root": h.root(),
+                "scopes": { "net": { "paths": ["src/net.rs"] } }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{project}");
+    let id = project["id"].as_str().expect("id").to_string();
+    h.sync(&id, json!({})).await;
+
+    let (status, everywhere) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(json!({ "project": id, "query": "retry", "mode": "keyword" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{everywhere}");
+    let (_, before) = h.call("GET", "/v1/buckets", None).await;
+    let everywhere_chunks = before
+        .as_array()
+        .expect("buckets")
+        .iter()
+        .find(|b| b["name"] == id.as_str())
+        .expect("the project's bucket")
+        .get("chunks")
+        .cloned()
+        .expect("chunks");
+
+    let (status, narrowed) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(json!({
+                "project": id, "query": "retry", "mode": "keyword", "scope": "net"
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{narrowed}");
+    let paths: Vec<&str> = narrowed
+        .as_array()
+        .expect("hits")
+        .iter()
+        .filter_map(|h| h["chunk"]["path"].as_str())
+        .collect();
+    assert!(!paths.is_empty(), "the scope must not empty the answer");
+    assert!(
+        paths.iter().all(|p| *p == "src/net.rs"),
+        "a scope is a restriction, not a suggestion: {paths:?}"
+    );
+
+    // The index itself is untouched: the same project, in the same one bucket.
+    // A scope that had built a second index would show up here.
+    let (_, buckets) = h.call("GET", "/v1/buckets", None).await;
+    let holding: Vec<&Value> = buckets
+        .as_array()
+        .expect("buckets")
+        .iter()
+        .filter(|b| b["projects"].as_u64().unwrap_or(0) > 0)
+        .collect();
+    assert_eq!(holding.len(), 1, "a scope must not add an index: {buckets}");
+    assert_eq!(holding[0]["chunks"], everywhere_chunks, "{buckets}");
+}
+
+/// A scope nobody declared is refused with the list of the ones that exist —
+/// the caller's next move is to pick one, and it cannot guess.
+#[tokio::test]
+async fn an_unknown_scope_names_the_ones_the_project_declares() {
+    let h = harness().await;
+    let (status, project) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({
+                "root": h.root(),
+                "scopes": { "net": { "paths": ["src/net.rs"] } }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{project}");
+    let id = project["id"].as_str().expect("id").to_string();
+
+    let (status, body) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(json!({ "project": id, "query": "retry", "scope": "docs" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().is_some_and(|m| m.contains("net")),
+        "{body}"
+    );
+}
+
 /// The ordinary case, and the one everything else is a departure from: a
 /// project indexed into a bucket that lives inside it.
 #[tokio::test]

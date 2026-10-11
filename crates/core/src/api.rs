@@ -6,10 +6,11 @@
 //! — which is exactly the failure mode we want, instead of a client silently
 //! dropping a field the server started sending.
 
-use crate::model::{SyncMode, SyncReport};
+use crate::model::{SearchFilter, SyncMode, SyncReport};
 use crate::project::BucketRef;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// `POST /v1/projects` — register or update a project.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -50,6 +51,18 @@ pub struct RegisterProject {
     /// asked (see [`crate::project::BucketRef::resolve`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket: Option<BucketRef>,
+    /// Named restrictions a search can ask for by name.
+    ///
+    /// Sent at registration because the daemon has to resolve the name for a
+    /// client that never read the manifest — the MCP bridge is a separate
+    /// process and does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<BTreeMap<String, SearchFilter>>,
+    /// Default retrieval intent for a query in this project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<crate::prompt::QueryTask>,
 }
 
 impl RegisterProject {

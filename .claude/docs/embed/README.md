@@ -61,12 +61,22 @@ named intents, defined in `QueryTask` (L0, CONV-012):
 | `config` | a setting | declaration, default, where it's read |
 | `error` | a message, a panic | what produces it and what handles it |
 
-Precedence, resolved in `SearchRequest::resolved_instruction()` in L0 so the
-three transports can't diverge:
+Precedence, resolved in `SearchRequest::resolve()` in L0 so the three transports
+can't diverge — the instruction and the filter are resolved by the same call, so
+there is one ladder to learn rather than two:
 
 ```
-instruction (free text)  >  task (preset)  >  query_instruction (config)
+request.instruction  >  request.task  >  the project's manifest  >  query_instruction
 ```
+
+The project's own entry is the manifest's `instruction` / `task`, carried on
+`ProjectSpec` at registration. It exists because "how should this corpus be
+asked about" is a property of the corpus, and a team should be able to commit
+that opinion rather than pass it on every call.
+
+The other half of the pair, `query`, is never defaulted and never derived: the
+model is handed the two as `Instruct: {…}` and `Query: {…}`, and a client that
+can send one and not the other cannot express the format the model documents.
 
 Exposed everywhere: HTTP body (`task`, `instruction`), `findery-client`, the MCP
 tool `search_code`, and `findery search --task symbol` / `--instruct "…"`.

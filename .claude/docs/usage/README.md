@@ -92,44 +92,119 @@ from one to the other costs a walk and no embedding at all.
 
 `finderyd --check` prints the configuration as actually resolved.
 
-### Catalogs — more than one index per daemon
+### The manifest — `.findery/config.toml`
+
+`findery init` writes one, and every later command reads it before asking
+anyone anything. That is what makes a project a thing you can read, commit, and
+carry: a cloned repository arrives knowing which index it belongs to, and a
+command run three directories down finds it by walking up.
+
+```toml
+project = "axle"
+
+[bucket]
+name = "axle"
+path = ".findery/bucket.db"
+
+[scopes.api]
+paths = ["crates/server/**", "crates/client/**"]
+langs = ["rust"]
+```
+
+| Key | Meaning |
+|-----|---------|
+| `project` | the id it is registered under. `init` derives it from the directory name |
+| `bucket.name` | which index it belongs to — the identity, and what makes a bucket shareable |
+| `bucket.path` | where that index's file is. Relative paths resolve against the project root, so a committed manifest travels |
+| `scopes` | named restrictions a search can ask for by name — see below |
+| `instruction` / `task` | the retrieval intent this project's queries get by default |
+
+`init` also writes `.findery/.gitignore` holding `*`, so the index is never
+committed by accident. An existing one is left alone — that file is yours.
+
+**Defaults are the ordinary case.** With no `[bucket]` at all, the bucket lives
+inside the project at `.findery/bucket.db` and is named after the project: your
+index travels with your code, and nothing is shared that you did not ask to
+share. `findery init` writes that back explicitly, so the file says what is
+true.
+
+**`init` re-reads before it writes.** Everything except the bucket survives a
+second `findery init`: your scopes and your instruction were written by hand,
+and re-registering must not be a way to lose them.
+
+### Buckets — one index, one file
 
 A **bucket** is one SQLite file holding projects, chunks, the vector cache and
-the full-text index. A daemon serves as many as you create, and they are
-completely independent: separate projects, separate vectors, separate files.
+the full-text index. A daemon serves as many as it is pointed at, and they are
+completely independent.
 
-| Name | Path |
-|------|------|
-| the default one | `<data_dir>/bucket.db` |
-| any other | `<data_dir>/buckets/<name>/bucket.db` |
+| Where | Path |
+|-------|------|
+| inside the project *(the default)* | `<project>/.findery/bucket.db` |
+| a named, shared one | `<data_dir>/buckets/<name>/bucket.db` |
+| anywhere you say | whatever `bucket.path` holds |
 
 ```bash
 findery bucket ls                    # what each holds, its recipe, its path
-findery bucket create work           # an empty one, ready to take projects
+findery bucket create work           # a named one, ready to take projects
 findery bucket rm work --force       # projects and vectors go with it
 ```
 
-Which bucket a project belongs to is chosen **once**, at registration:
+**A bucket is global when you point two projects at the same one** — that is
+all "shared" means here. A team index on a shared drive is one file and one
+name, whatever machine reads it:
 
-```bash
-findery init --bucket work
+```toml
+[bucket]
+name = "team"
+path = "D:/shared/team.db"
 ```
 
-and never named again — every later command follows the project. A project's
-bucket is not a column anywhere: it *is* which file holds its row, which is why
-a project can never end up split across two.
+Nothing is written down about *which project lives in which bucket*: that fact
+is which file holds the project's row, and it stays in exactly one place. The
+daemon does keep a small `buckets.toml` in the data directory, but only as a
+discovery index — it records where a bucket's *file* is, because a path cannot
+be derived from a name. Named buckets are still found by scanning, so losing
+that file costs only the out-of-place ones.
+
+The choice is made **once**, at registration, and never named again.
 
 `findery bucket rm` refuses while the bucket still holds projects unless
-`--force` is passed, and it goes through the daemon because the daemon holds the
+`--force` is passed, and it goes through the server because the server holds the
 file open — on Windows a SQLite file a live process has open cannot be removed
 at all.
 
-**When to reach for one.** Two repositories that should not share a file: a
-work index and a personal one, a client's code and your own. Or a model change:
-a new recipe can go in a new bucket, leaving the old index intact and readable
-until you are ready to move. What it is *not* for is search scoping — one
-bucket holding many projects still searches them together, and `-p <id>` is
-the lever for narrowing that.
+**When to reach for a shared bucket.** Two repositories that should not share a
+file: a work index and a personal one, a client's code and your own. Or a model
+change: a new recipe can go in a new bucket, leaving the old index intact and
+readable until you are ready to move. What it is *not* for is search scoping —
+projects in one bucket still search together, and `-p <id>` narrows that.
+
+### Scopes — a named restriction on the same index
+
+A scope is declared in the manifest and asked for by name. It is a **filter
+applied before scoring**, on the same index: never a second bucket, never a cut
+applied after the ranking.
+
+```toml
+[scopes.api]
+paths = ["crates/server/**", "crates/client/**"]
+langs = ["rust"]
+```
+
+```bash
+findery search --scope api "where is the retry policy"
+findery search --scope api --lang markdown "…"   # the flag wins for that dimension
+```
+
+The merge is **per dimension**: a flag you pass replaces the scope's value for
+that dimension, and a dimension you leave empty keeps the scope's. Intersecting
+them instead would make `--scope api --lang markdown` a search that matches
+nothing.
+
+A scope name nobody declared is refused, and the refusal lists the ones that
+exist. A malformed glob is refused earlier still — when the manifest is read,
+which is while its author is looking at the file, and never at search time.
 
 ### Settings live in a file, not in your shell
 
@@ -276,9 +351,29 @@ findery search "why rank fusion" --task docs        # rationale, not implementat
 | `config` | a setting, a flag, an environment variable |
 | `error` | a message, a panic, a diagnostic code |
 
-`--instruct "…"` overrides the preset with free-form text. Describe the TASK,
+`--instruction "…"` (`--instruct` still works) overrides the preset with
+free-form text. Describe the TASK,
 not the query — restating the query duplicates signal the query already carries
 and performs worse than the default.
+
+**The model reads a pair.** Qwen is handed `Instruct: <the task>\nQuery: <your
+question>`, and the two halves are separate all the way from the CLI or the MCP
+tool to the embedding request. Both are sent on every search: the instruction is
+the task, the query is the question, and neither is derived from the other.
+
+The whole precedence, resolved once in L0 so no transport can invent its own
+ordering:
+
+```
+--instruction  >  --task  >  the project's manifest  >  the daemon's
+                                                          embedder.query_instruction
+```
+
+A manifest can therefore give a project its own default:
+
+```toml
+instruction = "Given a question about axle, retrieve the passage that answers it."
+```
 
 ### Mode
 

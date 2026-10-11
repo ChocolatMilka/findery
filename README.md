@@ -15,7 +15,7 @@ MCP API — so it plugs directly into Claude Code.
 - 📤 JSONL / JSON / raw `float32` export — you're never locked in
 - 📡 Pull or push: the daemon reads your files, or the CLI sends them — so the
   daemon can run in a container, or on another machine, with nothing mounted
-- 🧪 240 tests, clean `clippy -D warnings`, layer watchdog
+- 🧪 273 tests, clean `clippy -D warnings`, layer watchdog
 
 ---
 
@@ -44,14 +44,30 @@ Then, in **any project, on any disk**:
 
 ```bash
 cd D:/work/my-project
-findery init                              # registers the current directory
-findery sync                              # indexes it
-findery search "where is retry handled"   # the project is inferred from the directory
+findery init                              # registers the directory, writes .findery/config.toml
+findery sync                              # indexes it, with a progress bar
+findery search "where is retry handled"   # the project is read from the manifest
 ```
 
 No path to type, no mount to declare, **and nothing to start** — the first command
 brings the index up in the background and says nothing about it, because it is not
 something you asked to manage. Nothing to keep open.
+
+`init` leaves two things behind in the project: the manifest below, and the
+index itself, which lives inside the project by default. Both are yours; the
+index is gitignored for you.
+
+```toml
+# .findery/config.toml
+project = "my-project"
+
+[bucket]
+name = "my-project"
+path = ".findery/bucket.db"
+
+[scopes.api]
+paths = ["crates/server/**"]
+```
 
 `init` and `sync` are two steps on purpose: a repository can be registered and
 its bucket chosen **before** any model is reachable. `findery init --sync`
@@ -105,21 +121,32 @@ Precedence, narrowest last: `--server` / `--token`, then `FINDERY_SERVER_URL` /
 stays on top so one container image can serve every deployment; `findery config
 set` warns when a variable is masking what it just wrote.
 
-### More than one index
+### Buckets — your index, and anyone else's
 
-A daemon can serve several **buckets** — independent SQLite files, each with
-its own projects and vectors. Useful when a work repository and a personal one
-should not share a file, or when a client must not search another team's code.
+A **bucket** is one SQLite file holding everything the daemon knows about a set
+of projects. **By default it lives inside the project**, at
+`.findery/bucket.db`: the index travels with the code, and nothing is shared
+that you did not ask to share.
+
+A bucket becomes shared when two projects point at the *same file* — a team
+index on a shared drive is one file and one name:
+
+```toml
+[bucket]
+name = "team"
+path = "D:/shared/team.db"
+```
 
 ```bash
-findery bucket create work
-findery init --bucket work          # this project lives in `work`
 findery bucket ls                   # what each one holds, and its path
 findery bucket rm work --force      # projects and vectors go with it
 ```
 
-The bucket is chosen once, at registration: every later command follows the
-project, so nobody has to remember which index a directory belongs to.
+The choice is made once, at registration: every later command follows the
+project, so nobody has to remember which index a directory belongs to. And a
+`[scopes]` table in the same manifest declares named restrictions a search can
+ask for — `findery search --scope api "…"` — which filter the same index before
+scoring, never a second one.
 
 ## Plugging into Claude Code
 
@@ -256,7 +283,7 @@ team.
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 240 tests
+make test      # 273 tests
 make bench     # vector scan measurement
 ```
 

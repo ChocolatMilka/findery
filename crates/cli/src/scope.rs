@@ -14,9 +14,22 @@ use findery_core::path_map;
 use findery_core::{Error, Result};
 
 /// Resolves the project a command applies to.
+///
+/// Three answers, narrowest first: the `-p` flag, the manifest at or above the
+/// current directory, and finally the daemon, asked which of its projects
+/// contains this directory. The manifest comes before the daemon because it is
+/// the only one of the two that answers the same way offline, from a
+/// subdirectory, and in a repository somebody else cloned.
 pub(crate) async fn resolve(client: &Client, scope: &Scope) -> Result<ProjectId> {
     if let Some(explicit) = &scope.project {
         return ProjectId::new(explicit.clone());
+    }
+    if let Some(found) = crate::manifest::discover(
+        &std::env::current_dir()
+            .map_err(|e| Error::Invalid(format!("cannot read the current directory: {e}")))?,
+    )? && let Some(id) = found.config.project_id()
+    {
+        return Ok(id);
     }
     let projects = client.list_projects().await?;
     current_project(&projects).ok_or_else(|| {

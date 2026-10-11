@@ -203,9 +203,13 @@ Three things it does that a text editor does not:
 
 ```bash
 cd <your-project>
-findery init          # registers the directory
+findery init          # registers the directory, writes .findery/config.toml
 findery sync          # indexes it
 ```
+
+`init` leaves a manifest at `.findery/config.toml` and the index beside it. The
+manifest is yours to edit and to commit; the index is gitignored for you, in a
+`.findery/.gitignore` that `init` writes once.
 
 The project id is derived from the directory name, and the daemon reads your
 real filesystem — no mount to declare, no path to type.
@@ -234,21 +238,44 @@ findery init --ext rs,md,toml,yml,sql
 
 ### More than one index
 
-A daemon serves several **buckets**: independent SQLite files, each holding its
-own projects, chunks and vectors. Two repositories that should not share a file
-— a work one and a personal one, say — go in two buckets, and a client can be
-pointed at either.
+Each project gets its own **bucket** by default: one SQLite file holding its
+chunks and vectors, living at `.findery/bucket.db` inside the project. Nothing
+to create, nothing to name, and the index travels with the code.
 
-```bash
-findery bucket create work
-findery init --bucket work
-findery bucket ls                    # what each holds, and where it lives
+A bucket becomes shared when two projects point at the same file. Declare that
+in the manifest:
+
+```toml
+[bucket]
+name = "team"
+path = "D:/shared/team.db"
 ```
 
-The bucket is chosen once, at registration. Every later command follows the
+```bash
+findery bucket ls                    # what each holds, and where it lives
+findery bucket create work           # a named one, for `findery init --bucket work`
+```
+
+The choice is made once, at registration. Every later command follows the
 project, so nobody has to remember which index a directory belongs to.
 `findery bucket rm <name>` removes one along with its projects and vectors; it
 refuses while the bucket still holds projects unless you add `--force`.
+
+### Restricting a search without a second index
+
+The same manifest declares **scopes** — named restrictions a search asks for by
+name. They filter the index you already have, before scoring: no second index,
+no re-indexing, no cut applied after the ranking.
+
+```toml
+[scopes.api]
+paths = ["crates/server/**", "crates/client/**"]
+langs = ["rust"]
+```
+
+```bash
+findery search --scope api "where is the retry policy"
+```
 
 ## 6. Search
 

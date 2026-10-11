@@ -53,6 +53,38 @@ impl SearchFilter {
             && self.kinds.is_empty()
             && self.symbol_contains.is_none()
     }
+
+    /// This filter with `on_top` applied over it, dimension by dimension.
+    ///
+    /// INTENT: a dimension the request names replaces the project's; a dimension
+    /// it leaves empty keeps the project's. The alternative — intersecting the
+    /// two — turns `--scope api --lang markdown` into a search that matches
+    /// nothing, and a filter that cannot widen is a filter nobody can escape.
+    /// It is the same shape as the instruction ladder, so there is one rule to
+    /// learn rather than two.
+    pub fn layer(&self, on_top: &SearchFilter) -> SearchFilter {
+        SearchFilter {
+            paths: if on_top.paths.is_empty() {
+                self.paths.clone()
+            } else {
+                on_top.paths.clone()
+            },
+            langs: if on_top.langs.is_empty() {
+                self.langs.clone()
+            } else {
+                on_top.langs.clone()
+            },
+            kinds: if on_top.kinds.is_empty() {
+                self.kinds.clone()
+            } else {
+                on_top.kinds.clone()
+            },
+            symbol_contains: on_top
+                .symbol_contains
+                .clone()
+                .or_else(|| self.symbol_contains.clone()),
+        }
+    }
 }
 
 /// A search as a caller states it. Shared verbatim by the HTTP API, the Rust
@@ -79,6 +111,14 @@ pub struct SearchRequest {
     /// Free-form instruction, overriding both `task` and the configured default.
     #[serde(default)]
     pub instruction: Option<String>,
+    /// A named restriction the project declared, narrowing the SAME index.
+    ///
+    /// INTENT: sent as a name, not as an expanded filter, because the MCP bridge
+    /// is a different process from the CLI and neither should re-read a manifest
+    /// to know what a scope means. The daemon already holds the project's
+    /// definition and is the one component both transports reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl SearchRequest {
@@ -93,7 +133,14 @@ impl SearchRequest {
             max_snippet_chars: None,
             task: None,
             instruction: None,
+            scope: None,
         }
+    }
+
+    /// Restricts the search to a scope the project declared.
+    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.scope = Some(scope.into());
+        self
     }
 
     /// Picks a named retrieval intent.
@@ -102,11 +149,12 @@ impl SearchRequest {
         self
     }
 
-    /// The instruction this request resolves to.
+    /// The instruction this request resolves to on its own.
     ///
     /// INTENT: the precedence lives here, in L0, so the HTTP API, the MCP bridge
-    /// and the CLI cannot disagree about which one wins. `None` means "use the
-    /// daemon's configured default".
+    /// and the CLI cannot disagree about which one wins. `None` means "nothing
+    /// was said here" — the project's default applies next, then the daemon's
+    /// configured one. [`SearchRequest::resolve`] walks the whole ladder.
     pub fn resolved_instruction(&self) -> Option<&str> {
         match (&self.instruction, self.task) {
             (Some(free), _) if !free.trim().is_empty() => Some(free),
@@ -114,6 +162,29 @@ impl SearchRequest {
             _ => None,
         }
     }
+
+    /// The filter and instruction this request resolves to, given the project.
+    ///
+    /// This is the single ladder, and it is deliberately kept in L0 rather than
+    /// in the engine: a transport that resolved it differently would be a
+    /// transport that answers a different question. See [`SearchFilter::layer`]
+    /// for what happens when a scope and a filter disagree.
+    pub fn resolve(&self, project: &SearchFilter, instruction: Option<&str>) -> Resolved {
+        Resolved {
+            filter: project.layer(&self.filter),
+            instruction: self
+                .resolved_instruction()
+                .or(instruction)
+                .map(str::to_string),
+        }
+    }
+}
+
+/// What a request means once the project's own defaults have been applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    pub filter: SearchFilter,
+    pub instruction: Option<String>,
 }
 
 /// A (chunk, score) pair returned by a `VectorStore`.
@@ -140,7 +211,9 @@ pub struct SearchHit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ProjectSpec;
     use crate::prompt::{DEFAULT_QUERY_INSTRUCTION, QueryTask};
+    use std::collections::BTreeMap;
 
     fn request() -> SearchRequest {
         SearchRequest::new(
@@ -200,5 +273,103 @@ mod tests {
             serde_json::from_str(r#"{"project":"demo","query":"x"}"#).expect("deserialize");
         assert_eq!(back.task, None);
         assert_eq!(back.resolved_instruction(), None);
+    }
+
+    /// A dimension the request names replaces the scope's; a dimension it leaves
+    /// empty keeps the scope's. Intersecting them instead would make
+    /// `--scope api --lang markdown` a search that matches nothing.
+    #[test]
+    fn a_scope_supplies_what_the_request_leaves_unsaid() {
+        let scope = SearchFilter {
+            paths: vec!["crates/server/**".into()],
+            langs: vec![Lang::Rust],
+            ..SearchFilter::default()
+        };
+
+        let untouched = scope.layer(&SearchFilter::default());
+        assert_eq!(untouched, scope, "nothing said leaves the scope whole");
+
+        let overridden = scope.layer(&SearchFilter {
+            langs: vec![Lang::Markdown],
+            ..SearchFilter::default()
+        });
+        assert_eq!(overridden.paths, scope.paths, "the scope's paths survive");
+        assert_eq!(overridden.langs, vec![Lang::Markdown], "the request wins");
+    }
+
+    /// A scope restricts. It must never turn a narrow request into a wider one —
+    /// which is what an intersection would do in reverse, and what a naive union
+    /// would do outright.
+    #[test]
+    fn a_scope_never_widens_what_the_request_asked_for() {
+        let scope = SearchFilter {
+            paths: vec!["docs/**".into()],
+            ..SearchFilter::default()
+        };
+        let request = SearchFilter {
+            kinds: vec![ChunkKind::Function],
+            ..SearchFilter::default()
+        };
+        let merged = scope.layer(&request);
+        assert_eq!(merged.paths, vec!["docs/**"]);
+        assert_eq!(merged.kinds, vec![ChunkKind::Function]);
+        assert!(!merged.is_empty());
+    }
+
+    /// The whole ladder in one place: request, then project, then nothing — the
+    /// daemon's configured default being what "nothing" means.
+    #[test]
+    fn the_request_instruction_beats_the_projects_which_beats_nothing() {
+        let project = Some("Given the project, retrieve what it needs.");
+        let filter = SearchFilter::default();
+
+        let from_request = SearchRequest {
+            instruction: Some("Given the request, retrieve this.".into()),
+            ..SearchRequest::new(ProjectId::new("demo").expect("id"), "q")
+        };
+        let resolved = from_request.resolve(&filter, project);
+        assert_eq!(
+            resolved.instruction.as_deref(),
+            Some("Given the request, retrieve this.")
+        );
+
+        let silent = SearchRequest::new(ProjectId::new("demo").expect("id"), "q");
+        assert_eq!(
+            silent.resolve(&filter, project).instruction.as_deref(),
+            project,
+            "a request that says nothing gets the project's default"
+        );
+        assert_eq!(silent.resolve(&filter, None).instruction, None);
+    }
+
+    /// A request whose only instruction is whitespace is a request that said
+    /// nothing, and must not shadow the project's.
+    #[test]
+    fn a_blank_request_instruction_does_not_shadow_the_projects() {
+        let request = SearchRequest {
+            instruction: Some("   ".into()),
+            task: None,
+            ..SearchRequest::new(ProjectId::new("demo").expect("id"), "q")
+        };
+        let resolved = request.resolve(&SearchFilter::default(), Some("the project's"));
+        assert_eq!(resolved.instruction.as_deref(), Some("the project's"));
+    }
+
+    /// A scope name the project does not declare names the ones it does: the
+    /// caller's next move is to pick one, and it cannot guess.
+    #[test]
+    fn an_unknown_scope_lists_the_ones_that_exist() {
+        let spec = ProjectSpec {
+            scopes: BTreeMap::from([("api".to_string(), SearchFilter::default())]),
+            ..ProjectSpec::default()
+        };
+        let err = spec.scope("api2").expect_err("must be refused");
+        assert!(err.to_string().contains("api"), "{err}");
+
+        assert!(spec.scope("api").is_ok());
+
+        let none = ProjectSpec::default();
+        let err = none.scope("api").expect_err("must be refused");
+        assert!(err.to_string().contains("manifest"), "{err}");
     }
 }

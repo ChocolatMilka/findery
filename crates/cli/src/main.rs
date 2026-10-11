@@ -12,6 +12,8 @@
 mod config;
 mod doctor;
 mod endpoint;
+mod init;
+mod manifest;
 mod progress;
 mod push;
 mod render;
@@ -103,9 +105,18 @@ pub(crate) enum Command {
         /// Retrieval intent sent to the instruction-aware model.
         #[arg(long, value_parser = ["code", "symbol", "usage", "docs", "test", "config", "error"])]
         task: Option<String>,
-        /// Free-form instruction, overriding --task.
-        #[arg(long)]
-        instruct: Option<String>,
+        /// Free-form instruction for the embedding model, overriding --task.
+        ///
+        /// The first half of what the model reads as "Instruct: …\nQuery: …";
+        /// the query is the other half, and both are always sent.
+        #[arg(long, alias = "instruct")]
+        instruction: Option<String>,
+        /// A named restriction the project declares, narrowing this same index.
+        ///
+        /// Declared in `.findery/config.toml`, applied before scoring — never a
+        /// second index, never a cut applied after the ranking.
+        #[arg(long = "scope")]
+        search_scope: Option<String>,
         #[arg(long = "path")]
         paths: Vec<String>,
         #[arg(long = "lang")]

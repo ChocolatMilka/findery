@@ -71,6 +71,11 @@ impl Indexer {
             include_hidden: req.include_hidden.unwrap_or(defaults.include_hidden),
             max_file_bytes: req.max_file_bytes.unwrap_or(defaults.max_file_bytes),
             push,
+            // The project's own defaults, carried to the daemon so a transport
+            // that never read the manifest can still resolve them.
+            scopes: req.scopes.unwrap_or_default(),
+            instruction: req.instruction,
+            task: req.task,
         };
         // A bucket can live inside the project it indexes, and indexing the index
         // is a write loop: every sync would see a file it had just written.

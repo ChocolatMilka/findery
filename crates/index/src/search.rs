@@ -10,9 +10,23 @@ use crate::Indexer;
 use findery_core::Result;
 use findery_core::filter::CompiledFilter;
 use findery_core::ids::ChunkId;
-use findery_core::model::{Chunk, Project, ScoredChunk, SearchHit, SearchMode, SearchRequest};
+use findery_core::model::{
+    Chunk, Project, ScoredChunk, SearchFilter, SearchHit, SearchMode, SearchRequest,
+};
 use findery_core::traits::VectorPayload;
 use std::collections::HashMap;
+
+/// Stands in for "this request named no scope".
+///
+/// INTENT: an empty filter rather than an `Option<&SearchFilter>`, so the merge
+/// has one shape instead of two. A scope and a bare request are the same kind of
+/// value, which is what [`SearchFilter::layer`] is written for.
+static NO_SCOPE: SearchFilter = SearchFilter {
+    paths: Vec::new(),
+    langs: Vec::new(),
+    kinds: Vec::new(),
+    symbol_contains: None,
+};
 
 /// Runs a search and returns hits sorted by descending score.
 pub async fn search(idx: &Indexer, req: &SearchRequest) -> Result<Vec<SearchHit>> {
@@ -23,7 +37,20 @@ pub async fn search(idx: &Indexer, req: &SearchRequest) -> Result<Vec<SearchHit>
     let k = req.k.unwrap_or(cfg.default_k).clamp(1, cfg.max_k);
     let mode = req.mode.unwrap_or(cfg.default_mode);
     let candidates = (k * cfg.candidate_multiplier.max(1)).min(cfg.max_k * 8);
-    let compiled = CompiledFilter::new(&req.filter)?;
+
+    // A scope is a name the project declared, resolved here because the daemon
+    // is the one component both transports reach — the MCP bridge never reads a
+    // manifest. An unknown name is refused with the list of the ones that exist,
+    // rather than silently searching everything.
+    let scope = match &req.scope {
+        Some(name) => project.spec.scope(name)?,
+        None => &NO_SCOPE,
+    };
+    // Precedence (request > project > daemon default) is resolved in L0, so no
+    // transport can invent its own ordering — for the instruction as much as for
+    // the filter.
+    let resolved = req.resolve(scope, project.spec.resolved_instruction());
+    let compiled = CompiledFilter::new(&resolved.filter)?;
 
     let vector_hits = if mode == SearchMode::Keyword {
         Vec::new()
@@ -32,14 +59,12 @@ pub async fn search(idx: &Indexer, req: &SearchRequest) -> Result<Vec<SearchHit>
         // only the leg that would compare vectors from two embedding spaces is
         // refused.
         cat.ensure_vectors_usable()?;
-        // Precedence (free text > preset > daemon default) is resolved in L0,
-        // so no transport can invent its own ordering.
         let query = idx
             .embedder
-            .embed_query(&req.query, req.resolved_instruction())
+            .embed_query(&req.query, resolved.instruction.as_deref())
             .await?;
         cat.store
-            .search(&req.project, &query, candidates, &req.filter)
+            .search(&req.project, &query, candidates, &resolved.filter)
             .await?
     };
 

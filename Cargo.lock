@@ -488,6 +488,7 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml",
 ]

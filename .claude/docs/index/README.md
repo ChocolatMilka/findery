@@ -80,6 +80,31 @@ deleting each other:
 
 ## 2. Hybrid search
 
+### What a request means before it is run
+
+A search arrives with a filter, an optional `scope` **name**, and an optional
+instruction, over a project that has its own defaults for all three. The
+ladder is resolved in one call — `SearchRequest::resolve` — in L0, so the
+daemon, the MCP bridge and the CLI cannot answer different questions:
+
+```
+request.instruction  >  project.instruction  >  the daemon's configured default
+request's filter dimensions  >  the named scope's dimensions
+```
+
+The scope is resolved **here**, in the engine, and not by the client that named
+it: the MCP bridge is a separate process that never reads a manifest, and the
+daemon is the one component both transports already reach. An unknown name is
+refused with the list of the ones that exist.
+
+`SearchFilter::layer` is the per-dimension merge. A dimension the request names
+replaces the scope's; a dimension it leaves empty keeps the scope's. The
+alternative — intersecting them — turns `--scope api --lang markdown` into a
+search that matches nothing, and a filter nobody can widen is a filter nobody
+can escape. A scope therefore **restricts and never widens**, which is the one
+property worth stating: it is a filter applied before scoring, never a second
+index and never a cut applied after the ranking.
+
 ### Two legs
 
 | Leg | Finds | Misses |

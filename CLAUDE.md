@@ -89,7 +89,7 @@ run the exit checklist on Windows.
 
 ```bash
 make check                  # fmt-check + clippy -D warnings + test + layers
-make test                   # 240 tests
+make test                   # 273 tests
 make bench                  # measures the vector scan (release)
 make install                # findery + finderyd + MCP bridge into ~/.cargo/bin
 make up-model               # the model alone, in Docker — the daemon runs natively
@@ -97,13 +97,14 @@ make run                    # the daemon, on this machine
 make up                     # all-Docker variant (requires FINDERY_WORKSPACES)
 make up-gpu / up-qdrant / logs / health / down
 
-cd <a project> && findery init && findery sync   # register, then index
-findery search "where backoff is handled"   # project inferred from the current directory
-findery health                  # what the daemon actually serves
+cd <a project> && findery init && findery sync   # register, then index — init writes .findery/config.toml
+findery search "where backoff is handled"   # project read from the manifest, walking up
+findery search --scope api "…"              # a named restriction the manifest declares
+findery health                  # whether the index answers, and what it serves
 findery doctor                  # what is missing, and the command that fixes it
-findery bucket ls              # the independent indexes this daemon serves
+findery bucket ls               # the indexes this server serves, and where each file is
 findery config set model …      # settings, validated and written to <data_dir>/config.toml
-findery config set server …     # the daemon address — no FINDERY_SERVER_URL needed
+findery config set server …     # the server address — no FINDERY_SERVER_URL needed
 finderyd --check                # the config as actually resolved
 ```
 

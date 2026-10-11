@@ -75,6 +75,10 @@ async fn search_code(client: &Client, args: &Value) -> Result<String> {
             .get("instruction")
             .and_then(Value::as_str)
             .map(str::to_string),
+        scope: args
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
     let hits = client.search(&request).await?;
     Ok(render_hits(&project, &query, &hits))

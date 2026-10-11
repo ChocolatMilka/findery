@@ -6,13 +6,11 @@
 
 use crate::endpoint::Endpoint;
 use crate::render;
-use crate::scope::{absolute, current_project, derive_id, parse_mode, resolve};
+use crate::scope::{current_project, parse_mode, resolve};
 use crate::{BucketAction, Cli, Command, ConfigAction, DaemonAction, DocAction};
 use findery_client::Client;
-use findery_core::api::{AddDocument, ExportRequest, RegisterProject, SyncRequest, WatchRequest};
-use findery_core::ids::ProjectId;
+use findery_core::api::{AddDocument, ExportRequest, SyncRequest, WatchRequest};
 use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchRequest};
-use findery_core::project::BucketRef;
 use findery_core::prompt::QueryTask;
 use findery_core::{Error, Result};
 use std::io::Read;
@@ -49,54 +47,19 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
             sync,
             push,
         } => {
-            let root = absolute(&path)?;
-            let id = match id {
-                Some(explicit) => ProjectId::new(explicit)?,
-                None => derive_id(&client, &root).await?,
-            };
-            // No `--bucket` means the ordinary case, which the daemon resolves
-            // from the project root: a bucket inside the project, named after
-            // it. The manifest records whichever bucket the daemon actually
-            // used, substitution included.
-            let request = RegisterProject {
-                root: root.clone(),
-                id: Some(id.to_string()),
-                extensions: ext,
-                bucket: bucket.map(|name| BucketRef {
-                    name: Some(name),
-                    path: None,
-                }),
-                push: push.then_some(true),
-                ..Default::default()
-            };
-            let project = client.register(&request).await?;
-            if json {
-                render::json(&project)?;
-            } else {
-                println!(
-                    "registered `{}` at {} (bucket {})",
-                    project.id, project.host_root, project.bucket
-                );
-            }
-            // Registration and indexing are two steps on purpose: a bucket can
-            // be chosen and a repository claimed before any model is reachable.
-            if !sync {
-                if !json {
-                    println!("run `findery sync` when you are ready to index it");
-                }
-                return Ok(());
-            }
-            let report = if project.spec.push {
-                crate::push::sync(&client, &project).await?
-            } else {
-                crate::progress::sync_now(&client, &project.id, json).await?
-            };
-            if json {
-                render::json(&report)?;
-            } else {
-                render::sync(&report);
-                println!("\nready — try: findery search \"<your question>\"");
-            }
+            crate::init::run(
+                &client,
+                crate::init::Options {
+                    path,
+                    id,
+                    ext,
+                    bucket,
+                    sync,
+                    push,
+                },
+                json,
+            )
+            .await?;
         }
 
         Command::Search {
@@ -105,7 +68,8 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
             k,
             mode,
             task,
-            instruct,
+            instruction,
+            search_scope,
             paths,
             langs,
             kinds,
@@ -124,7 +88,8 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
                 },
                 max_snippet_chars: max_chars,
                 task: task.as_deref().and_then(QueryTask::parse),
-                instruction: instruct,
+                instruction,
+                scope: search_scope,
             };
             let hits = client.search(&request).await?;
             if json {
