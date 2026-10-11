@@ -330,7 +330,7 @@ Create `.mcp.json` at the root of the project you want the agent to search:
 }
 ```
 
-Restart Claude Code and type `/mcp`. You should see `search_code` and seven
+Restart Claude Code and type `/mcp`. You should see `search_code` and eight
 other tools. `search_code` becomes the agent's first move when locating
 anything — instead of a glob, four greps and three file reads.
 

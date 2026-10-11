@@ -1,29 +1,44 @@
 # findery
 
-**Local semantic index for codebases.** One embedding model, loaded once, in
-the background. Multiple projects, multiple clients. Rust API, HTTP API,
-MCP API — so it plugs directly into Claude Code.
+**A local semantic index of your codebases, so you — and your coding agent —
+find code by what it does instead of the word you guessed.** One embedding
+model, loaded once in the background, serves every project and every client:
+a CLI, an HTTP API, a Rust client, and an MCP bridge that puts `search_code`
+into Claude Code.
 
-- 🦀 100% Rust, a five-layer workspace
-- 🔒 `qwen3.7-text-embedding` by default, **or** a fully local runtime, **or** any remote
-  provider: nothing about the model is hardcoded
-- ⚡ Three-gate incremental sync: re-syncing an unchanged repo costs
-  **zero embeddings**
-- 🔍 Hybrid search: vector + BM25, rank fusion
-- 🗄️ Pluggable vector store: SQLite (exact, no service) or Qdrant
-  (local vector database, HNSW)
-- 📤 JSONL / JSON / raw `float32` export — you're never locked in
-- 📡 Pull or push: the daemon reads your files, or the CLI sends them — so the
-  daemon can run in a container, or on another machine, with nothing mounted
-- 🧪 283 tests, clean `clippy -D warnings`, layer watchdog
+Without it, locating one function in an unfamiliar repository costs a `glob`,
+three to six `grep` and three to eight `Read` — 25,000 to 60,000 input tokens.
+With it, one call, tens of milliseconds, and a citation.
 
----
+- 🔍 **Hybrid search** — vectors for the concept, BM25 for the exact
+  identifier, fused by rank: `"where is retrying handled"` and `"with_backoff"`
+  both land, with no second index and no re-tuning
+- ⚡ **Re-syncing is free** — the three gates make an unchanged repo cost
+  **zero embeddings**: vectors are keyed by content, so moving a function,
+  renaming a module or re-cloning costs nothing either
+- 📡 **Works with nothing mounted** — the daemon reads your files, or the CLI
+  reads them and pushes the contents: a container, another machine, any disk
+- 🔒 **No lock-in on the model** — Qwen3 out of the box, or any local runtime
+  (Ollama, llama.cpp, vLLM), or any remote provider. Nothing is hardcoded
+- 🗄️ **Pluggable store** — embedded SQLite (exact in-RAM scan, no service to
+  run) or Qdrant (HNSW) when you outgrow it
+- 📤 **Your vectors, exportable** — JSONL / JSON / raw `float32`, so you are
+  never locked in
+- 🦀 100% Rust, a five-layer workspace, 283 tests, `clippy -D warnings`, layer
+  watchdog
+
+**On this page** — [use it](#use-it) ·
+[from Rust](#using-it-from-another-rust-project) ·
+[what it saves](#what-this-changes) ·
+[how it's built](#architecture)
 
 > **New here?** [`docs/getting-started.md`](docs/getting-started.md) walks the
 > whole setup step by step, with sizing tables and a troubleshooting section.
 > **Handing it to a team?** [`docs/deploying.md`](docs/deploying.md).
 
-## Getting started
+## Use it
+
+### 1. Install
 
 ```bash
 git clone <this-repo> && cd findery
@@ -40,8 +55,8 @@ script — same names, same commands:
 .\tools\tasks.ps1 help        # every task
 ```
 
-Or take the released installer, which needs neither Rust nor a toolchain — it
-puts the three binaries in `Program Files` and `findery` on your `PATH`:
+**Without a Rust toolchain**, every release ships an installer — three binaries
+in `Program Files`, `findery` on your `PATH`:
 
 ```powershell
 # download findery-<version>-x64.msi from the latest release, then
@@ -49,7 +64,20 @@ msiexec /i findery-0.1.0-x64.msi
 findery --version
 ```
 
-Then, in **any project, on any disk**:
+**Already running a model?** Skip `make up-model`. Anything serving
+`/v1/embeddings` fits — Ollama, llama.cpp, LM Studio, vLLM, or a hosted
+provider:
+
+```bash
+findery config set url http://127.0.0.1:11434
+findery config set model <the name that runtime reports>
+```
+
+More cases in [Choosing your model](#choosing-your-model).
+
+### 2. Index a project, then search it
+
+In **any project, on any disk**:
 
 ```bash
 cd D:/work/my-project
@@ -61,6 +89,13 @@ findery search "where is retry handled"   # the project is read from the manifes
 No path to type, no mount to declare, **and nothing to start** — the first command
 brings the index up in the background and says nothing about it, because it is not
 something you asked to manage. Nothing to keep open.
+
+Each hit is a `path:start-end` locator you can quote, an absolute path you can
+open, and the excerpt itself.
+
+The first index of a large repository takes minutes; everything after is
+incremental. Run `findery doctor` whenever something looks wrong: it names what
+is missing and the command that fixes it.
 
 `init` leaves two things behind in the project: the manifest below, and the
 index itself, which lives inside the project by default. Both are yours; the
@@ -82,8 +117,37 @@ paths = ["crates/server/**"]
 its bucket chosen **before** any model is reachable. `findery init --sync`
 does both in one go when you are ready.
 
-Run `findery doctor` whenever something looks wrong: it names what is missing
-and the command that fixes it.
+### 3. Hand it to Claude Code
+
+`.mcp.json` at the root of the project to index:
+
+```json
+{
+  "mcpServers": {
+    "findery": {
+      "command": "C:/Program Files/findery/findery-mcp.exe"
+    }
+  }
+}
+```
+
+That is the path the installer produces. From a source checkout it is
+`<repo>/target/release/findery-mcp`; from `make install`, whatever
+`~/.cargo/bin` resolves to. Whichever you name, it must be the bridge from the
+same build as the server it talks to.
+
+Restart Claude Code, then `/mcp`: nine tools appear, `search_code` among them,
+which becomes the agent's first reflex for locating code — in place of `glob` +
+`grep` + three `Read`.
+
+The bridge is launched by Claude Code rather than by your shell, so it takes its
+daemon address from the `env` block of this file — add
+`"env": { "FINDERY_SERVER_URL": "https://findery.internal.example.com" }` when
+the daemon is not on loopback. Leave it out for a local one.
+
+Details and the Docker variant: [`.claude/docs/mcp/README.md`](.claude/docs/mcp/README.md).
+
+### Day to day
 
 ```bash
 findery projects        # your projects, the current one marked with a *
@@ -91,6 +155,7 @@ findery status          # files, chunks, vectors
 findery sync            # after coding — near instant
 findery watch           # or let it resync on its own
 findery search -p axle "retry"    # target another project from anywhere
+findery search --scope api "where is the retry policy"   # a named restriction from the manifest
 findery bucket ls      # the independent indexes it serves
 ```
 
@@ -127,8 +192,8 @@ findery config set token  <the bearer token it asks for>
 
 Precedence, narrowest last: `--server` / `--token`, then `FINDERY_SERVER_URL` /
 `FINDERY_API_TOKEN`, then the settings file, then loopback. The environment
-stays on top so one container image can serve every deployment; `findery config
-set` warns when a variable is masking what it just wrote.
+stays on top so one container image can serve every deployment.
+`findery config set` warns when a variable is masking what it just wrote.
 
 ### Buckets — your index, and anyone else's
 
@@ -157,36 +222,7 @@ project, so nobody has to remember which index a directory belongs to. And a
 ask for — `findery search --scope api "…"` — which filter the same index before
 scoring, never a second one.
 
-## Plugging into Claude Code
-
-`.mcp.json` at the root of the project to index:
-
-```json
-{
-  "mcpServers": {
-    "findery": {
-      "command": "C:/Program Files/findery/findery-mcp.exe"
-    }
-  }
-}
-```
-
-That is the path the installer produces. From a source checkout it is
-`<repo>/target/release/findery-mcp`; from `make install`, whatever
-`~/.cargo/bin` resolves to. Whichever you name, it must be the bridge from the
-same build as the server it talks to.
-
-Nine tools appear, including `search_code`, which becomes the agent's first
-reflex for locating code — in place of `glob` + `grep` + three `Read`.
-
-The bridge is launched by Claude Code rather than by your shell, so it takes its
-daemon address from the `env` block of this file — add
-`"env": { "FINDERY_SERVER_URL": "https://findery.internal.example.com" }` when
-the daemon is not on loopback. Leave it out for a local one.
-
-Details and the Docker variant: [`.claude/docs/mcp/README.md`](.claude/docs/mcp/README.md).
-
-## From another Rust project
+## Using it from another Rust project
 
 ```toml
 [dependencies]
@@ -210,104 +246,21 @@ chunkers.
 
 ---
 
-## Choosing your model
-
-Nothing is hardcoded. Three examples, all in `.env`:
-
-```bash
-# Local, provided (default)
-FINDERY_EMBED_MODEL=qwen3.7-text-embedding   # or: findery config set model …
-FINDERY_EMBED_DIM=1024
-
-# A local runtime you already have (Ollama, llama.cpp, LM Studio, vLLM…)
-FINDERY_EMBED_BASE_URL=http://host.docker.internal:11434
-FINDERY_EMBED_MODEL=<the name your local runtime reports>
-
-# A remote provider
-FINDERY_EMBED_BASE_URL=https://api.openai.com
-FINDERY_EMBED_MODEL=text-embedding-3-large
-FINDERY_EMBED_DIM=3072
-FINDERY_EMBED_API_KEY=sk-...
-```
-
-## Choosing your vector store
-
-| Backend | Search | Service | When |
-|---------|-----------|---------|-------|
-| `sqlite` (default) | exact in-RAM scan — **12 ms at 50k chunks**, 50 ms at 200k | none | up to ~150k chunks |
-| `qdrant` | HNSW, filters, int8 quantization | a local container | beyond that, or a shared index |
-
-The numbers are reproducible: `make bench`. The full reasoning, including why
-an **embedded** ANN index was measured and then ruled out, is in
-[`.claude/docs/store/README.md`](.claude/docs/store/README.md).
-
----
-
 ## What this changes
 
 Without an index, locating something in an unfamiliar codebase costs one
 `glob`, three to six `grep` and three to eight `Read` — commonly **25,000 to
 60,000 input tokens**. With `search_code`, the same question costs one call
-and **2,500 to 3,500 tokens**, plus one targeted `Read` when the whole file
-is really needed.
+and **2,500 to 3,500 tokens**; add the 0-2 targeted `Read` it sometimes needs
+and you are at **3,000 to 9,000**, which is the column the table below prices.
 
 Exploration typically accounts for 40 to 60% of the input tokens of an agent
 session on a codebase it doesn't know. Cutting that share by ~70% gives a
 **net gain on the order of 30 to 45% on the session**, and just as much
 latency saved — which often matters more.
 
-The assumptions and the full calculation are detailed further down in
-[ESTIMATE](#estimate-gains-and-savings).
-
----
-
-## Architecture
-
-```
- L4   findery-mcp (MCP stdio)      findery-cli (`findery`)        the edges
- L3   findery-server (axum)                              HTTP transport
- L2   findery-index                                      sync, search, jobs, watch
- L1   findery-chunk   findery-embed   findery-store   findery-client    one responsibility each
- L0   findery-core                                       vocabulary, zero I/O
-```
-
-Dependencies flow down, data flows back up through `Result`. Verified by
-`make layers`.
-
-| Page | Contents |
-|------|---------|
-| [`usage/`](.claude/docs/usage/README.md) | every flag, every knob, and when to reach for it |
-| [`overview/pipeline.md`](.claude/docs/overview/pipeline.md) | from file to cited hit |
-| [`overview/layers.md`](.claude/docs/overview/layers.md) | the law of the layers |
-| [`chunk/`](.claude/docs/chunk/README.md) | Rust and Markdown chunking |
-| [`embed/`](.claude/docs/embed/README.md) | models, Qwen3 instruction, providers |
-| [`store/`](.claude/docs/store/README.md) | bucket, backends, measurements, export |
-| [`index/`](.claude/docs/index/README.md) | sync, hybrid search, jobs, watch |
-| [`server/`](.claude/docs/server/README.md) | HTTP API reference |
-| [`mcp/`](.claude/docs/mcp/README.md) | MCP tools and setup |
-
-Two pages sit outside that set, written for readers rather than contributors:
-[`docs/getting-started.md`](docs/getting-started.md) and
-[`docs/deploying.md`](docs/deploying.md) — the latter for handing findery to a
-team.
-
----
-
-## Development
-
-```bash
-make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 283 tests
-make bench     # vector scan measurement
-```
-
-Windows: `.\tools\tasks.ps1 check` — it needs Git for Windows, because the two
-watchdogs are shell scripts and it finds that bash rather than WSL's.
-
-The repo's rules: [`.claude/rules/CONVENTIONS.md`](.claude/rules/CONVENTIONS.md).
-Open work: [`.claude/roadmap/README.md`](.claude/roadmap/README.md).
-
----
+The assumptions and the full calculation are detailed just below in
+[ESTIMATE](#estimate--gains-and-savings).
 
 ## ESTIMATE — gains and savings
 
@@ -371,6 +324,99 @@ The token savings aren't the main gain. What really changes:
 
 The break-even point is reached within a handful of sessions: a single
 avoided exploration pays back several minutes of indexing.
+
+---
+
+## Architecture
+
+```
+ L4   findery-mcp (MCP stdio)      findery-cli (`findery`)        the edges
+ L3   findery-server (axum)                              HTTP transport
+ L2   findery-index                                      sync, search, jobs, watch
+ L1   findery-chunk   findery-embed   findery-store   findery-client    one responsibility each
+ L0   findery-core                                       vocabulary, zero I/O
+```
+
+Dependencies flow down, data flows back up through `Result`. Verified by
+`make layers`.
+
+| Page | Contents |
+|------|---------|
+| [`usage/`](.claude/docs/usage/README.md) | every flag, every knob, and when to reach for it |
+| [`overview/pipeline.md`](.claude/docs/overview/pipeline.md) | from file to cited hit |
+| [`overview/layers.md`](.claude/docs/overview/layers.md) | the law of the layers |
+| [`chunk/`](.claude/docs/chunk/README.md) | Rust and Markdown chunking |
+| [`embed/`](.claude/docs/embed/README.md) | models, Qwen3 instruction, providers |
+| [`store/`](.claude/docs/store/README.md) | bucket, backends, measurements, export |
+| [`index/`](.claude/docs/index/README.md) | sync, hybrid search, jobs, watch |
+| [`server/`](.claude/docs/server/README.md) | HTTP API reference |
+| [`mcp/`](.claude/docs/mcp/README.md) | MCP tools and setup |
+
+Two pages sit outside that set, written for readers rather than contributors:
+[`docs/getting-started.md`](docs/getting-started.md) and
+[`docs/deploying.md`](docs/deploying.md) — the latter for handing findery to a
+team.
+
+## Choosing your model
+
+Nothing is hardcoded. `findery config set` writes the settings file the daemon
+reads — same command as everywhere else on this page, so the choice survives the
+terminal it was made in. Three cases:
+
+```bash
+# Local, provided (default)
+findery config set model qwen3.7-text-embedding
+findery config set dim   1024
+
+# A local runtime you already have (Ollama, llama.cpp, LM Studio, vLLM…)
+findery config set url   http://127.0.0.1:11434
+findery config set model <the name that runtime reports>
+
+# A remote provider
+findery config set url   https://api.openai.com
+findery config set model text-embedding-3-large
+findery config set dim   3072
+findery config set key   sk-...
+```
+
+Each of these also has a `FINDERY_EMBED_*` environment variable, and the
+environment wins over the file, in the same order as `server` and `token`
+above. `findery config show` prints what is set, secrets masked.
+`findery config set` warns when a variable is masking what it just wrote.
+Changing `model` or `dim` opens a new cache namespace: the next `sync`
+re-embeds.
+
+## Choosing your vector store
+
+```bash
+findery config set store qdrant                        # sqlite by default
+findery config set store.qdrant.url http://127.0.0.1:6333
+```
+
+| Backend | Search | Service | When |
+|---------|-----------|---------|-------|
+| `sqlite` (default) | exact in-RAM scan — **12 ms at 50k chunks**, 50 ms at 200k | none | up to ~150k chunks |
+| `qdrant` | HNSW, filters, int8 quantization | a local container | beyond that, or a shared index |
+
+The switch **re-embeds nothing**: the bucket does not move, every vector is
+already in the content-addressed cache, and the next `sync` fills the new store
+from it. The numbers are reproducible: `make bench`. The full reasoning —
+including why an **embedded** ANN index was measured and then ruled out — is in
+[`.claude/docs/store/README.md`](.claude/docs/store/README.md).
+
+## Development
+
+```bash
+make check     # fmt-check + clippy -D warnings + test + layers + sizes
+make test      # 283 tests
+make bench     # vector scan measurement
+```
+
+Windows: `.\tools\tasks.ps1 check` — it needs Git for Windows, because the two
+watchdogs are shell scripts and it finds that bash rather than WSL's.
+
+The repo's rules: [`.claude/rules/CONVENTIONS.md`](.claude/rules/CONVENTIONS.md).
+Open work: [`.claude/roadmap/README.md`](.claude/roadmap/README.md).
 
 ---
 
