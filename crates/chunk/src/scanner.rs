@@ -1,4 +1,4 @@
-//! A minimal lexical scanner for Rust source.
+//! A minimal lexical scanner: what a language's punctuation can be trusted for.
 //!
 //! INTENT: chunking needs item boundaries, not a syntax tree. A full parser
 //! (tree-sitter, syn) would drag a C toolchain or a proc-macro dependency into
@@ -6,39 +6,154 @@
 //! never mistake a brace inside a string, a comment or a raw literal for a
 //! structural brace — that is exactly what this scanner guarantees.
 
-/// Byte span of one top-level item, leading trivia included.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
+/// How one language spells its comments, its strings and its literals.
+///
+/// INTENT: the brace-delimited family (Rust, JavaScript, PHP, JSON) shares one
+/// item grammar and differs only in its trivia. Describing that trivia as data
+/// keeps ONE scanner instead of one per language — and one place to fix when a
+/// literal is read wrong.
+pub struct Lexicon {
+    /// Openers of a comment that ends at the newline: `["//"]`, `["//", "#"]`.
+    pub line_comments: &'static [&'static str],
+    /// The block-comment pair, when the language has one.
+    pub block_comment: Option<BlockComment>,
+    /// Quote bytes that open an escaped string: `"`, `'`, `` ` ``.
+    pub strings: &'static [u8],
+
+    /// `'a'` is a character literal rather than a string (Rust).
+    pub char_literals: bool,
+    /// `r"…"`, `r#"…"#`, `b"…"` (Rust).
+    pub raw_strings: bool,
+    /// `/…/flags` is a regular expression when it follows an operator (JS).
+    pub regex_literals: bool,
+    /// `<<<EOT … EOT;` (PHP).
+    pub heredocs: bool,
+    /// `#[…]` is an attribute riding along with the item it annotates.
+    pub attributes: bool,
+    /// `@Decorator(…)` rides along with the item it annotates (TypeScript).
+    pub decorators: bool,
 }
 
-impl Span {
-    pub fn slice<'a>(&self, src: &'a str) -> &'a str {
-        &src[self.start..self.end]
-    }
+/// A block comment's delimiters. Rust nests them, C-like languages do not.
+pub struct BlockComment {
+    /// The opening delimiter.
+    pub open: &'static str,
+    /// The closing delimiter.
+    pub close: &'static str,
+    /// Whether an opening delimiter inside the comment opens another one.
+    pub nested: bool,
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.end <= self.start
-    }
+impl Lexicon {
+    /// Rust: nested block comments, raw strings, char literals.
+    pub const RUST: Self = Self {
+        line_comments: &["//"],
+        block_comment: Some(BlockComment {
+            open: "/*",
+            close: "*/",
+            nested: true,
+        }),
+        strings: b"\"",
+        char_literals: true,
+        raw_strings: true,
+        regex_literals: false,
+        heredocs: false,
+        attributes: true,
+        decorators: false,
+    };
+
+    /// JavaScript and TypeScript: template literals, regular expression
+    /// literals, `//` and `/* */`.
+    pub const JAVASCRIPT: Self = Self {
+        line_comments: &["//"],
+        block_comment: Some(BlockComment {
+            open: "/*",
+            close: "*/",
+            nested: false,
+        }),
+        strings: b"\"'`",
+        char_literals: false,
+        raw_strings: false,
+        regex_literals: true,
+        heredocs: false,
+        attributes: false,
+        decorators: true,
+    };
+
+    /// PHP: `#` and `//` line comments, heredocs and nowdocs, `#[attributes]`.
+    pub const PHP: Self = Self {
+        line_comments: &["//", "#"],
+        block_comment: Some(BlockComment {
+            open: "/*",
+            close: "*/",
+            nested: false,
+        }),
+        strings: b"\"'",
+        char_literals: false,
+        raw_strings: false,
+        regex_literals: false,
+        heredocs: true,
+        attributes: true,
+        decorators: false,
+    };
+
+    /// JSON, plus the `//` and `/* */` of its jsonc dialect.
+    pub const JSON: Self = Self {
+        line_comments: &["//"],
+        block_comment: Some(BlockComment {
+            open: "/*",
+            close: "*/",
+            nested: false,
+        }),
+        strings: b"\"",
+        char_literals: false,
+        raw_strings: false,
+        regex_literals: false,
+        heredocs: false,
+        attributes: false,
+        decorators: false,
+    };
 }
 
 /// Skips a lexical construct whose contents must not be read structurally.
 ///
 /// Returns the offset just past the construct, or `None` when the byte at `i`
 /// starts no such construct and the caller should interpret it.
-pub fn skip_opaque(src: &[u8], i: usize) -> Option<usize> {
-    match src.get(i)? {
-        b'/' => match src.get(i + 1) {
-            Some(b'/') => Some(skip_line_comment(src, i + 2)),
-            Some(b'*') => Some(skip_block_comment(src, i + 2)),
-            _ => None,
-        },
-        b'"' => Some(skip_string(src, i + 1)),
-        b'r' | b'b' => skip_raw_or_byte_literal(src, i),
-        b'\'' => skip_char_literal(src, i),
-        _ => None,
+pub fn skip_opaque(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
+    let b = *src.get(i)?;
+    for open in lex.line_comments {
+        if src[i..].starts_with(open.as_bytes()) {
+            // `#[…]` is an attribute, not a `#` line comment (PHP 8, Rust).
+            if *open == "#" && src.get(i + 1) == Some(&b'[') {
+                continue;
+            }
+            return Some(skip_line_comment(src, i + open.len()));
+        }
     }
+    if let Some(bc) = &lex.block_comment
+        && src[i..].starts_with(bc.open.as_bytes())
+    {
+        return Some(skip_block_comment(src, i + bc.open.len(), bc));
+    }
+    if lex.raw_strings
+        && (b == b'r' || b == b'b')
+        && let Some(end) = skip_raw_or_byte_literal(src, i)
+    {
+        return Some(end);
+    }
+    if lex.char_literals && b == b'\'' {
+        return skip_char_literal(src, i);
+    }
+    if lex.heredocs && src[i..].starts_with(b"<<<") {
+        return skip_heredoc(src, i);
+    }
+    if lex.regex_literals && b == b'/' && regex_allowed(src, i) {
+        return Some(skip_regex(src, i + 1));
+    }
+    if lex.strings.contains(&b) {
+        return Some(skip_string(src, i + 1, b));
+    }
+    None
 }
 
 fn skip_line_comment(src: &[u8], mut i: usize) -> usize {
@@ -48,16 +163,18 @@ fn skip_line_comment(src: &[u8], mut i: usize) -> usize {
     i
 }
 
-/// Block comments nest in Rust, so depth matters.
-fn skip_block_comment(src: &[u8], mut i: usize) -> usize {
+/// Skips a block comment. Nesting is a property of the language, not of the
+/// scanner: Rust nests, C, JavaScript and PHP do not.
+fn skip_block_comment(src: &[u8], mut i: usize, bc: &BlockComment) -> usize {
+    let (open, close) = (bc.open.as_bytes(), bc.close.as_bytes());
     let mut depth = 1usize;
     while i < src.len() {
-        if src[i] == b'/' && src.get(i + 1) == Some(&b'*') {
+        if bc.nested && src[i..].starts_with(open) {
             depth += 1;
-            i += 2;
-        } else if src[i] == b'*' && src.get(i + 1) == Some(&b'/') {
+            i += open.len();
+        } else if src[i..].starts_with(close) {
             depth -= 1;
-            i += 2;
+            i += close.len();
             if depth == 0 {
                 return i;
             }
@@ -68,11 +185,16 @@ fn skip_block_comment(src: &[u8], mut i: usize) -> usize {
     i
 }
 
-fn skip_string(src: &[u8], mut i: usize) -> usize {
+/// Skips an escaped string delimited by `quote`.
+///
+/// A template literal (`` ` ``) is treated as one string, `${…}` included: a
+/// nested template inside an interpolation is the one case this does not
+/// follow, and it is rare enough not to buy a state machine for.
+fn skip_string(src: &[u8], mut i: usize, quote: u8) -> usize {
     while i < src.len() {
         match src[i] {
             b'\\' => i += 2,
-            b'"' => return i + 1,
+            b if b == quote => return i + 1,
             _ => i += 1,
         }
     }
@@ -92,7 +214,7 @@ fn skip_raw_or_byte_literal(src: &[u8], i: usize) -> Option<usize> {
     if !raw {
         // `b"..."`: a plain escaped string.
         return if src.get(j) == Some(&b'"') && j > i {
-            Some(skip_string(src, j + 1))
+            Some(skip_string(src, j + 1, b'"'))
         } else {
             None
         };
@@ -129,231 +251,229 @@ fn skip_raw_or_byte_literal(src: &[u8], i: usize) -> Option<usize> {
 
 /// Distinguishes a char literal from a lifetime: `'a'` is a literal, `'a` is a
 /// lifetime and must be stepped over one byte at a time.
-fn skip_char_literal(src: &[u8], i: usize) -> Option<usize> {
-    match src.get(i + 1) {
-        Some(b'\\') => {
-            let mut j = i + 2;
-            while j < src.len() && src[j] != b'\'' {
-                j += if src[j] == b'\\' { 2 } else { 1 };
-            }
-            Some(j + 1)
-        }
-        Some(_) if src.get(i + 2) == Some(&b'\'') => Some(i + 3),
-        _ => None,
-    }
-}
-
-/// Splits a source range into top-level items.
 ///
-/// An item runs from the first non-whitespace byte after the previous item —
-/// which naturally absorbs its doc comments and attributes — up to the closing
-/// brace of its body, or to the `;` that terminates a body-less item.
-pub fn split_items(src: &str, range: Span) -> Vec<Span> {
-    let bytes = src.as_bytes();
-    let mut items = Vec::new();
-    let mut i = range.start;
-    let mut item_start = None::<usize>;
-    let (mut brace, mut paren, mut bracket) = (0usize, 0usize, 0usize);
-    let mut saw_brace = false;
-
-    while i < range.end {
-        let b = bytes[i];
-        // An item begins at its first non-whitespace byte, which is usually a
-        // doc comment or an attribute. Marking the start BEFORE skipping opaque
-        // spans is what keeps `/// docs` attached to the item they document.
-        if item_start.is_none() && !b.is_ascii_whitespace() {
-            item_start = Some(i);
+/// INTENT: the width of the character is read from its UTF-8 lead byte, not
+/// assumed to be one. `'é'`, `'→'` and `'…'` are 4, 5 and 4 bytes long, and
+/// reading the closing quote as the OPENING quote of the next literal swallows
+/// it — which turns the brace of the following item into a structural brace and
+/// silently fuses two items into one.
+fn skip_char_literal(src: &[u8], i: usize) -> Option<usize> {
+    let first = *src.get(i + 1)?;
+    if first == b'\\' {
+        // An escape runs to the next `'`: `'\''`, `'\\'`, `'\u{1F600}'`.
+        let mut j = i + 3;
+        while j < src.len() && src[j] != b'\'' {
+            j += 1;
         }
-        if let Some(next) = skip_opaque(bytes, i) {
-            i = next.min(range.end);
-            continue;
-        }
-        match b {
-            b'{' => {
-                brace += 1;
-                saw_brace = true;
-            }
-            b'}' => {
-                brace = brace.saturating_sub(1);
-                if brace == 0 && saw_brace && item_start.is_some() {
-                    let mut end = i + 1;
-                    if bytes.get(end) == Some(&b';') {
-                        end += 1;
-                    }
-                    items.push(Span {
-                        start: item_start.take().unwrap_or(end),
-                        end,
-                    });
-                    saw_brace = false;
-                    i = end;
-                    continue;
-                }
-            }
-            b'(' => paren += 1,
-            b')' => paren = paren.saturating_sub(1),
-            b'[' => bracket += 1,
-            b']' => bracket = bracket.saturating_sub(1),
-            b';' if brace == 0 && paren == 0 && bracket == 0 && !saw_brace => {
-                if let Some(start) = item_start.take() {
-                    items.push(Span { start, end: i + 1 });
-                }
-            }
-            _ => {}
-        }
-        i += 1;
+        return Some(j + 1);
     }
-    // Trailing text with no terminator (truncated file, trailing comments).
-    if let Some(start) = item_start
-        && start < range.end
+    let width = match first {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        _ => 4,
+    };
+    (src.get(i + 1 + width) == Some(&b'\'')).then_some(i + 2 + width)
+}
+
+/// Handles a PHP heredoc/nowdoc: `<<<EOT`, `<<<"EOT"`, `<<<'EOT'`, closed by a
+/// line whose first non-blank token is the same label.
+fn skip_heredoc(src: &[u8], i: usize) -> Option<usize> {
+    let mut j = i + 3;
+    let quote = match src.get(j) {
+        Some(q @ (b'"' | b'\'')) => {
+            j += 1;
+            Some(*q)
+        }
+        _ => None,
+    };
+    let label_start = j;
+    while src
+        .get(j)
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
     {
-        items.push(Span {
-            start,
-            end: range.end,
-        });
+        j += 1;
     }
-    items
-}
-
-/// Returns the span between the first structural `{` of `item` and its matching
-/// `}` (exclusive), or `None` when the item has no body.
-pub fn body_span(src: &str, item: Span) -> Option<Span> {
-    let bytes = src.as_bytes();
-    let mut i = item.start;
-    let mut open = None::<usize>;
-    let mut depth = 0usize;
-    while i < item.end {
-        if let Some(next) = skip_opaque(bytes, i) {
-            i = next.min(item.end);
-            continue;
+    if j == label_start {
+        return None; // `<<<` with nothing usable: not a heredoc
+    }
+    let label = src[label_start..j].to_vec();
+    if let Some(q) = quote {
+        if src.get(j) != Some(&q) {
+            return None;
         }
-        match bytes[i] {
-            b'{' => {
-                depth += 1;
-                if depth == 1 {
-                    open = Some(i + 1);
-                }
+        j += 1;
+    }
+    // A heredoc's label must be followed by the newline that opens it.
+    if src.get(j) != Some(&b'\n') {
+        return None;
+    }
+    let mut line = j + 1;
+    loop {
+        let mut k = line;
+        while src.get(k).is_some_and(|c| *c == b' ' || *c == b'\t') {
+            k += 1;
+        }
+        if src[k..].starts_with(&label) {
+            let after = k + label.len();
+            let is_word = src
+                .get(after)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+            if !is_word {
+                return Some(after);
             }
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return open.map(|start| Span { start, end: i });
-                }
+        }
+        while line < src.len() && src[line] != b'\n' {
+            line += 1;
+        }
+        if line >= src.len() {
+            return Some(src.len());
+        }
+        line += 1;
+    }
+}
+
+/// Whether a `/` sitting at `i` can start a regular expression rather than a
+/// division. The preceding token answers it: after an identifier, a number, a
+/// `)` or a `]`, it is a division; after an operator or one of the keywords
+/// that take an expression, it is a regex.
+fn regex_allowed(src: &[u8], i: usize) -> bool {
+    const EXPRESSION_KEYWORDS: &[&[u8]] = &[
+        b"return",
+        b"typeof",
+        b"instanceof",
+        b"in",
+        b"of",
+        b"new",
+        b"delete",
+        b"void",
+        b"throw",
+        b"case",
+        b"do",
+        b"else",
+        b"yield",
+        b"await",
+    ];
+    let mut j = i;
+    while j > 0 && src[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    if j == 0 {
+        return true;
+    }
+    let mut k = j;
+    while k > 0 && (src[k - 1].is_ascii_alphanumeric() || src[k - 1] == b'_') {
+        k -= 1;
+    }
+    if k < j && EXPRESSION_KEYWORDS.contains(&&src[k..j]) {
+        return true;
+    }
+    !matches!(
+        src[j - 1],
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b')' | b']' | b'}' | b'"' | b'\'' | b'`'
+    )
+}
+
+/// Skips `/…/flags`. Stops at the newline: an unterminated regex is a
+/// misread division, and swallowing the rest of the file for it would be worse
+/// than the misreading.
+fn skip_regex(src: &[u8], mut i: usize) -> usize {
+    let mut in_class = false;
+    while i < src.len() {
+        match src[i] {
+            b'\\' => i += 2,
+            b'[' => {
+                in_class = true;
+                i += 1;
             }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Precomputed line index, so line numbers cost a binary search instead of a
-/// rescan per chunk.
-pub struct LineIndex {
-    starts: Vec<usize>,
-}
-
-impl LineIndex {
-    pub fn new(src: &str) -> Self {
-        let mut starts = vec![0usize];
-        starts.extend(
-            src.bytes()
-                .enumerate()
-                .filter(|(_, b)| *b == b'\n')
-                .map(|(i, _)| i + 1),
-        );
-        Self { starts }
-    }
-
-    /// 1-indexed line number containing `offset`.
-    pub fn line_of(&self, offset: usize) -> u32 {
-        match self.starts.binary_search(&offset) {
-            Ok(i) => (i + 1) as u32,
-            Err(i) => i.max(1) as u32,
+            b']' => {
+                in_class = false;
+                i += 1;
+            }
+            b'/' if !in_class => {
+                i += 1;
+                while src.get(i).is_some_and(|c| c.is_ascii_alphabetic()) {
+                    i += 1;
+                }
+                return i;
+            }
+            b'\n' => return i,
+            _ => i += 1,
         }
     }
-
-    pub fn line_count(&self) -> u32 {
-        self.starts.len() as u32
-    }
+    i
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn braces_inside_strings_do_not_close_an_item() {
-        let src = r#"fn a() { let s = "}"; let t = '}'; }
-fn b() {}
-"#;
-        let items = split_items(
-            src,
-            Span {
-                start: 0,
-                end: src.len(),
-            },
-        );
-        assert_eq!(items.len(), 2, "got {items:?}");
-        assert!(items[0].slice(src).starts_with("fn a"));
-        assert!(items[1].slice(src).starts_with("fn b"));
+    const RUST: &Lexicon = &Lexicon::RUST;
+    const JS: &Lexicon = &Lexicon::JAVASCRIPT;
+    const PHP: &Lexicon = &Lexicon::PHP;
+
+    /// The offset just past the first opaque construct found at or after `from`.
+    fn opaque(src: &str, from: usize, lex: &Lexicon) -> Option<usize> {
+        skip_opaque(src.as_bytes(), from, lex)
     }
 
     #[test]
-    fn raw_strings_and_nested_block_comments_are_opaque() {
-        let src = "fn a() { let r = r#\"} not a brace \"#; /* /* }} */ */ }\nfn b() {}\n";
-        let items = split_items(
-            src,
-            Span {
-                start: 0,
-                end: src.len(),
-            },
-        );
-        assert_eq!(items.len(), 2, "got {items:?}");
+    fn a_character_literal_costs_its_own_width() {
+        // `'é'` is four bytes: byte-arithmetic reads its closing quote as the
+        // opening quote of the next literal and loses the brace that follows.
+        assert_eq!(opaque("'é'", 0, RUST), Some(4));
+        assert_eq!(opaque("'→'", 0, RUST), Some(5));
     }
 
     #[test]
-    fn lifetimes_are_not_char_literals() {
-        let src = "fn a<'x>(v: &'x str) -> &'x str { v }\nfn b() {}\n";
-        let items = split_items(
-            src,
-            Span {
-                start: 0,
-                end: src.len(),
-            },
-        );
-        assert_eq!(items.len(), 2, "got {items:?}");
+    fn an_escaped_quote_ends_the_literal_it_belongs_to() {
+        let src = r"'\''";
+        assert_eq!(opaque(src, 0, RUST), Some(4));
+        let src = r"'\\'";
+        assert_eq!(opaque(src, 0, RUST), Some(4));
+        let src = r"'\u{1F600}'";
+        assert_eq!(opaque(src, 0, RUST), Some(src.len()));
     }
 
     #[test]
-    fn semicolon_items_and_attributes_ride_along() {
-        let src = "use std::io;\n#[derive(Debug)]\npub struct S { a: u8 }\n";
-        let items = split_items(
-            src,
-            Span {
-                start: 0,
-                end: src.len(),
-            },
-        );
-        assert_eq!(items.len(), 2);
-        assert!(items[1].slice(src).starts_with("#[derive"));
+    fn a_lifetime_is_not_a_character_literal() {
+        assert_eq!(opaque("'a", 0, RUST), None);
     }
 
     #[test]
-    fn body_span_isolates_the_block() {
-        let src = "impl S { fn a() {} }";
-        let item = Span {
-            start: 0,
-            end: src.len(),
-        };
-        let body = body_span(src, item).expect("has a body");
-        assert_eq!(body.slice(src).trim(), "fn a() {}");
+    fn a_regex_literal_is_opaque_only_where_an_expression_can_start() {
+        let src = "const re = /a{2}/g;";
+        let at = src.find('/').expect("slash");
+        assert_eq!(opaque(src, at, JS), Some(at + 7));
+        // `a / b` is a division: the operand before it decides.
+        let src = "const x = a / b;";
+        let at = src.find('/').expect("slash");
+        assert_eq!(opaque(src, at, JS), None);
+        // `return` takes an expression, so the regex is a regex.
+        let src = "return /a{2}/;";
+        let at = src.find('/').expect("slash");
+        assert_eq!(opaque(src, at, JS), Some(at + 6));
     }
 
     #[test]
-    fn line_index_is_one_based() {
-        let idx = LineIndex::new("a\nb\nc");
-        assert_eq!(idx.line_of(0), 1);
-        assert_eq!(idx.line_of(2), 2);
-        assert_eq!(idx.line_of(4), 3);
+    fn a_hash_attribute_is_not_a_hash_comment() {
+        assert_eq!(opaque("#[Attribute]", 0, PHP), None);
+        let src = "# a comment";
+        assert_eq!(opaque(src, 0, PHP), Some(src.len()));
+    }
+
+    #[test]
+    fn a_heredoc_is_opaque_until_its_label_comes_back() {
+        let src = "$a = <<<EOT\n{ not a brace }\nEOT;\n$x = 1;";
+        let end = opaque(src, 5, PHP).expect("heredoc");
+        assert_eq!(&src[end..end + 1], ";");
+    }
+
+    #[test]
+    fn a_block_comment_nests_only_where_the_language_says_it_does() {
+        let src = "/* /* */ still inside */";
+        assert_eq!(opaque(src, 0, RUST), Some(src.len()));
+        let src = "/* /* */ done */";
+        assert_eq!(opaque(src, 0, JS), Some(8));
     }
 }

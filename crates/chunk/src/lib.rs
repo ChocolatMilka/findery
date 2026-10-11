@@ -7,6 +7,8 @@
 //! adding a [`findery_core::traits::Chunker`] and one line in the registry — nothing
 //! else in the workspace changes.
 
+mod brace;
+mod items;
 pub mod markdown;
 pub mod rust;
 pub mod scanner;
