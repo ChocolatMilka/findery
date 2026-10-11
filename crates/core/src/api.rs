@@ -129,6 +129,83 @@ impl JobState {
     }
 }
 
+/// What a running job is doing, in the order the phases happen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressPhase {
+    /// Walking the project. The denominator does not exist yet.
+    #[default]
+    Scanning,
+    /// Reading, chunking and embedding what the walk found.
+    Indexing,
+    /// Dropping what the walk no longer sees.
+    Pruning,
+}
+
+impl ProgressPhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Scanning => "scanning",
+            Self::Indexing => "indexing",
+            Self::Pruning => "pruning",
+        }
+    }
+}
+
+/// Live counters of a running job.
+///
+/// INTENT: an ingestion that runs for minutes and says nothing is
+/// indistinguishable from one that has hung, and the only honest fix is a
+/// denominator. `files_total` exists before the first byte is read — the walk
+/// happens first — so the bar tracks real progress rather than spinning.
+///
+/// A terminal job carries no progress at all: the numbers that count are in its
+/// [`SyncReport`], and two records of the same fact are free to disagree.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Progress {
+    pub phase: ProgressPhase,
+    pub files_done: u64,
+    /// Zero while [`ProgressPhase::Scanning`]: the walk is what establishes it.
+    pub files_total: u64,
+    pub chunks_done: u64,
+    pub embeddings_computed: u64,
+    pub embeddings_cached: u64,
+    pub elapsed_ms: u64,
+}
+
+impl Progress {
+    /// How far along the walk is, in `[0, 1]`.
+    ///
+    /// INTENT: `0 / 0` is not a proportion. A bar that reads "0 of 0 files" until
+    /// the walk returns says less than one that reads 0%, and a bar that runs
+    /// backwards when the total appears is worse than either.
+    pub fn fraction(&self) -> f32 {
+        if self.files_total == 0 {
+            return 0.0;
+        }
+        (self.files_done as f32 / self.files_total as f32).clamp(0.0, 1.0)
+    }
+
+    /// The one-line description a terminal, a log or an agent can print.
+    pub fn summary(&self) -> String {
+        let mut out = format!(
+            "{} · {}/{} files · {} chunks",
+            self.phase.as_str(),
+            self.files_done,
+            self.files_total,
+            self.chunks_done
+        );
+        if self.embeddings_computed > 0 || self.embeddings_cached > 0 {
+            out.push_str(&format!(
+                " · {} embedded, {} cached",
+                self.embeddings_computed, self.embeddings_cached
+            ));
+        }
+        out.push_str(&format!(" · {:.1}s", self.elapsed_ms as f64 / 1000.0));
+        out
+    }
+}
+
 /// One unit of background work, as clients observe it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
@@ -140,6 +217,10 @@ pub struct Job {
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<i64>,
+    /// Counters of a job that is still running. Absent before it starts and once
+    /// it is terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<SyncReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,5 +457,48 @@ mod tests {
         .expect("parse");
         assert_eq!(accepted.job().expect("job").state, JobState::Queued);
         assert!(accepted.report().is_none());
+    }
+
+    /// A job read from an older daemon has no `progress` key at all, and that
+    /// must deserialize rather than fail: a client newer than its server is the
+    /// ordinary case during a rolling upgrade.
+    #[test]
+    fn a_job_without_progress_still_deserializes() {
+        let job: Job = serde_json::from_str(
+            r#"{"id":"1","project":"p","kind":"full","state":"running","created_at":0}"#,
+        )
+        .expect("parse");
+        assert!(job.progress.is_none());
+    }
+
+    /// The denominator arrives with the walk, so a bar drawn before it returns
+    /// has to read 0% — not a panic, and not a jump to 100%.
+    #[test]
+    fn progress_without_a_denominator_is_zero_not_a_division_by_zero() {
+        let scanning = Progress::default();
+        assert_eq!(scanning.fraction(), 0.0);
+        assert!(scanning.summary().contains("scanning"));
+    }
+
+    /// Progress never reports more than everything: a finished file is counted
+    /// before the walk length is known to have changed, and a bar that overflows
+    /// its own length reads as a bug in whatever is drawing it.
+    #[test]
+    fn progress_never_exceeds_one_and_says_what_it_is_doing() {
+        let indexing = Progress {
+            phase: ProgressPhase::Indexing,
+            files_done: 150,
+            files_total: 100,
+            chunks_done: 40,
+            embeddings_computed: 30,
+            embeddings_cached: 10,
+            elapsed_ms: 1500,
+        };
+        assert_eq!(indexing.fraction(), 1.0);
+        let text = indexing.summary();
+        assert!(text.contains("indexing"), "{text}");
+        assert!(text.contains("150/100 files"), "{text}");
+        assert!(text.contains("30 embedded"), "{text}");
+        assert!(text.contains("1.5s"), "{text}");
     }
 }

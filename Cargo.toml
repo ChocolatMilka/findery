@@ -51,7 +51,10 @@ globset = "0.4"
 notify  = "6"
 
 # --- divers ----------------------------------------------------------------
-blake3 = "1"
+blake3    = "1"
+# Only the CLI draws progress: a bar is a terminal thing, and no other crate has
+# a terminal.
+indicatif = "0.17"
 clap   = { version = "4", features = ["derive", "env"] }
 uuid   = { version = "1", features = ["v4", "serde"] }
 time   = { version = "0.3", features = ["formatting", "macros"] }

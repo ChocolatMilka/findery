@@ -227,6 +227,20 @@ otherwise one client's sync would silently erase another feeder's files.
 
 ### `GET /v1/jobs` · `GET /v1/jobs/{id}`
 
+A **running** job carries `progress`, filled at the moment it is read:
+
+```jsonc
+{ "id": "a3f1…", "project": "axle", "kind": "full", "state": "running",
+  "progress": { "phase": "indexing", "files_done": 412, "files_total": 2048,
+                "chunks_done": 3180, "embeddings_computed": 900,
+                "embeddings_cached": 2280, "elapsed_ms": 4100 } }
+```
+
+`files_total` comes from the walk, which runs before anything is read — so the
+proportion is a real one and not a guess. The field is absent on a queued job
+(it has not started) and on a terminal one (its `report` is the description),
+which is why a client must treat `progress` as optional in both directions.
+
 ---
 
 ## Limits

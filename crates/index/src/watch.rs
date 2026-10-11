@@ -94,7 +94,16 @@ pub fn spawn(indexer: Arc<Indexer>, project: Project, debounce: Duration) -> Res
                 _ = tokio::time::sleep(debounce), if !dirty.is_empty() => {
                     let batch: Vec<String> = dirty.drain().collect();
                     let n = batch.len();
-                    match indexer.sync(&project_id, SyncMode::Paths(batch)).await {
+                    // Nobody is polling a background watcher, so its pass writes
+                    // into a handle with no reader.
+                    match indexer
+                        .sync(
+                            &project_id,
+                            SyncMode::Paths(batch),
+                            &crate::progress::ProgressHandle::detached(),
+                        )
+                        .await
+                    {
                         Ok(report) => tracing::info!(
                             project = %project_id,
                             paths = n,

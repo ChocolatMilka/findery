@@ -217,15 +217,32 @@ findery projects                   # all of them, current one marked *
 | Command | What it does |
 |---------|--------------|
 | `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,toml` to choose extensions, `--bucket <name>` to choose its index, `--sync` to index it immediately |
-| `findery sync` | incremental. `--full` ignores the metadata and hash gates (never the vector cache). `--path src/a.rs` targets files. `--background` returns a job id |
+| `findery sync` | incremental. `--full` ignores the metadata and hash gates (never the vector cache). `--path src/a.rs` targets files. `--background` returns a job id instead of waiting |
+| `findery jobs [id]` | what each background job is doing, and where a running one has got to |
 | `findery bucket ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves. `rm` needs `--force` while one holds projects |
 | `findery watch` | re-syncs on file changes, debounced. `--off` stops it |
 | `findery doc add <path> --stdin` | indexes text with no file behind it — notes, decisions, generated docs |
 | `findery doc rm <path>` | drops one document |
 | `findery export --format binary` | vectors + metadata out of the index |
 | `findery rm` | removes a project, its chunks and its vectors |
-| `findery health` | what the daemon is actually serving |
-| `findery jobs [id]` | background sync jobs |
+| `findery health` | whether the index answers, and what it serves |
+
+### Watching a first index
+
+A first pass over a large repository takes minutes, so `findery sync` draws a
+bar on **stderr** while it runs:
+
+```
+⠹ =>=============-------------- 612/2048 files · indexing · 4180 chunks · 1204 embedded / 2976 cached
+```
+
+It is a bar and not a spinner because the denominator is real: the walk happens
+first, so `2048` is a count of files, not an estimate.
+
+The bar only exists when someone is watching — a terminal on stderr and no
+`--json`. Piped or redirected, the run prints the same one-line summary it
+always did, which is what a script or a CI log can grep for. `--background`
+never draws one, since watching a job is the opposite of not waiting for it.
 
 `--json` on any command prints the daemon's answer verbatim, for scripting.
 

@@ -162,6 +162,14 @@ pub fn export(report: &ExportReport) {
 pub fn jobs(list: &[Job]) {
     for job in list {
         println!("{:<38} {:<16} {:?}", job.id, job.project, job.state);
+        // A job that is still running is the only one whose line can be acted
+        // on, and its counters are the reason to look at it at all.
+        if let Some(progress) = &job.progress {
+            println!("    {}", progress.summary());
+        }
+        if let Some(error) = &job.error {
+            println!("    {error}");
+        }
     }
 }
 

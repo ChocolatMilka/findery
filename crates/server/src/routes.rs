@@ -14,6 +14,7 @@ use findery_core::api::{
 };
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
+use findery_index::ProgressHandle;
 use findery_store::{ExportFormat, ExportReport};
 use std::time::Duration;
 
@@ -105,7 +106,12 @@ async fn sync_project(
 
     if body.wait {
         let _permit = state.indexer.jobs.acquire().await?;
-        let report = state.indexer.sync(&id, mode).await?;
+        // A buffered response cannot show anything mid-flight, so a caller who
+        // asked to wait gets the report and nothing else.
+        let report = state
+            .indexer
+            .sync(&id, mode, &ProgressHandle::detached())
+            .await?;
         return Ok(Json(SyncResponse::Completed { report }));
     }
 
@@ -114,6 +120,9 @@ async fn sync_project(
     }
     let job = state.indexer.jobs.create(id.as_str(), mode.as_str());
     let job_id = job.id.clone();
+    // The counters the spawned task will write into are the ones the registry
+    // hands back on `GET /v1/jobs/{id}` — that is the whole channel.
+    let progress = state.indexer.jobs.handle(&job_id).unwrap_or_default();
     let indexer = state.indexer.clone();
     tokio::spawn(async move {
         let Ok(_permit) = indexer.jobs.acquire().await else {
@@ -121,7 +130,7 @@ async fn sync_project(
             return;
         };
         indexer.jobs.start(&job_id);
-        match indexer.sync(&id, mode).await {
+        match indexer.sync(&id, mode, &progress).await {
             Ok(report) => indexer.jobs.succeed(&job_id, report),
             Err(e) => indexer.jobs.fail(&job_id, &e.to_string()),
         }

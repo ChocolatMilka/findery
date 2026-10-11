@@ -19,17 +19,23 @@ pub use ingest::{forget_file, index_inline, prune, push_documents};
 
 use crate::BucketHandle;
 use crate::Indexer;
+use crate::progress::{PROGRESS_FILES, ProgressHandle};
+use findery_core::api::ProgressPhase;
 use findery_core::clock::{now_millis, now_unix};
 use findery_core::ids::ContentHash;
 use findery_core::model::{FileRecord, Lang, Origin, Project, SyncMode, SyncReport};
 use findery_core::{Error, Result};
 
 /// Runs a synchronization pass and returns exactly what it did.
+///
+/// `progress` carries the live counters out to whoever is watching; the pass
+/// itself never waits on them.
 pub async fn run(
     idx: &Indexer,
     cat: &BucketHandle,
     project: &Project,
     mode: SyncMode,
+    progress: &ProgressHandle,
 ) -> Result<SyncReport> {
     let started = now_millis();
     let mut report = SyncReport {
@@ -71,13 +77,31 @@ pub async fn run(
     let (candidates, warnings) = collect_candidates(project, &mode).await?;
     report.warnings.extend(warnings);
     report.files_scanned = candidates.len() as u64;
+    // The walk is over, so the denominator exists: from here a watcher can draw
+    // a proportion instead of a spinner.
+    progress.write(|p| {
+        p.phase = ProgressPhase::Indexing;
+        p.files_total = candidates.len() as u64;
+        p.elapsed_ms = now_millis().saturating_sub(started);
+    });
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut buffered_chunks = 0usize;
+    let mut done = 0u64;
     let mut seen: Vec<String> = Vec::with_capacity(candidates.len());
 
     for candidate in candidates {
         seen.push(candidate.rel_path.clone());
+        // Counted before the gates, because a file the gates skip was still
+        // looked at: a bar that only moved for changed files would stand still
+        // through the common case, which is the incremental pass.
+        done += 1;
+        if done.is_multiple_of(PROGRESS_FILES) {
+            progress.write(|p| {
+                p.files_done = done;
+                p.elapsed_ms = now_millis().saturating_sub(started);
+            });
+        }
         let previous = known.get(&candidate.rel_path);
 
         // Gate 1: metadata unchanged.
@@ -144,17 +168,30 @@ pub async fn run(
         });
 
         if pending.len() >= FLUSH_FILES || buffered_chunks >= FLUSH_CHUNKS {
-            flush(idx, cat, project, std::mem::take(&mut pending), &mut report).await?;
+            flush(
+                idx,
+                cat,
+                project,
+                std::mem::take(&mut pending),
+                &mut report,
+                progress,
+            )
+            .await?;
             buffered_chunks = 0;
+            progress.write(|p| {
+                p.files_done = done;
+                p.elapsed_ms = now_millis().saturating_sub(started);
+            });
         }
     }
     if !pending.is_empty() {
-        flush(idx, cat, project, pending, &mut report).await?;
+        flush(idx, cat, project, pending, &mut report, progress).await?;
     }
 
     // A targeted sync never deletes: the caller asked about specific paths and
     // said nothing about the rest of the project.
     if !matches!(mode, SyncMode::Paths(_)) {
+        progress.enter(ProgressPhase::Pruning);
         let seen: std::collections::HashSet<&str> = seen.iter().map(String::as_str).collect();
         for (path, record) in &known {
             // Only what the daemon itself walked. Pushed and inline files
@@ -170,6 +207,12 @@ pub async fn run(
 
     cat.bucket.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
+    // The final write: whatever the last tick was, the bar lands on the number
+    // the report will show.
+    progress.write(|p| {
+        p.files_done = report.files_scanned;
+        p.elapsed_ms = report.duration_ms;
+    });
     Ok(report)
 }
 

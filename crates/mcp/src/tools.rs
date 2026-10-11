@@ -12,130 +12,7 @@ use findery_core::ids::ProjectId;
 use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchHit, SearchMode, SearchRequest};
 use findery_core::prompt::QueryTask;
 use findery_core::{Error, Result};
-use serde_json::{Value, json};
-
-/// The tool catalogue, as `tools/list` returns it.
-pub fn catalogue() -> Value {
-    json!({ "tools": [
-        tool(
-            "search_code",
-            "Semantic + keyword search over an indexed codebase. USE THIS FIRST when locating \
-             code, docs or a concept — it is cheaper and more accurate than grepping or reading \
-             files. Returns ranked excerpts with exact line ranges and openable host paths.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "project": { "type": "string", "description": "Project id, from list_projects." },
-                    "query": { "type": "string", "description": "Natural-language question or an exact symbol." },
-                    "k": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Number of excerpts (default 8)." },
-                    "mode": { "type": "string", "enum": ["hybrid", "vector", "keyword"], "description": "Default hybrid. Use keyword for an exact identifier, vector for a fuzzy concept." },
-                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Path globs, e.g. crates/core/**." },
-                    "langs": { "type": "array", "items": { "type": "string", "enum": ["rust", "markdown", "toml", "other"] } },
-                    "kinds": { "type": "array", "items": { "type": "string" }, "description": "function, method, struct, enum, trait, impl, module, test, doc_section…" },
-                    "symbol_contains": { "type": "string", "description": "Restrict to symbols containing this substring." },
-                    "task": {
-                        "type": "string",
-                        "enum": ["code", "symbol", "usage", "docs", "test", "config", "error"],
-                        "description": "Retrieval intent, passed to the instruction-aware embedding model. \
-                                        `code` (default) for a general question, `symbol` when you have a name and want its \
-                                        definition, `usage` for call sites, `docs` for rationale, `test` for the tests \
-                                        covering a behaviour, `config` for a setting or env var, `error` for a message or \
-                                        panic. Picking the right one measurably improves the ranking."
-                    },
-                    "instruction": { "type": "string", "description": "Free-form instruction for the embedding model, overriding `task`. Describe the TASK, not the query." },
-                    "max_snippet_chars": { "type": "integer", "description": "Per-excerpt budget. Lower it to spend fewer tokens." }
-                },
-                "required": ["project", "query"]
-            }),
-        ),
-        tool(
-            "list_projects",
-            "List the indexed projects with their roots. Call this when unsure which project id to use.",
-            json!({ "type": "object", "properties": {} }),
-        ),
-        tool(
-            "index_status",
-            "File, chunk and vector counts for a project, plus the model in use and the last sync time.",
-            json!({
-                "type": "object",
-                "properties": { "project": { "type": "string" } },
-                "required": ["project"]
-            }),
-        ),
-        tool(
-            "sync_project",
-            "Re-synchronize a project with the filesystem. Incremental by default and nearly free \
-             when nothing changed. Pass paths to refresh specific files after editing them.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "project": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["incremental", "full"] },
-                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Project-relative paths to refresh." },
-                    "wait": { "type": "boolean", "description": "Block until done (default true). Set false on a cold index." }
-                },
-                "required": ["project"]
-            }),
-        ),
-        tool(
-            "register_project",
-            "Index a new directory. The root is a host path; the daemon translates it through its mounts.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "root": { "type": "string", "description": "Absolute host path of the project root." },
-                    "id": { "type": "string", "description": "Slug; derived from the directory name when omitted." },
-                    "name": { "type": "string" },
-                    "extensions": { "type": "array", "items": { "type": "string" }, "description": "Defaults to rs and md." }
-                },
-                "required": ["root"]
-            }),
-        ),
-        tool(
-            "add_document",
-            "Add or refresh one document. With `text`, the content is indexed directly and no file \
-             needs to exist — useful for notes, decisions or generated docs.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "project": { "type": "string" },
-                    "path": { "type": "string", "description": "Project-relative path, also the document's identity." },
-                    "text": { "type": "string", "description": "Inline content; omit to read from disk." }
-                },
-                "required": ["project", "path"]
-            }),
-        ),
-        tool(
-            "remove_document",
-            "Remove one document from the index, with its chunks and vectors.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "project": { "type": "string" },
-                    "path": { "type": "string" }
-                },
-                "required": ["project", "path"]
-            }),
-        ),
-        tool(
-            "export_vectors",
-            "Export a project's vectors and metadata to a directory (jsonl, json or binary float32).",
-            json!({
-                "type": "object",
-                "properties": {
-                    "project": { "type": "string" },
-                    "format": { "type": "string", "enum": ["jsonl", "json", "binary"] },
-                    "dir": { "type": "string", "description": "Destination directory, host-side." }
-                },
-                "required": ["project"]
-            }),
-        ),
-    ]})
-}
-
-fn tool(name: &str, description: &str, schema: Value) -> Value {
-    json!({ "name": name, "description": description, "inputSchema": schema })
-}
+use serde_json::Value;
 
 /// Dispatches one `tools/call`, returning the text to show the model.
 pub async fn call(client: &Client, name: &str, args: &Value) -> Result<String> {
@@ -143,6 +20,7 @@ pub async fn call(client: &Client, name: &str, args: &Value) -> Result<String> {
         "search_code" => search_code(client, args).await,
         "list_projects" => list_projects(client).await,
         "index_status" => index_status(client, args).await,
+        "job_status" => job_status(client, args).await,
         "sync_project" => sync_project(client, args).await,
         "register_project" => register_project(client, args).await,
         "add_document" => add_document(client, args).await,
@@ -302,9 +180,57 @@ async fn sync_project(client: &Client, args: &Value) -> Result<String> {
         )),
         findery_core::api::SyncResponse::Accepted { job } => Ok(format!(
             "sync `{}` started in the background, job `{}` (state: {:?}). \
-             Poll with index_status, or call again with wait=true.",
+             Follow it with job_status, or call again with wait=true.",
             job.project, job.id, job.state
         )),
+    }
+}
+
+/// Where a running job is.
+///
+/// INTENT: an agent that started a cold index has to decide between waiting,
+/// doing something else, and telling its user it is still working. All three
+/// need a number, and this is the only tool that has one.
+async fn job_status(client: &Client, args: &Value) -> Result<String> {
+    let id = string_arg(args, "job")?;
+    let job = client.job(&id).await?;
+    let head = format!(
+        "job `{}` — {} · {} · {}",
+        job.id,
+        job.project,
+        job.kind,
+        job_state(&job.state)
+    );
+    if let Some(progress) = &job.progress {
+        return Ok(format!("{head}\n  {}", progress.summary()));
+    }
+    if let Some(report) = &job.report {
+        return Ok(format!(
+            "{head}\n  scanned {} · added {} · updated {} · chunks +{} · embeddings {} computed \
+             / {} cached · {} ms{}",
+            report.files_scanned,
+            report.files_added,
+            report.files_updated,
+            report.chunks_written,
+            report.embeddings_computed,
+            report.embeddings_cached,
+            report.duration_ms,
+            render_warnings(&report.warnings),
+        ));
+    }
+    match &job.error {
+        Some(error) => Ok(format!("{head}\n  failed: {error}")),
+        None => Ok(head),
+    }
+}
+
+fn job_state(state: &findery_core::api::JobState) -> &'static str {
+    use findery_core::api::JobState;
+    match state {
+        JobState::Queued => "queued",
+        JobState::Running => "running",
+        JobState::Succeeded => "succeeded",
+        JobState::Failed => "failed",
     }
 }
 
@@ -431,6 +357,7 @@ mod tests {
     use super::*;
     use findery_core::ids::{ChunkId, ContentHash};
     use findery_core::model::Chunk;
+    use serde_json::json;
 
     fn hit(path: &str, score: f32) -> SearchHit {
         let project = ProjectId::new("demo").expect("id");
@@ -453,21 +380,6 @@ mod tests {
             vector_score: Some(score),
             keyword_score: None,
             host_path: format!("C:/demo/{path}"),
-        }
-    }
-
-    #[test]
-    fn the_catalogue_is_valid_and_every_tool_declares_a_schema() {
-        let cat = catalogue();
-        let tools = cat["tools"].as_array().expect("array");
-        assert!(tools.len() >= 8);
-        for t in tools {
-            assert!(t["name"].as_str().is_some_and(|n| !n.is_empty()), "{t}");
-            assert!(
-                t["description"].as_str().is_some_and(|d| d.len() > 20),
-                "{t}"
-            );
-            assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }
     }
 

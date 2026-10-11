@@ -137,6 +137,34 @@ History bounded in memory (`job_history`). It's not persisted: a job is
 session-scoped information, and the `SyncReport` that counts is the one
 that's already been returned.
 
+### Progress, without a callback climbing a layer
+
+A job that runs for minutes and says nothing is indistinguishable from one that
+has hung, so a running job carries `progress` — and the way it gets there is the
+part worth knowing.
+
+A callback would be an edge climbing back up the layers (CONV-005), so there is
+none. `JobRegistry` hands the sync a `ProgressHandle` it writes into, and reads
+the same handle back when a client asks. The value goes **down** as an argument
+and comes back **up** as a return value: no crate edge is added, and the handle
+holds no `Indexer` and no store, so it cannot grow into a second engine.
+
+| Emission | When |
+|-----------|------|
+| the walk returns | `phase = indexing`, `files_total` — the denominator, known before the first byte is read |
+| every 512 files | `files_done`, so an incremental pass that flushes nothing still advances |
+| every flush | `chunks_done`, `embeddings_computed`, `embeddings_cached` |
+| the delete pass | `phase = pruning` |
+
+A **terminal** job carries no progress at all: its numbers are its `SyncReport`,
+and two records of one fact are free to disagree. So a `Failed` job reports no
+counters either — "50 of 200" on a job that stopped is progress that is not
+coming.
+
+Callers nobody watches — `findery watch`, the inline and pushed write paths —
+pass `ProgressHandle::detached()`, which costs one uncontended lock. The engine
+is written once rather than forked into a watched and an unwatched copy.
+
 ---
 
 ## 4. Watch

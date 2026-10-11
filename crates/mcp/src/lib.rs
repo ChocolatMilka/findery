@@ -7,6 +7,7 @@
 //! projects and several machines share one warm model. The bridge is a wire,
 //! not a cache.
 
+pub mod catalogue;
 pub mod protocol;
 pub mod tools;
 
@@ -72,7 +73,7 @@ pub async fn handle_line(client: &Client, line: &str) -> Option<protocol::Outgoi
             ),
         ),
         "ping" => protocol::Outgoing::ok(id, json!({})),
-        "tools/list" => protocol::Outgoing::ok(id, tools::catalogue()),
+        "tools/list" => protocol::Outgoing::ok(id, catalogue::catalogue()),
         "tools/call" => {
             let name = message
                 .params

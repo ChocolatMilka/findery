@@ -15,7 +15,7 @@ MCP API — so it plugs directly into Claude Code.
 - 📤 JSONL / JSON / raw `float32` export — you're never locked in
 - 📡 Pull or push: the daemon reads your files, or the CLI sends them — so the
   daemon can run in a container, or on another machine, with nothing mounted
-- 🧪 206 tests, clean `clippy -D warnings`, layer watchdog
+- 🧪 240 tests, clean `clippy -D warnings`, layer watchdog
 
 ---
 
@@ -135,7 +135,7 @@ project, so nobody has to remember which index a directory belongs to.
 }
 ```
 
-Eight tools appear, including `search_code`, which becomes the agent's first
+Nine tools appear, including `search_code`, which becomes the agent's first
 reflex for locating code — in place of `glob` + `grep` + three `Read`.
 
 The bridge is launched by Claude Code rather than by your shell, so it takes its
@@ -256,7 +256,7 @@ team.
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 206 tests
+make test      # 240 tests
 make bench     # vector scan measurement
 ```
 

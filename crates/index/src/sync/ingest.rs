@@ -8,6 +8,7 @@
 
 use super::Indexer;
 use crate::BucketHandle;
+use crate::progress::ProgressHandle;
 use findery_core::clock::{now_millis, now_unix};
 use findery_core::ids::{ChunkId, ContentHash};
 use findery_core::model::{Chunk, FileRecord, Lang, Origin, Project, RawChunk, SyncReport};
@@ -40,6 +41,7 @@ pub async fn index_inline(
         project,
         vec![(rel_path.to_string(), text.to_string())],
         Origin::Inline,
+        &ProgressHandle::detached(),
     )
     .await
 }
@@ -56,7 +58,18 @@ pub async fn push_documents(
     project: &Project,
     documents: Vec<(String, String)>,
 ) -> Result<SyncReport> {
-    ingest(idx, cat, project, documents, Origin::Pushed).await
+    // Nobody polls a pushed batch from here: the client that walked the project
+    // is the one drawing a bar, from its own loop. The engine stays written once
+    // rather than forked into a watched and an unwatched copy.
+    ingest(
+        idx,
+        cat,
+        project,
+        documents,
+        Origin::Pushed,
+        &ProgressHandle::detached(),
+    )
+    .await
 }
 
 /// Shared body of inline and pushed ingestion.
@@ -66,6 +79,7 @@ async fn ingest(
     project: &Project,
     documents: Vec<(String, String)>,
     origin: Origin,
+    progress: &ProgressHandle,
 ) -> Result<SyncReport> {
     let started = now_millis();
     let mut report = SyncReport {
@@ -126,12 +140,20 @@ async fn ingest(
         });
 
         if pending.len() >= FLUSH_FILES || buffered >= FLUSH_CHUNKS {
-            flush(idx, cat, project, std::mem::take(&mut pending), &mut report).await?;
+            flush(
+                idx,
+                cat,
+                project,
+                std::mem::take(&mut pending),
+                &mut report,
+                progress,
+            )
+            .await?;
             buffered = 0;
         }
     }
     if !pending.is_empty() {
-        flush(idx, cat, project, pending, &mut report).await?;
+        flush(idx, cat, project, pending, &mut report, progress).await?;
     }
     cat.bucket.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
@@ -182,6 +204,7 @@ pub(super) async fn flush(
     project: &Project,
     pending: Vec<Pending>,
     report: &mut SyncReport,
+    progress: &ProgressHandle,
 ) -> Result<()> {
     if pending.is_empty() {
         return Ok(());
@@ -203,6 +226,10 @@ pub(super) async fn flush(
     }
     let mut vectors = cat.bucket.cached_vectors(&recipe, wanted.clone()).await?;
     report.embeddings_cached += vectors.len() as u64;
+    progress.write(|p| {
+        p.embeddings_cached = report.embeddings_cached;
+        p.chunks_done = report.chunks_written;
+    });
 
     let misses: Vec<&Chunk> = {
         let mut out = Vec::new();
@@ -236,6 +263,7 @@ pub(super) async fn flush(
             to_cache.push((chunk.content_hash.clone(), vector));
         }
         cat.bucket.put_cached_vectors(&recipe, to_cache).await?;
+        progress.write(|p| p.embeddings_computed = report.embeddings_computed);
     }
 
     for file in pending {
@@ -278,6 +306,7 @@ pub(super) async fn flush(
             report.files_updated += 1;
         }
     }
+    progress.write(|p| p.chunks_done = report.chunks_written);
     Ok(())
 }
 

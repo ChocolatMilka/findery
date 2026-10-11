@@ -12,6 +12,7 @@
 mod config;
 mod doctor;
 mod endpoint;
+mod progress;
 mod push;
 mod render;
 mod run;

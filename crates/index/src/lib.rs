@@ -9,6 +9,7 @@
 
 pub mod buckets;
 pub mod jobs;
+pub mod progress;
 pub mod search;
 pub mod sync;
 pub mod watch;
@@ -16,6 +17,7 @@ pub mod watch;
 pub use findery_walk as walker;
 
 pub use buckets::BucketHandle;
+pub use progress::ProgressHandle;
 
 use findery_core::clock::now_unix;
 use findery_core::config::Config;
@@ -229,10 +231,19 @@ impl Indexer {
     // -- indexing -----------------------------------------------------------
 
     /// Synchronizes a project against the filesystem.
-    pub async fn sync(&self, id: &ProjectId, mode: SyncMode) -> Result<SyncReport> {
+    ///
+    /// `progress` is written as the pass advances. A caller with nobody watching
+    /// passes [`ProgressHandle::detached`], which costs one uncontended lock and
+    /// keeps the engine written once.
+    pub async fn sync(
+        &self,
+        id: &ProjectId,
+        mode: SyncMode,
+        progress: &ProgressHandle,
+    ) -> Result<SyncReport> {
         let cat = self.bucket_for(id)?;
         let project = cat.bucket.require_project(id).await?;
-        sync::run(self, &cat, &project, mode).await
+        sync::run(self, &cat, &project, mode, progress).await
     }
 
     /// Adds or refreshes one document. With `text`, the content is taken from
@@ -248,7 +259,16 @@ impl Indexer {
         let rel = sanitize_rel(rel_path)?;
         match text {
             Some(body) => sync::index_inline(self, &cat, &project, &rel, &body).await,
-            None => sync::run(self, &cat, &project, SyncMode::Paths(vec![rel])).await,
+            None => {
+                sync::run(
+                    self,
+                    &cat,
+                    &project,
+                    SyncMode::Paths(vec![rel]),
+                    &ProgressHandle::detached(),
+                )
+                .await
+            }
         }
     }
 

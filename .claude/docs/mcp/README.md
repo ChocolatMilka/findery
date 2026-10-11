@@ -72,10 +72,27 @@ Then `claude mcp list` to check, `/mcp` in the session to see the tools.
 | `list_projects` | which projects are indexed, and under what id |
 | `index_status` | files, chunks, vectors, model, last sync |
 | `sync_project` | re-sync (incremental, full, or specific paths) |
+| `job_status` | where a running sync is: files done, chunks, embeddings |
 | `register_project` | index a new directory |
 | `add_document` | add a document, including plain text with no file |
 | `remove_document` | remove a document from the index |
 | `export_vectors` | export vectors (jsonl / json / binary) |
+
+### A cold index is minutes, so it is a job
+
+`sync_project` on an index that has never been built takes minutes, and an MCP
+call that blocks that long is a call that times out and gets retried. Pass
+`wait: false`: the tool returns a job id immediately, and `job_status` answers
+with what that job has done so far —
+
+```
+job `a3f1…` — axle · full · running
+  indexing · 412/2048 files · 3180 chunks · 900 embedded, 2280 cached · 4.1s
+```
+
+`files_total` is the walk's own count, so the fraction is real rather than an
+estimate. Once the job is over, `job_status` prints its `SyncReport` instead:
+there is only ever one description of a finished job.
 
 ### The rendering is the product
 

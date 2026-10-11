@@ -6,11 +6,12 @@
 //! concurrency is capped by a semaphore so two clients cannot saturate the
 //! embedding runtime between them.
 
+use crate::progress::ProgressHandle;
 use findery_core::clock::now_unix;
 use findery_core::model::SyncReport;
 use findery_core::{Error, Result};
 use parking_lot::Mutex;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -21,6 +22,12 @@ pub use findery_core::api::{Job, JobState};
 /// Bounded, in-memory job history.
 pub struct JobRegistry {
     jobs: Mutex<VecDeque<Job>>,
+    /// One set of live counters per non-terminal job.
+    ///
+    /// INTENT: the deque is history and holds finished jobs; these are the
+    /// counters of the ones still running. Keeping them apart is what lets a
+    /// terminal job carry no progress at all.
+    progress: Mutex<HashMap<String, ProgressHandle>>,
     capacity: usize,
     permits: Arc<Semaphore>,
 }
@@ -29,6 +36,7 @@ impl JobRegistry {
     pub fn new(capacity: usize, concurrency: usize) -> Self {
         Self {
             jobs: Mutex::new(VecDeque::new()),
+            progress: Mutex::new(HashMap::new()),
             capacity: capacity.max(1),
             permits: Arc::new(Semaphore::new(concurrency.max(1))),
         }
@@ -52,15 +60,28 @@ impl JobRegistry {
             state: JobState::Queued,
             created_at: now_unix(),
             finished_at: None,
+            progress: None,
             report: None,
             error: None,
         };
+        self.progress
+            .lock()
+            .insert(job.id.clone(), ProgressHandle::detached());
         let mut jobs = self.jobs.lock();
         jobs.push_front(job.clone());
         while jobs.len() > self.capacity {
-            jobs.pop_back();
+            if let Some(evicted) = jobs.pop_back() {
+                self.progress.lock().remove(&evicted.id);
+            }
         }
         job
+    }
+
+    /// The counters of a running job, for whoever is driving it.
+    ///
+    /// `None` once the job is terminal: its numbers are its report.
+    pub fn handle(&self, id: &str) -> Option<ProgressHandle> {
+        self.progress.lock().get(id).cloned()
     }
 
     /// Moves a job to `Running`.
@@ -68,13 +89,15 @@ impl JobRegistry {
         self.update(id, |job| job.state = JobState::Running);
     }
 
-    /// Records a successful outcome.
+    /// Records a successful outcome. The counters go with it: what the job did
+    /// is the report, and a second copy of it could only disagree.
     pub fn succeed(&self, id: &str, report: SyncReport) {
         self.update(id, |job| {
             job.state = JobState::Succeeded;
             job.finished_at = Some(now_unix());
             job.report = Some(report.clone());
         });
+        self.progress.lock().remove(id);
     }
 
     /// Records a failure, keeping the message clients will read.
@@ -84,31 +107,54 @@ impl JobRegistry {
             job.finished_at = Some(now_unix());
             job.error = Some(error.to_string());
         });
+        self.progress.lock().remove(id);
     }
 
     pub fn get(&self, id: &str) -> Option<Job> {
-        self.jobs.lock().iter().find(|j| j.id == id).cloned()
+        let mut job = self.jobs.lock().iter().find(|j| j.id == id).cloned()?;
+        self.stamp(&mut job);
+        Some(job)
     }
 
     /// Newest first.
     pub fn list(&self) -> Vec<Job> {
-        self.jobs.lock().iter().cloned().collect()
+        let mut jobs: Vec<Job> = self.jobs.lock().iter().cloned().collect();
+        for job in &mut jobs {
+            self.stamp(job);
+        }
+        jobs
     }
 
-    /// True when a non-terminal job already covers this project, so a caller
-    /// can refuse to queue a redundant sync.
+    /// The non-terminal job already covering this project, so a caller can
+    /// refuse to queue a redundant sync.
     pub fn has_active(&self, project: &str) -> Option<Job> {
-        self.jobs
+        let mut job = self
+            .jobs
             .lock()
             .iter()
             .find(|j| j.project == project && !j.state.is_terminal())
-            .cloned()
+            .cloned()?;
+        self.stamp(&mut job);
+        Some(job)
     }
 
     fn update(&self, id: &str, f: impl FnOnce(&mut Job)) {
         if let Some(job) = self.jobs.lock().iter_mut().find(|j| j.id == id) {
             f(job);
         }
+    }
+
+    /// Fills in the counters a job has *right now*, at the moment it is read.
+    ///
+    /// INTENT: the record and the counters are kept apart, so a job can never be
+    /// read back carrying a snapshot from an earlier read. Only a running job
+    /// has counters at all — a queued one has not started, and a finished one is
+    /// described by its report.
+    fn stamp(&self, job: &mut Job) {
+        job.progress = match job.state {
+            JobState::Running => self.handle(&job.id).map(|h| h.snapshot()),
+            _ => None,
+        };
     }
 }
 
@@ -138,6 +184,63 @@ mod tests {
         assert_eq!(done.report.expect("report").files_added, 3);
         assert!(done.finished_at.is_some());
         assert!(reg.has_active("demo").is_none());
+    }
+
+    /// A running job reports where it is, and the numbers come from the handle
+    /// the sync writes into — never from a copy taken earlier.
+    #[test]
+    fn a_running_job_carries_the_counters_it_was_written() {
+        let reg = JobRegistry::new(8, 1);
+        let job = reg.create("demo", "sync");
+        assert!(
+            reg.get(&job.id).expect("job").progress.is_none(),
+            "a queued job has not started, so it has nothing to report"
+        );
+
+        reg.start(&job.id);
+        let handle = reg.handle(&job.id).expect("handle");
+        handle.write(|p| {
+            p.files_total = 200;
+            p.files_done = 50;
+        });
+        let running = reg.get(&job.id).expect("job");
+        let progress = running.progress.expect("progress");
+        assert_eq!(progress.files_total, 200);
+        assert_eq!(progress.files_done, 50);
+    }
+
+    /// Once a job is over, its report is the only description of it. A second
+    /// record of the same fact could only disagree.
+    #[test]
+    fn a_finished_job_carries_no_progress_at_all() {
+        let reg = JobRegistry::new(8, 1);
+        let job = reg.create("demo", "sync");
+        reg.start(&job.id);
+        reg.handle(&job.id)
+            .expect("handle")
+            .write(|p| p.files_done = 3);
+
+        reg.succeed(&job.id, SyncReport::default());
+        assert!(reg.get(&job.id).expect("job").progress.is_none());
+        assert!(
+            reg.handle(&job.id).is_none(),
+            "the counters are dropped too"
+        );
+    }
+
+    /// A failure must not leave counters behind either — a client that saw
+    /// "50/200" on a failed job would read it as progress that is still coming.
+    #[test]
+    fn a_failed_job_carries_no_progress_either() {
+        let reg = JobRegistry::new(8, 1);
+        let job = reg.create("demo", "sync");
+        reg.start(&job.id);
+        reg.handle(&job.id)
+            .expect("handle")
+            .write(|p| p.files_done = 3);
+
+        reg.fail(&job.id, "embedder unreachable");
+        assert!(reg.get(&job.id).expect("job").progress.is_none());
     }
 
     #[test]

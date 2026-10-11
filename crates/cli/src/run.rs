@@ -82,7 +82,7 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
             let report = if project.spec.push {
                 crate::push::sync(&client, &project).await?
             } else {
-                client.sync_now(&project.id).await?
+                crate::progress::sync_now(&client, &project.id, json).await?
             };
             if json {
                 render::json(&report)?;
@@ -147,12 +147,19 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
                 }
                 return Ok(());
             }
+            // `--background` is a promise to return immediately, so it never
+            // gets a bar: watching a job is the opposite of not waiting for it.
+            let bar = if json || background {
+                None
+            } else {
+                crate::progress::bar()
+            };
             let request = SyncRequest {
                 mode: full.then(|| "full".to_string()),
                 paths: (!paths.is_empty()).then_some(paths),
-                wait: !background,
+                wait: !background && bar.is_none(),
             };
-            match client.sync(&id, &request).await? {
+            match crate::progress::watch_sync(&client, &id, &request, bar).await? {
                 findery_core::api::SyncResponse::Completed { report } => {
                     if json {
                         render::json(&report)?;

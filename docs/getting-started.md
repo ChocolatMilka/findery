@@ -210,6 +210,17 @@ findery sync          # indexes it
 The project id is derived from the directory name, and the daemon reads your
 real filesystem — no mount to declare, no path to type.
 
+The first pass takes minutes on a large repository, so `sync` draws a bar while
+it runs:
+
+```
+⠸ =>===============------------- 892/3104 files · indexing · 6104 chunks · 1430 embedded / 4674 cached
+```
+
+The `3104` is a count of files, not a guess: the walk completes before anything
+is read, which is what lets the bar track real progress. Piped or redirected,
+there is no bar — just the summary line a script can read.
+
 **Registration and indexing are two steps on purpose.** A repository can be
 claimed, and its bucket chosen, before any model is reachable — so the setup
 does not fail because the embedding runtime is not up yet. `findery init --sync`
