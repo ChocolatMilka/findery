@@ -87,6 +87,15 @@ Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
 the same names (`check`, `test`, `install`, `up-model`…). It is the only way to
 run the exit checklist on Windows.
 
+**`rust-toolchain.toml` floats on stable, so a local toolchain drifts behind
+CI's** — and a lint that does not exist yet on your machine exists on the
+runner. `make check` green is then not the same claim as CI green. Before
+trusting a green run, `rustup update stable`, or see what the runner sees:
+
+```bash
+cargo +1.99.0 clippy --workspace --all-targets -- -D warnings
+```
+
 ```bash
 make check                  # fmt-check + clippy -D warnings + test + layers
 make test                   # 281 tests
