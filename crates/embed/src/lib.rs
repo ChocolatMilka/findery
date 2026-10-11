@@ -21,7 +21,7 @@ pub use openai::OpenAiCompatEmbedder;
 /// Builds the configured embedder, connecting and probing where applicable.
 ///
 /// `known_dim` is the width the caller already knows from somewhere else —
-/// typically a catalog that was built earlier. It is what lets the daemon come
+/// typically a bucket that was built earlier. It is what lets the daemon come
 /// up while the embedding runtime is still down; see
 /// [`OpenAiCompatEmbedder::connect`].
 pub async fn build(cfg: &EmbedderConfig, known_dim: Option<usize>) -> Result<Arc<dyn Embedder>> {

@@ -1,6 +1,6 @@
 # `findery-index` — the engine
 
-Sync, search, jobs, watch. The one place where the catalog, the vector
+Sync, search, jobs, watch. The one place where the bucket, the vector
 store, the embedder, and the chunkers meet. Everything above it (HTTP, MCP,
 CLI) is a thin translation of `Indexer`.
 
@@ -39,8 +39,8 @@ on a first indexing run. For each file:
 3. new ones are upserted (idempotent on id, CONV-028)
 4. the `FileRecord` is rewritten
 
-Intended order: the catalog decides what disappears, the store follows. A
-catalog row with no vector self-heals; an orphan vector doesn't.
+Intended order: the bucket decides what disappears, the store follows. A
+bucket row with no vector self-heals; an orphan vector doesn't.
 
 ### Deletions
 
@@ -64,7 +64,7 @@ A project is fed either by the daemon walking it, or by a client walking it and
 pushing the contents. The walk is the same code (`findery-walk`, shared by both),
 and so is the write path (`sync::ingest`) — only who reads the bytes differs.
 
-What changes for the client is which gates it can evaluate. It has no catalog
+What changes for the client is which gates it can evaluate. It has no bucket
 row to compare `(size, mtime)` against, so gate 1 is unavailable; it reads and
 hashes locally, which is cheap, and gate 2 does the filtering. Gate 3, the vector
 cache, is server-side and identical in both modes.

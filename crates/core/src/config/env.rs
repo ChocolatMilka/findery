@@ -291,7 +291,7 @@ pub const ENV_OVERRIDES: &[EnvOverride] = &[
         var: "FINDERY_DATA_DIR",
         key: "store.data_dir",
         apply: |c, v| {
-            // Exports follow the catalog unless they were pinned too, or moving
+            // Exports follow the bucket unless they were pinned too, or moving
             // the data directory strands them at the default.
             let followed_default = c.store.export_dir == format!("{}/exports", c.store.data_dir);
             c.store.data_dir = v.raw.to_string();
@@ -310,10 +310,10 @@ pub const ENV_OVERRIDES: &[EnvOverride] = &[
         },
     },
     EnvOverride {
-        var: "FINDERY_CATALOG",
-        key: "store.default_catalog",
+        var: "FINDERY_BUCKET",
+        key: "store.default_bucket",
         apply: |c, v| {
-            c.store.default_catalog = v.raw.trim().to_string();
+            c.store.default_bucket = v.raw.trim().to_string();
             Ok(())
         },
     },
@@ -470,11 +470,11 @@ mod tests {
     }
 
     #[test]
-    fn the_default_catalog_is_overridable_without_touching_the_data_dir() {
+    fn the_default_bucket_is_overridable_without_touching_the_data_dir() {
         let mut cfg = Config::default();
-        cfg.apply_env_with(|k| (k == "FINDERY_CATALOG").then(|| " work ".to_string()))
+        cfg.apply_env_with(|k| (k == "FINDERY_BUCKET").then(|| " work ".to_string()))
             .expect("env overlay");
-        assert_eq!(cfg.store.default_catalog, "work");
+        assert_eq!(cfg.store.default_bucket, "work");
         assert_eq!(cfg.store.data_dir, Config::default().store.data_dir);
     }
 }

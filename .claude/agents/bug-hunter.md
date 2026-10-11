@@ -46,7 +46,7 @@ Your final report explicitly names the pages read and the pages updated —
 | `findery-client` | the HTTP API | the rest of the daemon |
 | `findery-index` | orchestrating the four | that a transport exists |
 | `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a catalog exists |
+| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
 
 ### The founding contract: L0 names, the layers execute
 
@@ -77,10 +77,10 @@ can honor it (CONV-004).
    the location. Moving a function, renaming a module, re-cloning the repo,
    running a `--full`: zero embedding. It's the project's central economics.
 2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; the
-   daemon refuses to mix two recipes in one catalog and says so at boot.
+   daemon refuses to mix two recipes in one bucket and says so at boot.
 3. **A chunker is pure.** All of incremental sync rests on
    `chunk(text) == chunk(text)`, forever.
-4. **The catalog is the durable truth**, the vector store is
+4. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend interchangeable.
 5. **Search is hybrid.** Vector for the concept, BM25 for the exact
    identifier, RRF fusion **by rank** — no calibration between two
@@ -153,12 +153,12 @@ writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
 | Class | Symptom | Where it lives in our code |
 |--------|----------|---------------------|
 | **Panic** | `.unwrap()`, `panic!`, bare index, out-of-bounds slice | everywhere outside `#[cfg(test)]` |
-| **Index corruption** | orphaned vector after deletion, desynced `chunks_fts` | `sync::flush`, `Catalog::replace_file_chunks` |
+| **Index corruption** | orphaned vector after deletion, desynced `chunks_fts` | `sync::flush`, `Bucket::replace_file_chunks` |
 | **Result lie** | non-deterministic ranking, ignored filter, inverted score | `search::fuse`, `CompiledFilter`, `bm25` |
 | **Boundary leak** | `..` path that gets through, glob accepted then ignored, unescaped FTS | `sanitize_rel`, `fts_query`, `CompiledFilter::new` |
 | **Diverging dimension** | corpus half 1024 half 2560 | `probe_dim`, `Shard::warm`, `claim_recipe` |
 | **Swallowed error** | `let _ =`, `unwrap_or_default()` on a carrying `Result` | everywhere |
-| **Deadlock** | `RwLock` deadlock, `Mutex` held across an `.await`, semaphore never released | `SqliteVectorStore`, `Catalog`, `JobRegistry` |
+| **Deadlock** | `RwLock` deadlock, `Mutex` held across an `.await`, semaphore never released | `SqliteVectorStore`, `Bucket`, `JobRegistry` |
 | **Race** | double shard warm, two concurrent syncs on one project | `warm`, `JobRegistry::has_active` |
 
 ## 2. Workflow
@@ -207,7 +207,7 @@ pesticide is a half-fix.
 ```
 I1  No .unwrap()/panic!/unreachable!/todo! outside #[cfg(test)]
 I2  chunks and chunks_fts written in the SAME transaction
-I3  Every chunk deletion evicts its vectors (catalog AND store)
+I3  Every chunk deletion evicts its vectors (bucket AND store)
 I4  An upsert is idempotent on id
 I5  A client path cannot escape the project root
 I6  A malformed glob is REFUSED, never silently inert

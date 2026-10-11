@@ -1,4 +1,4 @@
-//! The write path: turning documents into chunks, vectors and catalog rows.
+//! The write path: turning documents into chunks, vectors and bucket rows.
 //!
 //! INTENT: split from `sync/mod.rs`, which decides WHAT changed by walking a
 //! directory. This module decides nothing — it takes documents from whoever has
@@ -7,7 +7,7 @@
 //! cannot drift.
 
 use super::Indexer;
-use crate::CatalogHandle;
+use crate::BucketHandle;
 use findery_core::clock::{now_millis, now_unix};
 use findery_core::ids::{ChunkId, ContentHash};
 use findery_core::model::{Chunk, FileRecord, Lang, Origin, Project, RawChunk, SyncReport};
@@ -29,7 +29,7 @@ pub(super) struct Pending {
 /// Indexes one document supplied by the caller, bypassing the filesystem.
 pub async fn index_inline(
     idx: &Indexer,
-    cat: &CatalogHandle,
+    cat: &BucketHandle,
     project: &Project,
     rel_path: &str,
     text: &str,
@@ -52,7 +52,7 @@ pub async fn index_inline(
 /// the throughput actually comes from.
 pub async fn push_documents(
     idx: &Indexer,
-    cat: &CatalogHandle,
+    cat: &BucketHandle,
     project: &Project,
     documents: Vec<(String, String)>,
 ) -> Result<SyncReport> {
@@ -62,7 +62,7 @@ pub async fn push_documents(
 /// Shared body of inline and pushed ingestion.
 async fn ingest(
     idx: &Indexer,
-    cat: &CatalogHandle,
+    cat: &BucketHandle,
     project: &Project,
     documents: Vec<(String, String)>,
     origin: Origin,
@@ -82,14 +82,14 @@ async fn ingest(
     if documents.is_empty() {
         return Ok(report);
     }
-    // A catalog built by another model must not receive vectors of this one:
+    // A bucket built by another model must not receive vectors of this one:
     // the two spaces would share a store and neither would be searchable.
     cat.ensure_vectors_usable()?;
     cat.store
         .ensure_project(&project.id, idx.embedder.dim())
         .await?;
 
-    let known = cat.catalog.file_map(&project.id).await?;
+    let known = cat.bucket.file_map(&project.id).await?;
     let mut pending = Vec::with_capacity(documents.len());
     let mut buffered = 0usize;
 
@@ -133,7 +133,7 @@ async fn ingest(
     if !pending.is_empty() {
         flush(idx, cat, project, pending, &mut report).await?;
     }
-    cat.catalog.touch_sync(&project.id).await?;
+    cat.bucket.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
     Ok(report)
 }
@@ -144,11 +144,11 @@ async fn ingest(
 /// to delete what the daemon walked, nor a hand-added inline document — each
 /// side prunes what it fed, and nothing else.
 pub async fn prune(
-    cat: &CatalogHandle,
+    cat: &BucketHandle,
     project: &Project,
     keep: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let known = cat.catalog.file_map(&project.id).await?;
+    let known = cat.bucket.file_map(&project.id).await?;
     let mut removed = 0u64;
     for (path, record) in &known {
         if record.origin != Origin::Pushed || keep.contains(path.as_str()) {
@@ -158,23 +158,18 @@ pub async fn prune(
         removed += 1;
     }
     if removed > 0 {
-        cat.catalog.touch_sync(&project.id).await?;
+        cat.bucket.touch_sync(&project.id).await?;
     }
     Ok(removed)
 }
 
 /// Removes one document: chunks, vectors and file record.
-pub async fn forget_file(cat: &CatalogHandle, project: &Project, rel_path: &str) -> Result<u64> {
-    let removed = cat
-        .catalog
-        .delete_file_chunks(&project.id, rel_path)
-        .await?;
+pub async fn forget_file(cat: &BucketHandle, project: &Project, rel_path: &str) -> Result<u64> {
+    let removed = cat.bucket.delete_file_chunks(&project.id, rel_path).await?;
     if !removed.is_empty() {
         cat.store.delete(&project.id, &removed).await?;
     }
-    cat.catalog
-        .delete_file_record(&project.id, rel_path)
-        .await?;
+    cat.bucket.delete_file_record(&project.id, rel_path).await?;
     Ok(removed.len() as u64)
 }
 
@@ -183,7 +178,7 @@ pub async fn forget_file(cat: &CatalogHandle, project: &Project, rel_path: &str)
 /// Embeds and writes a batch of files.
 pub(super) async fn flush(
     idx: &Indexer,
-    cat: &CatalogHandle,
+    cat: &BucketHandle,
     project: &Project,
     pending: Vec<Pending>,
     report: &mut SyncReport,
@@ -191,7 +186,7 @@ pub(super) async fn flush(
     if pending.is_empty() {
         return Ok(());
     }
-    // Only a catalog whose stored recipe is this one reaches here, so the cache
+    // Only a bucket whose stored recipe is this one reaches here, so the cache
     // key names the recipe the vectors already in it were built with.
     let recipe = cat.recipe.clone();
 
@@ -206,7 +201,7 @@ pub(super) async fn flush(
             }
         }
     }
-    let mut vectors = cat.catalog.cached_vectors(&recipe, wanted.clone()).await?;
+    let mut vectors = cat.bucket.cached_vectors(&recipe, wanted.clone()).await?;
     report.embeddings_cached += vectors.len() as u64;
 
     let misses: Vec<&Chunk> = {
@@ -240,7 +235,7 @@ pub(super) async fn flush(
             vectors.insert(chunk.content_hash.to_string(), vector.clone());
             to_cache.push((chunk.content_hash.clone(), vector));
         }
-        cat.catalog.put_cached_vectors(&recipe, to_cache).await?;
+        cat.bucket.put_cached_vectors(&recipe, to_cache).await?;
     }
 
     for file in pending {
@@ -266,7 +261,7 @@ pub(super) async fn flush(
         }
 
         let orphans = cat
-            .catalog
+            .bucket
             .replace_file_chunks(&project.id, &path, file.chunks)
             .await?;
         if !orphans.is_empty() {
@@ -274,7 +269,7 @@ pub(super) async fn flush(
             report.chunks_deleted += orphans.len() as u64;
         }
         cat.store.upsert(&project.id, &records).await?;
-        cat.catalog.put_file(&project.id, &file.record).await?;
+        cat.bucket.put_file(&project.id, &file.record).await?;
 
         report.chunks_written += records.len() as u64;
         if file.is_new {

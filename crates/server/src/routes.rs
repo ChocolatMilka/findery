@@ -10,7 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use findery_core::api::{
-    CatalogInfo, CatalogRemoved, CreateCatalog, HealthReport, Job, RegisterProject,
+    BucketInfo, BucketRemoved, CreateBucket, HealthReport, Job, RegisterProject,
 };
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
@@ -35,8 +35,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/documents/batch", post(push_documents))
         .route("/v1/projects/{id}/files", get(file_manifest))
         .route("/v1/projects/{id}/prune", post(prune))
-        .route("/v1/catalogs", get(list_catalogs).post(create_catalog))
-        .route("/v1/catalogs/{name}", delete(delete_catalog))
+        .route("/v1/buckets", get(list_buckets).post(create_bucket))
+        .route("/v1/buckets/{name}", delete(delete_bucket))
         .route("/v1/search", post(search))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/jobs", get(list_jobs))
@@ -166,7 +166,7 @@ async fn push_documents(
     ))
 }
 
-/// What the catalog knows about a project's files, so a pushing client can send
+/// What the bucket knows about a project's files, so a pushing client can send
 /// only what changed.
 async fn file_manifest(
     State(state): State<AppState>,
@@ -253,27 +253,27 @@ async fn shutdown(State(state): State<AppState>) -> Json<Stopping> {
     Json(Stopping { stopping: true })
 }
 
-async fn list_catalogs(State(state): State<AppState>) -> ApiResult<Json<Vec<CatalogInfo>>> {
-    Ok(Json(state.indexer.list_catalogs().await?))
+async fn list_buckets(State(state): State<AppState>) -> ApiResult<Json<Vec<BucketInfo>>> {
+    Ok(Json(state.indexer.list_buckets().await?))
 }
 
-async fn create_catalog(
+async fn create_bucket(
     State(state): State<AppState>,
-    Json(body): Json<CreateCatalog>,
-) -> ApiResult<Json<CatalogInfo>> {
-    Ok(Json(state.indexer.create_catalog(&body.name).await?))
+    Json(body): Json<CreateBucket>,
+) -> ApiResult<Json<BucketInfo>> {
+    Ok(Json(state.indexer.create_bucket(&body.name).await?))
 }
 
-/// Deletes a catalog, its projects and their vectors.
+/// Deletes a bucket, its projects and their vectors.
 ///
 /// It goes through the daemon rather than the CLI's own filesystem call: the
 /// daemon is the only process that knows every handle on the file, and a
-/// catalog still open cannot be removed at all.
-async fn delete_catalog(
+/// bucket still open cannot be removed at all.
+async fn delete_bucket(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> ApiResult<Json<CatalogRemoved>> {
-    let removed = state.indexer.forget_catalog(&name).await?;
+) -> ApiResult<Json<BucketRemoved>> {
+    let removed = state.indexer.forget_bucket(&name).await?;
     // The watchers of the projects that went with it would otherwise keep
     // re-syncing an id that no longer resolves.
     {

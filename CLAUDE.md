@@ -60,13 +60,13 @@ Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
    the location. Moving a function, renaming a module, re-cloning the repo
    or running a `--full`: zero embeddings. That's the project's central
    economics.
-2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; a catalog
+2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; a bucket
    refuses to mix two recipes — at the **operation** that would mix them, never
    at boot, so the daemon stays up to report the conflict and to delete the
-   catalog the message recommends.
+   bucket the message recommends.
 3. **A chunker is pure.** All of incremental sync rests on
    `chunk(text) == chunk(text)`, forever.
-4. **The catalog is the durable truth**, the vector store is
+4. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend interchangeable.
 5. **Search is hybrid.** Vector for the concept, BM25 for the exact
    identifier, RRF fusion by rank — no calibration between two incomparable
@@ -101,7 +101,7 @@ cd <a project> && findery init && findery sync   # register, then index
 findery search "where backoff is handled"   # project inferred from the current directory
 findery health                  # what the daemon actually serves
 findery doctor                  # what is missing, and the command that fixes it
-findery catalog ls              # the independent indexes this daemon serves
+findery bucket ls              # the independent indexes this daemon serves
 findery config set model …      # settings, validated and written to <data_dir>/config.toml
 findery config set server …     # the daemon address — no FINDERY_SERVER_URL needed
 finderyd --check                # the config as actually resolved
@@ -159,9 +159,9 @@ finderyd --check                # the config as actually resolved
 | Hashing the chunk's raw text | hashing `embed_input()` | the path is signal, it must count |
 | Writing `chunks` without `chunks_fts` | same transaction | hits pointing at text that's gone |
 | `println!` in `findery-mcp` | `tracing` on stderr | stdout belongs to the protocol |
-| A recipe conflict raised at boot | raised at the operation that would mix | the boot refusal locks the `catalog rm` its own message recommends |
-| Deleting a catalog with a filesystem call | through the daemon | on Windows a SQLite file a live process holds open cannot be removed |
-| A project's catalog as a column | it *is* which file holds its row | a column is a second record of the same fact, free to disagree |
+| A recipe conflict raised at boot | raised at the operation that would mix | the boot refusal locks the `bucket rm` its own message recommends |
+| Deleting a bucket with a filesystem call | through the daemon | on Windows a SQLite file a live process holds open cannot be removed |
+| A project's bucket as a column | it *is* which file holds its row | a column is a second record of the same fact, free to disagree |
 | A perf claim with no number | `make bench` | CONV-035 |
 
 ---

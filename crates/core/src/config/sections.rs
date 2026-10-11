@@ -176,7 +176,7 @@ impl EmbedderConfig {
 /// Where vectors are written.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StoreBackend {
-    /// Vectors as BLOBs in the local SQLite catalog, searched from a warm
+    /// Vectors as BLOBs in the local SQLite bucket, searched from a warm
     /// in-memory matrix. Zero extra service; the default.
     #[default]
     Sqlite,
@@ -207,15 +207,15 @@ crate::serde_via_parse!(StoreBackend, result);
 #[serde(default, deny_unknown_fields)]
 pub struct StoreConfig {
     pub backend: StoreBackend,
-    /// Directory holding the catalogs and their WAL.
+    /// Directory holding the buckets and their WAL.
     pub data_dir: String,
     /// Directory `POST /v1/export` writes into.
     pub export_dir: String,
-    /// Catalog a project joins when `init` names none.
+    /// Bucket a project joins when `init` names none.
     ///
-    /// INTENT: the default is the catalog every install already has, so a
-    /// single-catalog user never learns the concept exists.
-    pub default_catalog: String,
+    /// INTENT: the default is the bucket every install already has, so a
+    /// single-bucket user never learns the concept exists.
+    pub default_bucket: String,
     pub qdrant: QdrantConfig,
 }
 
@@ -226,32 +226,32 @@ impl Default for StoreConfig {
             backend: StoreBackend::Sqlite,
             export_dir: format!("{data_dir}/exports"),
             data_dir,
-            default_catalog: crate::model::DEFAULT_CATALOG.to_string(),
+            default_bucket: crate::model::DEFAULT_BUCKET.to_string(),
             qdrant: QdrantConfig::default(),
         }
     }
 }
 
-/// Directory holding every catalog but the default one.
-pub fn catalogs_dir(data_dir: &str) -> String {
-    format!("{}/catalogs", data_dir.trim_end_matches('/'))
+/// Directory holding every bucket but the default one.
+pub fn buckets_dir(data_dir: &str) -> String {
+    format!("{}/buckets", data_dir.trim_end_matches('/'))
 }
 
-/// Path of one catalog's database file.
+/// Path of one bucket's database file.
 ///
-/// INTENT: the default catalog keeps the flat `catalog.db` path it has always
+/// INTENT: the default bucket keeps the flat `bucket.db` path it has always
 /// had, so an existing install is not migrated by this feature and a single
-/// catalog never grows a directory level. Named catalogs live one level down,
+/// bucket never grows a directory level. Named buckets live one level down,
 /// where their name is the directory and nothing else may be.
-pub fn catalog_path(data_dir: &str, name: &str) -> String {
-    if name == crate::model::DEFAULT_CATALOG {
-        format!("{}/catalog.db", data_dir.trim_end_matches('/'))
+pub fn bucket_path(data_dir: &str, name: &str) -> String {
+    if name == crate::model::DEFAULT_BUCKET {
+        format!("{}/bucket.db", data_dir.trim_end_matches('/'))
     } else {
-        format!("{}/{name}/catalog.db", catalogs_dir(data_dir))
+        format!("{}/{name}/bucket.db", buckets_dir(data_dir))
     }
 }
 
-/// Where the catalog lives when nothing says otherwise.
+/// Where the bucket lives when nothing says otherwise.
 ///
 /// INTENT: the default targets a daemon running natively on a developer
 /// machine, because that is the setup with no bind mount, no path translation
@@ -270,12 +270,12 @@ pub fn default_data_dir() -> String {
         .unwrap_or_else(|| "./.findery".to_string())
 }
 
-/// The configuration file a user owns, next to their catalog.
+/// The configuration file a user owns, next to their bucket.
 ///
 /// INTENT: settings had only two homes, and neither belonged to the user. A
 /// path like `/etc/findery/config.toml` means nothing on Windows and needs root
 /// on Linux; environment variables live in a shell profile the daemon may never
-/// read, and vanish from the next terminal. A file beside the catalog is
+/// read, and vanish from the next terminal. A file beside the bucket is
 /// writable, per-user, survives a reboot, and is somewhere both the CLI and the
 /// daemon can agree on without being told.
 ///
@@ -285,7 +285,7 @@ pub fn user_config_path() -> String {
     format!("{}/config.toml", data_dir_from_env())
 }
 
-/// Where the catalog lives for a process that has not loaded a configuration.
+/// Where the bucket lives for a process that has not loaded a configuration.
 ///
 /// INTENT: clients need to *name* the data directory — in a diagnostic, in an
 /// error pointing at the daemon's log — without opening it. Reading

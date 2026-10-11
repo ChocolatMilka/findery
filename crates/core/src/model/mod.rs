@@ -152,7 +152,7 @@ pub struct RawChunk {
     pub text: String,
 }
 
-/// An indexed fragment, as stored in the catalog and returned by search.
+/// An indexed fragment, as stored in the bucket and returned by search.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Chunk {
     pub id: ChunkId,
@@ -207,7 +207,7 @@ impl Chunk {
 // Files and projects
 // ---------------------------------------------------------------------------
 
-/// Where a catalog file comes from, and therefore who may delete it.
+/// Where a bucket file comes from, and therefore who may delete it.
 ///
 /// INTENT: two sides can feed the index — the daemon walking a directory it can
 /// see, or a client walking it and pushing the contents. Each may only prune
@@ -318,16 +318,16 @@ impl Default for ProjectSpec {
     }
 }
 
-/// Catalog a project joins when nothing names one.
-pub const DEFAULT_CATALOG: &str = "default";
+/// Bucket a project joins when nothing names one.
+pub const DEFAULT_BUCKET: &str = "default";
 
-/// True when `name` can name a catalog.
+/// True when `name` can name a bucket.
 ///
-/// INTENT: a catalog becomes a directory name under the data directory, so the
+/// INTENT: a bucket becomes a directory name under the data directory, so the
 /// alphabet is deliberately narrow. Refusing here — rather than escaping at the
-/// filesystem call — is what keeps `findery catalog rm ../../etc` an error
+/// filesystem call — is what keeps `findery bucket rm ../../etc` an error
 /// instead of a deletion.
-pub fn is_catalog_name(name: &str) -> bool {
+pub fn is_bucket_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
         && name.len() <= 64
@@ -340,18 +340,18 @@ pub struct Project {
     pub id: ProjectId,
     /// Free-form display name.
     pub name: String,
-    /// Catalog holding this project's chunks and vectors.
+    /// Bucket holding this project's chunks and vectors.
     ///
-    /// INTENT: the catalog is a property of the project rather than a flag on
+    /// INTENT: the bucket is a property of the project rather than a flag on
     /// every command, so `findery search` in a directory never has to be told
-    /// which index it is standing in. `init --catalog` is the only place a
+    /// which index it is standing in. `init --bucket` is the only place a
     /// choice is made.
     ///
-    /// It is stamped when the project is read out of its catalog, never stored:
-    /// which catalog a project is in *is* which file holds its row, and a column
+    /// It is stamped when the project is read out of its bucket, never stored:
+    /// which bucket a project is in *is* which file holds its row, and a column
     /// could disagree with that.
-    #[serde(default = "default_catalog")]
-    pub catalog: String,
+    #[serde(default = "default_bucket")]
+    pub bucket: String,
     pub spec: ProjectSpec,
     /// Host-side root, so clients can cite paths the user can actually open.
     pub host_root: String,
@@ -359,8 +359,8 @@ pub struct Project {
     pub updated_at: i64,
 }
 
-fn default_catalog() -> String {
-    DEFAULT_CATALOG.to_string()
+fn default_bucket() -> String {
+    DEFAULT_BUCKET.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -421,8 +421,8 @@ pub struct SyncReport {
 #[serde(default)]
 pub struct IndexStats {
     pub project: String,
-    /// Catalog holding it, so a `status` on one of several indexes says which.
-    pub catalog: String,
+    /// Bucket holding it, so a `status` on one of several indexes says which.
+    pub bucket: String,
     pub files: u64,
     pub chunks: u64,
     pub vectors: u64,

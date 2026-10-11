@@ -18,7 +18,7 @@ which, and fix that one. We never route around a doc in silence (CONV-037).
 | [`overview/layers.md`](overview/layers.md) | The layer law, the crates, what each is allowed to know |
 | [`chunk/README.md`](chunk/README.md) | Rust and Markdown chunking, lexical scanner, windows, merging |
 | [`embed/README.md`](embed/README.md) | Models, Qwen3 instruction, local and remote providers, cache recipe |
-| [`store/README.md`](store/README.md) | SQLite catalog, vector backends, **the measurements that justify the choice**, export |
+| [`store/README.md`](store/README.md) | SQLite bucket, vector backends, **the measurements that justify the choice**, export |
 | [`index/README.md`](index/README.md) | Incremental sync (the three gates), hybrid search, jobs, watch |
 | [`server/README.md`](server/README.md) | HTTP API reference |
 | [`mcp/README.md`](mcp/README.md) | MCP tools, wiring into Claude Code, token budget |
@@ -36,7 +36,7 @@ here. Fixing a roadmap entry means deleting it (CONV-038).
    `chunk(text) == chunk(text)`, forever.
 4. **The vector is content-addressed.** Key `(recipe, content_hash)`, never
    the location. Moving a function costs nothing.
-5. **The catalog is the durable truth**, the vector store is
+5. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend swappable.
 6. **A performance claim is a reproducible number**
    (`make bench`), otherwise it's gossip.

@@ -24,7 +24,7 @@
 pub mod daemon;
 
 use findery_core::api::{
-    AddDocument, CatalogInfo, CatalogRemoved, CreateCatalog, Deleted, ErrorBody, ExportReport,
+    AddDocument, BucketInfo, BucketRemoved, CreateBucket, Deleted, ErrorBody, ExportReport,
     ExportRequest, HealthReport, Job, PruneRequest, PushDocuments, RegisterProject, Removed,
     Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
@@ -103,35 +103,35 @@ impl Client {
         &self.base
     }
 
-    // -- catalogs -----------------------------------------------------------
+    // -- buckets -----------------------------------------------------------
 
-    /// Every catalog the daemon has open.
-    pub async fn list_catalogs(&self) -> Result<Vec<CatalogInfo>> {
-        self.send::<(), _>(reqwest::Method::GET, "/v1/catalogs", None)
+    /// Every bucket the daemon has open.
+    pub async fn list_buckets(&self) -> Result<Vec<BucketInfo>> {
+        self.send::<(), _>(reqwest::Method::GET, "/v1/buckets", None)
             .await
     }
 
-    /// Creates a catalog, or reports the one that is already there.
-    pub async fn create_catalog(&self, name: &str) -> Result<CatalogInfo> {
+    /// Creates a bucket, or reports the one that is already there.
+    pub async fn create_bucket(&self, name: &str) -> Result<BucketInfo> {
         self.send(
             reqwest::Method::POST,
-            "/v1/catalogs",
-            Some(&CreateCatalog {
+            "/v1/buckets",
+            Some(&CreateBucket {
                 name: name.to_string(),
             }),
         )
         .await
     }
 
-    /// Deletes a catalog, its projects and their vectors.
+    /// Deletes a bucket, its projects and their vectors.
     ///
     /// It goes through the daemon because the daemon is the only process that
-    /// knows every handle on the file, and a catalog still open cannot be
+    /// knows every handle on the file, and a bucket still open cannot be
     /// removed at all.
-    pub async fn delete_catalog(&self, name: &str) -> Result<CatalogRemoved> {
+    pub async fn delete_bucket(&self, name: &str) -> Result<BucketRemoved> {
         self.send::<(), _>(
             reqwest::Method::DELETE,
-            &format!("/v1/catalogs/{name}"),
+            &format!("/v1/buckets/{name}"),
             None,
         )
         .await

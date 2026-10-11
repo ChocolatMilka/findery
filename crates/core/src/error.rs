@@ -19,7 +19,7 @@ pub enum Error {
     #[error("not found: {0}")]
     NotFound(String),
 
-    /// The catalog or the vector store refused the operation.
+    /// The bucket or the vector store refused the operation.
     #[error("store: {0}")]
     Store(String),
 

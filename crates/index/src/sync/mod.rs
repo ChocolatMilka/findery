@@ -17,7 +17,7 @@ mod ingest;
 use ingest::{FLUSH_CHUNKS, FLUSH_FILES, Pending, flush, materialize};
 pub use ingest::{forget_file, index_inline, prune, push_documents};
 
-use crate::CatalogHandle;
+use crate::BucketHandle;
 use crate::Indexer;
 use findery_core::clock::{now_millis, now_unix};
 use findery_core::ids::ContentHash;
@@ -27,7 +27,7 @@ use findery_core::{Error, Result};
 /// Runs a synchronization pass and returns exactly what it did.
 pub async fn run(
     idx: &Indexer,
-    cat: &CatalogHandle,
+    cat: &BucketHandle,
     project: &Project,
     mode: SyncMode,
 ) -> Result<SyncReport> {
@@ -38,15 +38,15 @@ pub async fn run(
         ..SyncReport::default()
     };
 
-    // A catalog built by another model must not receive vectors of this one:
+    // A bucket built by another model must not receive vectors of this one:
     // the two spaces would share a store and neither would be searchable.
     cat.ensure_vectors_usable()?;
     cat.store
         .ensure_project(&project.id, idx.embedder.dim())
         .await?;
-    let known = cat.catalog.file_map(&project.id).await?;
+    let known = cat.bucket.file_map(&project.id).await?;
 
-    // Switching vector backend leaves the catalog intact and the new store
+    // Switching vector backend leaves the bucket intact and the new store
     // empty. An incremental pass would then find every file unchanged, write
     // nothing, and leave search returning nothing — silently. Detect that and
     // rebuild instead of reporting a successful no-op.
@@ -56,12 +56,12 @@ pub async fn run(
     {
         tracing::warn!(
             project = %project.id,
-            "vector store is empty but the catalog is not; rebuilding it"
+            "vector store is empty but the bucket is not; rebuilding it"
         );
         report.mode = SyncMode::Full.as_str().to_string();
         report
             .warnings
-            .push("vector store was empty; rebuilt from the catalog".into());
+            .push("vector store was empty; rebuilt from the bucket".into());
         SyncMode::Full
     } else {
         mode
@@ -117,7 +117,7 @@ pub async fn run(
             let mut record = prev.clone();
             record.mtime_ns = candidate.mtime_ns;
             record.size = candidate.size;
-            cat.catalog.put_file(&project.id, &record).await?;
+            cat.bucket.put_file(&project.id, &record).await?;
             report.files_unchanged += 1;
             continue;
         }
@@ -168,7 +168,7 @@ pub async fn run(
         }
     }
 
-    cat.catalog.touch_sync(&project.id).await?;
+    cat.bucket.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
     Ok(report)
 }

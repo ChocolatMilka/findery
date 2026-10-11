@@ -1,7 +1,7 @@
 //! `findery` — the daemon.
 //!
 //! Loads the configuration (file, then `FINDERY_*` environment overlay), connects to
-//! the embedding runtime, opens the catalog, and serves the HTTP API until it is
+//! the embedding runtime, opens the bucket, and serves the HTTP API until it is
 //! asked to stop.
 
 use clap::Parser;
@@ -54,6 +54,9 @@ async fn run() -> Result<()> {
 
     let mut cfg = load_config(&args.config)?;
     cfg.apply_env()?;
+    if let Some(warning) = findery_core::config::renamed_env_warning(|k| std::env::var(k).ok()) {
+        tracing::warn!("{warning}");
+    }
     if let Some(bind) = args.bind {
         cfg.server.bind = bind;
     }
@@ -112,7 +115,7 @@ fn load_config(path: &std::path::Path) -> Result<Config> {
     }
 
     // The system-wide path is for a packaged deployment. A developer's settings
-    // live beside their catalog, where `findery config set` writes them and
+    // live beside their bucket, where `findery config set` writes them and
     // where no elevation is needed — see `config::user_config_path`.
     let user = findery_core::config::user_config_path();
     match std::fs::read_to_string(&user) {

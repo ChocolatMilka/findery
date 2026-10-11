@@ -1,12 +1,12 @@
 //! Vector export: take the index somewhere else.
 //!
 //! INTENT: an index you cannot get out of is a lock-in. Export reads the
-//! catalog — chunks plus the content-addressed cache — so it works identically
+//! bucket — chunks plus the content-addressed cache — so it works identically
 //! whichever vector backend is live, and it writes plain formats any tool can
 //! read: JSONL for a one-shot load, or a raw `float32` matrix plus sidecar
 //! metadata for `numpy.fromfile` and friends.
 
-use crate::catalog::Catalog;
+use crate::bucket::Bucket;
 use findery_core::ids::ProjectId;
 use findery_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -68,16 +68,16 @@ struct Manifest<'a> {
 
 /// Exports one project's vectors and metadata into `dest_dir/<project>/`.
 pub async fn export_project(
-    catalog: &Catalog,
+    bucket: &Bucket,
     project: &ProjectId,
     recipe: &str,
     model: &str,
     format: ExportFormat,
     dest_dir: &Path,
 ) -> Result<ExportReport> {
-    let chunks = catalog.all_chunks(project).await?;
+    let chunks = bucket.all_chunks(project).await?;
     let hashes: Vec<_> = chunks.iter().map(|c| c.content_hash.clone()).collect();
-    let vectors = catalog.cached_vectors(recipe, hashes).await?;
+    let vectors = bucket.cached_vectors(recipe, hashes).await?;
 
     let dir: PathBuf = dest_dir.join(project.as_str());
     tokio::fs::create_dir_all(&dir).await?;
@@ -230,13 +230,13 @@ mod tests {
     use findery_core::ids::{ChunkId, ContentHash};
     use findery_core::model::{Chunk, ChunkKind, Lang, Project, ProjectSpec};
 
-    async fn seeded() -> (Catalog, ProjectId, tempfile::TempDir) {
-        let cat = Catalog::open_in_memory().expect("catalog");
+    async fn seeded() -> (Bucket, ProjectId, tempfile::TempDir) {
+        let cat = Bucket::open_in_memory().expect("bucket");
         let p = ProjectId::new("demo").expect("id");
         cat.put_project(&Project {
             id: p.clone(),
             name: "demo".into(),
-            catalog: cat.name().to_string(),
+            bucket: cat.name().to_string(),
             spec: ProjectSpec::default(),
             host_root: "C:/demo".into(),
             created_at: 1,

@@ -1,11 +1,11 @@
-//! The catalog: the durable record of what is indexed.
+//! The bucket: the durable record of what is indexed.
 //!
 //! One SQLite file holds projects, files, chunks, the content-addressed vector
 //! cache and the full-text index. The vector backend is swappable and always
 //! rebuildable from here — this file is the one thing worth backing up.
 //!
 //! INTENT: rusqlite is synchronous, so every public method hops onto
-//! `spawn_blocking` through [`Catalog::with_conn`]. A single mutex serializes
+//! `spawn_blocking` through [`Bucket::with_conn`]. A single mutex serializes
 //! access, which is the right trade for a single-writer daemon: queries are
 //! indexed lookups, and vector search never touches this connection at all.
 
@@ -21,27 +21,24 @@ use std::sync::Arc;
 
 use crate::schema;
 
-/// Handle on the catalog database.
+/// Handle on the bucket database.
 #[derive(Clone)]
-pub struct Catalog {
+pub struct Bucket {
     conn: Arc<Mutex<Connection>>,
     path: PathBuf,
     name: String,
 }
 
-impl Catalog {
-    /// Opens (creating if needed) `dir/catalog.db` and migrates it.
+impl Bucket {
+    /// Opens (creating if needed) `dir/bucket.db` and migrates it.
     pub fn open(dir: &Path) -> Result<Self> {
-        Self::open_file(
-            &dir.join("catalog.db"),
-            findery_core::model::DEFAULT_CATALOG,
-        )
+        Self::open_file(&dir.join("bucket.db"), findery_core::model::DEFAULT_BUCKET)
     }
 
-    /// Opens one catalog file, creating it and its directory if needed.
+    /// Opens one bucket file, creating it and its directory if needed.
     ///
-    /// INTENT: the caller owns the path — `findery_core::config::catalog_path`
-    /// decides where a catalog lives — so the layout is one definition shared by
+    /// INTENT: the caller owns the path — `findery_core::config::bucket_path`
+    /// decides where a bucket lives — so the layout is one definition shared by
     /// the daemon that writes it and the CLI that reports it.
     pub fn open_file(path: &Path, name: &str) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -56,14 +53,14 @@ impl Catalog {
         })
     }
 
-    /// Opens an in-memory catalog. Tests only — nothing survives the process.
+    /// Opens an in-memory bucket. Tests only — nothing survives the process.
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(schema::sql)?;
         schema::migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: PathBuf::from(":memory:"),
-            name: findery_core::model::DEFAULT_CATALOG.to_string(),
+            name: findery_core::model::DEFAULT_BUCKET.to_string(),
         })
     }
 
@@ -72,10 +69,10 @@ impl Catalog {
         &self.path
     }
 
-    /// Name this catalog answers to.
+    /// Name this bucket answers to.
     ///
     /// Stamped on every [`Project`](findery_core::model::Project) read out of
-    /// it, so the project's catalog is a fact about where the row lives rather
+    /// it, so the project's bucket is a fact about where the row lives rather
     /// than a column that could disagree with it.
     pub fn name(&self) -> &str {
         &self.name
@@ -93,7 +90,7 @@ impl Catalog {
             f(&guard)
         })
         .await
-        .map_err(|e| Error::Internal(format!("catalog task: {e}")))?
+        .map_err(|e| Error::Internal(format!("bucket task: {e}")))?
     }
 
     /// Bytes the database occupies on disk, WAL included.
@@ -144,7 +141,7 @@ impl Catalog {
         .await
     }
 
-    /// Refuses to run against a catalog built with a different embedding
+    /// Refuses to run against a bucket built with a different embedding
     /// recipe, which would mix incompatible vector spaces in one index.
     ///
     /// Returns the previously recorded recipe when it differs.
@@ -189,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn meta_round_trips() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         assert_eq!(cat.get_meta("nope").await.expect("read"), None);
         cat.set_meta("k", "v").await.expect("write");
         cat.set_meta("k", "v2").await.expect("overwrite");
@@ -198,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_recipe_change_is_reported_not_silently_accepted() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         assert_eq!(cat.claim_recipe("qwen3:1024").await.expect("claim"), None);
         assert_eq!(
             cat.claim_recipe("qwen3:1024").await.expect("re-claim"),

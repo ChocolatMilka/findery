@@ -173,33 +173,33 @@ async fn collect(client: &Client) -> Vec<Check> {
         Err(e) => checks.push(Check::bad("here", e.to_string(), "see the daemon log")),
     }
 
-    // 4. The catalogs: how many, and whether any of them holds vectors this
+    // 4. The buckets: how many, and whether any of them holds vectors this
     // daemon cannot compare. A conflict is reported, not raised, so it belongs
     // in a diagnostic rather than in a boot failure.
-    match client.list_catalogs().await {
-        Ok(catalogs) => {
-            let summary = if catalogs.is_empty() {
+    match client.list_buckets().await {
+        Ok(buckets) => {
+            let summary = if buckets.is_empty() {
                 "none open".to_string()
             } else {
-                catalogs
+                buckets
                     .iter()
                     .map(|c| format!("{} ({} project(s))", c.name, c.projects))
                     .collect::<Vec<_>>()
                     .join(", ")
             };
             let conflicts: Vec<String> =
-                catalogs.iter().filter_map(|c| c.conflict.clone()).collect();
+                buckets.iter().filter_map(|c| c.conflict.clone()).collect();
             if conflicts.is_empty() {
-                checks.push(Check::good("catalogs", summary));
+                checks.push(Check::good("buckets", summary));
             } else {
-                checks.push(Check::bad("catalogs", summary, conflicts.join("\n")));
+                checks.push(Check::bad("buckets", summary, conflicts.join("\n")));
             }
         }
-        Err(e) => checks.push(Check::bad("catalogs", e.to_string(), "see the daemon log")),
+        Err(e) => checks.push(Check::bad("buckets", e.to_string(), "see the daemon log")),
     }
 
-    // 5. Where the data lives, so nobody has to guess. The catalog files
-    // themselves are named by `findery catalog ls`.
+    // 5. Where the data lives, so nobody has to guess. The bucket files
+    // themselves are named by `findery bucket ls`.
     let data_dir = findery_core::config::data_dir_from_env();
     checks.push(Check::good("storage", data_dir));
     checks.push(Check::good("daemon log", daemon::log_path()));

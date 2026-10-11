@@ -79,48 +79,48 @@ from one to the other costs a walk and no embedding at all.
 | What | Native | All-Docker |
 |------|--------|------------|
 | Model weights | volume `findery_hf-cache` | same |
-| Catalog + vectors | `$FINDERY_DATA_DIR/catalog.db`, default `%LOCALAPPDATA%/findery` (or `~/.local/share/findery`) | volume `findery_findery-data` |
+| Bucket + vectors | `$FINDERY_DATA_DIR/bucket.db`, default `%LOCALAPPDATA%/findery` (or `~/.local/share/findery`) | volume `findery_findery-data` |
 | Exports | `$FINDERY_DATA_DIR/exports` | `/data/exports` in that volume |
 
 `finderyd --check` prints the configuration as actually resolved.
 
 ### Catalogs — more than one index per daemon
 
-A **catalog** is one SQLite file holding projects, chunks, the vector cache and
+A **bucket** is one SQLite file holding projects, chunks, the vector cache and
 the full-text index. A daemon serves as many as you create, and they are
 completely independent: separate projects, separate vectors, separate files.
 
 | Name | Path |
 |------|------|
-| the default one | `<data_dir>/catalog.db` |
-| any other | `<data_dir>/catalogs/<name>/catalog.db` |
+| the default one | `<data_dir>/bucket.db` |
+| any other | `<data_dir>/buckets/<name>/bucket.db` |
 
 ```bash
-findery catalog ls                    # what each holds, its recipe, its path
-findery catalog create work           # an empty one, ready to take projects
-findery catalog rm work --force       # projects and vectors go with it
+findery bucket ls                    # what each holds, its recipe, its path
+findery bucket create work           # an empty one, ready to take projects
+findery bucket rm work --force       # projects and vectors go with it
 ```
 
-Which catalog a project belongs to is chosen **once**, at registration:
+Which bucket a project belongs to is chosen **once**, at registration:
 
 ```bash
-findery init --catalog work
+findery init --bucket work
 ```
 
 and never named again — every later command follows the project. A project's
-catalog is not a column anywhere: it *is* which file holds its row, which is why
+bucket is not a column anywhere: it *is* which file holds its row, which is why
 a project can never end up split across two.
 
-`findery catalog rm` refuses while the catalog still holds projects unless
+`findery bucket rm` refuses while the bucket still holds projects unless
 `--force` is passed, and it goes through the daemon because the daemon holds the
 file open — on Windows a SQLite file a live process has open cannot be removed
 at all.
 
 **When to reach for one.** Two repositories that should not share a file: a
 work index and a personal one, a client's code and your own. Or a model change:
-a new recipe can go in a new catalog, leaving the old index intact and readable
+a new recipe can go in a new bucket, leaving the old index intact and readable
 until you are ready to move. What it is *not* for is search scoping — one
-catalog holding many projects still searches them together, and `-p <id>` is
+bucket holding many projects still searches them together, and `-p <id>` is
 the lever for narrowing that.
 
 ### Settings live in a file, not in your shell
@@ -208,9 +208,9 @@ findery projects                   # all of them, current one marked *
 
 | Command | What it does |
 |---------|--------------|
-| `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,toml` to choose extensions, `--catalog <name>` to choose its index, `--sync` to index it immediately |
+| `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,toml` to choose extensions, `--bucket <name>` to choose its index, `--sync` to index it immediately |
 | `findery sync` | incremental. `--full` ignores the metadata and hash gates (never the vector cache). `--path src/a.rs` targets files. `--background` returns a job id |
-| `findery catalog ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves. `rm` needs `--force` while one holds projects |
+| `findery bucket ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves. `rm` needs `--force` while one holds projects |
 | `findery watch` | re-syncs on file changes, debounced. `--off` stops it |
 | `findery doc add <path> --stdin` | indexes text with no file behind it — notes, decisions, generated docs |
 | `findery doc rm <path>` | drops one document |
@@ -222,7 +222,7 @@ findery projects                   # all of them, current one marked *
 `--json` on any command prints the daemon's answer verbatim, for scripting.
 
 **`init` stops at registration.** Indexing is a separate, deliberate step, so a
-repository can be claimed — and its catalog chosen — before any model is
+repository can be claimed — and its bucket chosen — before any model is
 reachable. `--sync` collapses the two.
 
 ---
@@ -340,16 +340,16 @@ FINDERY_EMBED_BASE_URL=https://api.openai.com   FINDERY_EMBED_API_KEY=sk-…
 ```
 
 Changing model or dimension opens a **new** cache namespace
-(`recipe = "<model>:<dim>"`). A catalog refuses to mix two recipes, and the
+(`recipe = "<model>:<dim>"`). A bucket refuses to mix two recipes, and the
 refusal lands on the operation that would mix them — the sync, never the daemon
-boot. That matters: a catalog built by another model still serves keyword search
+boot. That matters: a bucket built by another model still serves keyword search
 and can still be deleted, and a daemon that refused to start would take both of
-those down, including the `findery catalog rm` the message recommends.
+those down, including the `findery bucket rm` the message recommends.
 
 The remedies, in order of how much they cost you: index the project into a
-**new catalog** (`findery init --catalog <name>`, leaving the old index intact
+**new bucket** (`findery init --bucket <name>`, leaving the old index intact
 and readable), point `FINDERY_DATA_DIR` at a fresh directory, or delete the
-catalog and re-index. `findery catalog ls` names the conflict on the catalog
+bucket and re-index. `findery bucket ls` names the conflict on the bucket
 that carries it.
 
 At boot the daemon sends one throwaway input and compares the returned width to
@@ -410,7 +410,7 @@ working.
 **Catalogs split that sharing when it should be split.** One daemon, one model,
 but several independent indexes: a work index and a personal one never share a
 file, and a client pointed at one cannot search the other. What they do *not* do
-is scope a single search — projects inside one catalog are searched together,
+is scope a single search — projects inside one bucket are searched together,
 and `-p <id>` is the lever for that.
 
 `FINDERY_JOB_CONCURRENCY` bounds simultaneous syncs so two clients cannot saturate
@@ -426,9 +426,9 @@ the embedding runtime between them.
 | daemon does not answer | `make up-model` then `findery`; the error prints both lines |
 | every search returns 502 | the embedding runtime is down — `findery health` |
 | sync re-embeds everything | the recipe changed, or mtime is 0 on a mounted volume |
-| a sync is refused, naming two recipes | that catalog was built by another model — `findery catalog ls` names it; index into a new catalog, or `findery catalog rm` it |
+| a sync is refused, naming two recipes | that bucket was built by another model — `findery bucket ls` names it; index into a new bucket, or `findery bucket rm` it |
 | search finds nothing that exists | not synced, or a filter is too strict — check `findery status` |
-| search returns another project's code | it is in the same catalog — catalogs split indexes, `-p <id>` narrows within one |
+| search returns another project's code | it is in the same bucket — buckets split indexes, `-p <id>` narrows within one |
 | hits cite unopenable paths | all-Docker mode without the matching `FINDERY_MOUNTS` entry |
 
 `FINDERY_LOG=debug findery` for the full trace. `findery search --json` shows the

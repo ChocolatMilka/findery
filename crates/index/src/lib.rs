@@ -1,13 +1,13 @@
 //! # findery-index — layer L2
 //!
-//! The engine. It owns the catalogs, the vector stores, the embedder and the
+//! The engine. It owns the buckets, the vector stores, the embedder and the
 //! chunkers, and it is the only place where those four meet. Everything above —
 //! HTTP, MCP, CLI — is a thin translation of [`Indexer`]'s methods.
 //!
 //! INTENT: keeping orchestration in one layer is what lets the transports stay
 //! dumb. A bug in "what sync does" has exactly one home.
 
-pub mod catalogs;
+pub mod buckets;
 pub mod jobs;
 pub mod search;
 pub mod sync;
@@ -15,7 +15,7 @@ pub mod watch;
 
 pub use findery_walk as walker;
 
-pub use catalogs::CatalogHandle;
+pub use buckets::BucketHandle;
 
 use findery_core::clock::now_unix;
 use findery_core::config::Config;
@@ -43,36 +43,42 @@ pub struct Indexer {
     pub embedder: Arc<dyn Embedder>,
     pub chunkers: findery_chunk::Registry,
     pub jobs: JobRegistry,
-    /// Every catalog the daemon has open, keyed by name.
+    /// Every bucket the daemon has open, keyed by name.
     ///
-    /// INTENT: a catalog is a file, so this map is rebuilt from the filesystem
+    /// INTENT: a bucket is a file, so this map is rebuilt from the filesystem
     /// at boot and then maintained only by the daemon's own writes — one writer,
     /// so it cannot drift from the disk.
-    catalogs: RwLock<BTreeMap<String, Arc<CatalogHandle>>>,
-    /// Which catalog holds each registered project.
+    buckets: RwLock<BTreeMap<String, Arc<BucketHandle>>>,
+    /// Which bucket holds each registered project.
     ///
-    /// The daemon's own writes cannot put one project in two catalogs —
+    /// The daemon's own writes cannot put one project in two buckets —
     /// registering it elsewhere moves it — so a duplicate here takes a
     /// hand-edited database, and [`Indexer::home_of`] resolves it to the first
-    /// catalog in order rather than failing.
+    /// bucket in order rather than failing.
     homes: RwLock<HashMap<ProjectId, String>>,
     mapper: PathMapper,
 }
 
 impl Indexer {
     /// Wires everything together: the width the vectors already have, then the
-    /// embedder, then every catalog on disk.
+    /// embedder, then every bucket on disk.
     pub async fn new(cfg: Config) -> Result<Arc<Self>> {
         cfg.validate()?;
+        // Before anything opens a handle: an install that predates the current
+        // file names is moved onto them, so the width probe below reads the same
+        // files every later command will.
+        for warning in findery_store::migrate_legacy_layout(&cfg.store) {
+            tracing::warn!("{warning}");
+        }
         // The width comes from the disk first: an index built earlier lets the
         // daemon start even while the embedding runtime is down, which is what
         // keeps `findery doctor` answerable.
-        let known_dim = catalogs::remembered_dim(&cfg.store, &cfg.embedder.model).await?;
+        let known_dim = buckets::remembered_dim(&cfg.store, &cfg.embedder.model).await?;
         let embedder = findery_embed::build(&cfg.embedder, known_dim).await?;
         let recipe = format!("{}:{}", embedder.model(), embedder.dim());
-        // A catalog built with another recipe is opened anyway: the conflict is
+        // A bucket built with another recipe is opened anyway: the conflict is
         // refused at the operation that would misuse it, never at boot.
-        let (catalogs, homes) = catalogs::open_all(&cfg, &recipe, embedder.dim()).await?;
+        let (buckets, homes) = buckets::open_all(&cfg, &recipe, embedder.dim()).await?;
 
         let jobs = JobRegistry::new(cfg.server.job_history, cfg.server.job_concurrency);
         let mapper = cfg.path_mapper();
@@ -81,7 +87,7 @@ impl Indexer {
             embedder,
             chunkers: findery_chunk::Registry::new(),
             jobs,
-            catalogs: RwLock::new(catalogs),
+            buckets: RwLock::new(buckets),
             homes: RwLock::new(homes),
             mapper,
         }))
@@ -100,9 +106,9 @@ impl Indexer {
 
     /// Registers a project, or updates it when the id already exists.
     ///
-    /// The catalog is chosen here and only here. Naming one the project does not
-    /// currently live in *moves* it — a project is in exactly one catalog, and
-    /// that is what makes `findery init --catalog work` a move rather than a
+    /// The bucket is chosen here and only here. Naming one the project does not
+    /// currently live in *moves* it — a project is in exactly one bucket, and
+    /// that is what makes `findery init --bucket work` a move rather than a
     /// silent duplicate.
     pub async fn register(&self, req: RegisterProject) -> Result<Project> {
         if req.root.trim().is_empty() {
@@ -141,13 +147,13 @@ impl Indexer {
         };
 
         let target = req
-            .catalog
+            .bucket
             .clone()
-            .unwrap_or_else(|| self.cfg.store.default_catalog.clone());
-        let handle = self.ensure_catalog(&target).await?;
+            .unwrap_or_else(|| self.cfg.store.default_bucket.clone());
+        let handle = self.ensure_bucket(&target).await?;
         self.move_project(&id, &target).await?;
 
-        let existing = handle.catalog.get_project(&id).await?;
+        let existing = handle.bucket.get_project(&id).await?;
         let project = Project {
             // A pushed project has no daemon-side path to map back from.
             host_root: if push {
@@ -157,12 +163,12 @@ impl Indexer {
             },
             id,
             name,
-            catalog: target.clone(),
+            bucket: target.clone(),
             spec,
             created_at: existing.map(|p| p.created_at).unwrap_or_else(now_unix),
             updated_at: now_unix(),
         };
-        handle.catalog.put_project(&project).await?;
+        handle.bucket.put_project(&project).await?;
         handle
             .store
             .ensure_project(&project.id, self.embedder.dim())
@@ -171,9 +177,9 @@ impl Indexer {
         Ok(project)
     }
 
-    /// Takes a project out of the catalog it used to live in, when it is moving.
+    /// Takes a project out of the bucket it used to live in, when it is moving.
     ///
-    /// Its vectors go with it: they were built for that catalog's store, and
+    /// Its vectors go with it: they were built for that bucket's store, and
     /// leaving them behind would keep paying for an index nothing points at.
     async fn move_project(&self, id: &ProjectId, target: &str) -> Result<()> {
         let Ok(current) = self.home_of(id) else {
@@ -184,7 +190,7 @@ impl Indexer {
         }
         let previous = self.handle(&current)?;
         previous.store.drop_project(id).await?;
-        previous.catalog.delete_project(id).await?;
+        previous.bucket.delete_project(id).await?;
         self.forget_home(id);
         Ok(())
     }
@@ -193,9 +199,9 @@ impl Indexer {
     pub async fn list_projects(&self) -> Result<Vec<Project>> {
         let mut out = Vec::new();
         for handle in self.handles() {
-            out.extend(handle.catalog.list_projects().await?);
+            out.extend(handle.bucket.list_projects().await?);
         }
-        // The catalogs each sorted their own rows; re-sorting here is what makes
+        // The buckets each sorted their own rows; re-sorting here is what makes
         // one list out of several, and the id tiebreak keeps it deterministic.
         out.sort_by(|a, b| {
             b.updated_at
@@ -206,16 +212,16 @@ impl Indexer {
     }
 
     pub async fn get_project(&self, id: &ProjectId) -> Result<Project> {
-        self.catalog_for(id)?.catalog.require_project(id).await
+        self.bucket_for(id)?.bucket.require_project(id).await
     }
 
     /// Removes a project, its chunks and its vectors.
     pub async fn forget_project(&self, id: &ProjectId) -> Result<bool> {
-        let handle = self.catalog_for(id)?;
-        // The vector store goes first: a catalog row with no vectors is
+        let handle = self.bucket_for(id)?;
+        // The vector store goes first: a bucket row with no vectors is
         // recoverable, an orphaned collection is not.
         handle.store.drop_project(id).await?;
-        let removed = handle.catalog.delete_project(id).await?;
+        let removed = handle.bucket.delete_project(id).await?;
         self.forget_home(id);
         Ok(removed)
     }
@@ -224,8 +230,8 @@ impl Indexer {
 
     /// Synchronizes a project against the filesystem.
     pub async fn sync(&self, id: &ProjectId, mode: SyncMode) -> Result<SyncReport> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
         sync::run(self, &cat, &project, mode).await
     }
 
@@ -237,8 +243,8 @@ impl Indexer {
         rel_path: &str,
         text: Option<String>,
     ) -> Result<SyncReport> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
         let rel = sanitize_rel(rel_path)?;
         match text {
             Some(body) => sync::index_inline(self, &cat, &project, &rel, &body).await,
@@ -256,8 +262,8 @@ impl Indexer {
         id: &ProjectId,
         documents: Vec<findery_core::api::AddDocument>,
     ) -> Result<SyncReport> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
         let mut cleaned = Vec::with_capacity(documents.len());
         for doc in documents {
             let text = doc.text.ok_or_else(|| {
@@ -270,8 +276,8 @@ impl Indexer {
 
     /// Removes pushed files the client no longer has, given everything it saw.
     pub async fn prune(&self, id: &ProjectId, keep: Vec<String>) -> Result<u64> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
         let mut wanted = std::collections::HashSet::with_capacity(keep.len());
         for path in keep {
             wanted.insert(sanitize_rel(&path)?);
@@ -279,14 +285,14 @@ impl Indexer {
         sync::prune(&cat, &project, &wanted).await
     }
 
-    /// Everything the catalog knows about a project's files.
+    /// Everything the bucket knows about a project's files.
     ///
     /// A pushing client diffs against this to decide what is worth sending.
     pub async fn file_manifest(&self, id: &ProjectId) -> Result<Vec<findery_core::FileRecord>> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
         let mut files: Vec<_> = cat
-            .catalog
+            .bucket
             .file_map(&project.id)
             .await?
             .into_values()
@@ -297,8 +303,8 @@ impl Indexer {
 
     /// Drops one document from the index.
     pub async fn remove_document(&self, id: &ProjectId, rel_path: &str) -> Result<u64> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
         let rel = sanitize_rel(rel_path)?;
         sync::forget_file(&cat, &project, &rel).await
     }
@@ -310,12 +316,12 @@ impl Indexer {
     }
 
     pub async fn stats(&self, id: &ProjectId) -> Result<IndexStats> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
-        let (files, chunks, last_sync_at) = cat.catalog.counts(&project.id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
+        let (files, chunks, last_sync_at) = cat.bucket.counts(&project.id).await?;
         Ok(IndexStats {
             project: project.id.to_string(),
-            catalog: cat.name.clone(),
+            bucket: cat.name.clone(),
             files,
             chunks,
             vectors: cat.store.count(&project.id).await.unwrap_or(0),
@@ -323,7 +329,7 @@ impl Indexer {
             model: self.embedder.model().to_string(),
             store_backend: cat.store.backend().to_string(),
             last_sync_at,
-            disk_bytes: cat.catalog.disk_bytes().await,
+            disk_bytes: cat.bucket.disk_bytes().await,
         })
     }
 
@@ -335,14 +341,14 @@ impl Indexer {
         format: ExportFormat,
         dir: Option<&str>,
     ) -> Result<ExportReport> {
-        let cat = self.catalog_for(id)?;
-        let project = cat.catalog.require_project(id).await?;
+        let cat = self.bucket_for(id)?;
+        let project = cat.bucket.require_project(id).await?;
         let target = match dir {
             Some(d) => self.mapper.to_container(d),
             None => self.cfg.store.export_dir.clone(),
         };
         findery_store::export_project(
-            &cat.catalog,
+            &cat.bucket,
             &project.id,
             &cat.recipe,
             self.embedder.model(),
@@ -357,7 +363,7 @@ impl Indexer {
         let mut projects = 0usize;
         let mut backend = None;
         for handle in self.handles() {
-            projects += handle.catalog.list_projects().await.map(|p| p.len())?;
+            projects += handle.bucket.list_projects().await.map(|p| p.len())?;
             backend.get_or_insert_with(|| handle.store.backend().to_string());
         }
         let (embedder_ok, detail) = match self.embedder.health().await {

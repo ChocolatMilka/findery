@@ -10,7 +10,7 @@
 //! Durability lives in the `vectors` table; the matrix is a cache rebuilt on
 //! demand, so a crash loses nothing.
 
-use crate::catalog::Catalog;
+use crate::bucket::Bucket;
 use findery_core::filter::CompiledFilter;
 use findery_core::ids::{ChunkId, ProjectId};
 use findery_core::model::{ScoredChunk, SearchFilter};
@@ -20,7 +20,7 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 
 pub struct SqliteVectorStore {
-    catalog: Catalog,
+    bucket: Bucket,
     shards: RwLock<HashMap<String, Shard>>,
 }
 
@@ -120,9 +120,9 @@ impl Shard {
 }
 
 impl SqliteVectorStore {
-    pub fn new(catalog: Catalog) -> Self {
+    pub fn new(bucket: Bucket) -> Self {
         Self {
-            catalog,
+            bucket,
             shards: RwLock::new(HashMap::new()),
         }
     }
@@ -132,7 +132,7 @@ impl SqliteVectorStore {
         if self.shards.read().contains_key(project.as_str()) {
             return Ok(());
         }
-        let rows = self.catalog.load_vectors(project).await?;
+        let rows = self.bucket.load_vectors(project).await?;
         let mut shards = self.shards.write();
         // Another task may have warmed it while this one was awaiting.
         if shards.contains_key(project.as_str()) {
@@ -167,7 +167,7 @@ impl VectorStore for SqliteVectorStore {
     }
 
     async fn drop_project(&self, project: &ProjectId) -> Result<()> {
-        self.catalog.clear_vectors(project).await?;
+        self.bucket.clear_vectors(project).await?;
         self.shards.write().remove(project.as_str());
         Ok(())
     }
@@ -186,7 +186,7 @@ impl VectorStore for SqliteVectorStore {
             }
         }
         self.warm(project, dim).await?;
-        self.catalog.put_vectors(project, records.to_vec()).await?;
+        self.bucket.put_vectors(project, records.to_vec()).await?;
 
         let mut shards = self.shards.write();
         let shard = shards
@@ -204,7 +204,7 @@ impl VectorStore for SqliteVectorStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let removed = self.catalog.delete_vectors(project, ids.to_vec()).await?;
+        let removed = self.bucket.delete_vectors(project, ids.to_vec()).await?;
         if let Some(shard) = self.shards.write().get_mut(project.as_str()) {
             for id in ids {
                 shard.remove(id);
@@ -246,7 +246,7 @@ impl VectorStore for SqliteVectorStore {
         if let Some(shard) = self.shards.read().get(project.as_str()) {
             return Ok(shard.alive());
         }
-        self.catalog.count_vectors(project).await
+        self.bucket.count_vectors(project).await
     }
 }
 
@@ -351,7 +351,7 @@ mod tests {
     }
 
     async fn store() -> (SqliteVectorStore, ProjectId) {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         (
             SqliteVectorStore::new(cat),
             ProjectId::new("demo").expect("id"),
@@ -451,7 +451,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_matrix_survives_a_cold_restart() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         let p = ProjectId::new("demo").expect("id");
         let first = SqliteVectorStore::new(cat.clone());
         first

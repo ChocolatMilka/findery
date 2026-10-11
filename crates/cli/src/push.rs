@@ -7,7 +7,7 @@
 //! machine becomes possible for the same reason.
 //!
 //! The three gates still apply, they just move: the manifest replaces the
-//! catalog lookup, and the vector cache stays where it is, server-side.
+//! bucket lookup, and the vector cache stays where it is, server-side.
 
 use findery_core::api::{AddDocument, PruneRequest, PushDocuments};
 use findery_core::ids::{ContentHash, ProjectId};

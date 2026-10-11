@@ -54,7 +54,7 @@ command notices nothing is listening and starts `finderyd` in the background.
 Nothing to keep open.
 
 `init` and `sync` are two steps on purpose: a repository can be registered and
-its catalog chosen **before** any model is reachable. `findery init --sync`
+its bucket chosen **before** any model is reachable. `findery init --sync`
 does both in one go when you are ready.
 
 Run `findery doctor` whenever something looks wrong: it names what is missing
@@ -66,7 +66,7 @@ findery status          # files, chunks, vectors
 findery sync            # after coding — near instant
 findery watch           # or let it resync on its own
 findery search -p axle "retry"    # target another project from anywhere
-findery catalog ls      # the independent indexes this daemon serves
+findery bucket ls      # the independent indexes this daemon serves
 ```
 
 ### The two ways to run this
@@ -107,18 +107,18 @@ set` warns when a variable is masking what it just wrote.
 
 ### More than one index
 
-A daemon can serve several **catalogs** — independent SQLite files, each with
+A daemon can serve several **buckets** — independent SQLite files, each with
 its own projects and vectors. Useful when a work repository and a personal one
 should not share a file, or when a client must not search another team's code.
 
 ```bash
-findery catalog create work
-findery init --catalog work          # this project lives in `work`
-findery catalog ls                   # what each one holds, and its path
-findery catalog rm work --force      # projects and vectors go with it
+findery bucket create work
+findery init --bucket work          # this project lives in `work`
+findery bucket ls                   # what each one holds, and its path
+findery bucket rm work --force      # projects and vectors go with it
 ```
 
-The catalog is chosen once, at registration: every later command follows the
+The bucket is chosen once, at registration: every later command follows the
 project, so nobody has to remember which index a directory belongs to.
 
 ## Plugging into Claude Code
@@ -240,7 +240,7 @@ Dependencies flow down, data flows back up through `Result`. Verified by
 | [`overview/layers.md`](.claude/docs/overview/layers.md) | the law of the layers |
 | [`chunk/`](.claude/docs/chunk/README.md) | Rust and Markdown chunking |
 | [`embed/`](.claude/docs/embed/README.md) | models, Qwen3 instruction, providers |
-| [`store/`](.claude/docs/store/README.md) | catalog, backends, measurements, export |
+| [`store/`](.claude/docs/store/README.md) | bucket, backends, measurements, export |
 | [`index/`](.claude/docs/index/README.md) | sync, hybrid search, jobs, watch |
 | [`server/`](.claude/docs/server/README.md) | HTTP API reference |
 | [`mcp/`](.claude/docs/mcp/README.md) | MCP tools and setup |
@@ -325,7 +325,7 @@ The token savings aren't the main gain. What really changes:
 | Re-sync, nothing changed | < 1 s, **zero embeddings** |
 | Re-sync after 10 modified files | 2 – 10 s |
 | Daemon RAM, 50k chunks at 1024 dims | ~250 MB |
-| Disk, catalog + cache | ~535 MB for 500k lines (~10.7 kB/chunk at 1024 dims) |
+| Disk, bucket + cache | ~535 MB for 500k lines (~10.7 kB/chunk at 1024 dims) |
 | Search latency | 15 – 60 ms |
 
 The break-even point is reached within a handful of sessions: a single

@@ -29,15 +29,15 @@ SQLite file.
 | Windows | `%LOCALAPPDATA%\findery` |
 | macOS / Linux | `$XDG_DATA_HOME/findery`, else `~/.local/share/findery` |
 
-`FINDERY_DATA_DIR` moves it. The directory holds `catalog.db` (everything: files,
+`FINDERY_DATA_DIR` moves it. The directory holds `bucket.db` (everything: files,
 chunks, vectors, the cache) and `finderyd.log`. Deleting it is a full reset and
 costs one re-index.
 
-A daemon can serve several catalogs. The default one is `catalog.db` at the root
-of the data directory; every other name lives at `catalogs/<name>/catalog.db`.
+A daemon can serve several buckets. The default one is `bucket.db` at the root
+of the data directory; every other name lives at `buckets/<name>/bucket.db`.
 They are independent — separate files, separate projects, separate vectors —
 which is what lets you keep a team's code out of a personal index without
-running a second daemon. `findery catalog ls` prints each one and its path.
+running a second daemon. `findery bucket ls` prints each one and its path.
 
 ---
 
@@ -152,7 +152,7 @@ variable is masking what it just wrote.
 cd their-project
 findery init
 # (started the daemon in the background)
-# registered `their-project` at /home/x/their-project (catalog default)
+# registered `their-project` at /home/x/their-project (bucket default)
 # run `findery sync` when you are ready to index it
 
 findery sync
@@ -165,7 +165,7 @@ findery search "where do we validate an invoice"
 Three commands, and the last one is a search. That is the whole onboarding.
 
 `init` stops at registration on purpose: a repository can be claimed, and its
-catalog chosen, before any model is reachable — so the onboarding does not stall
+bucket chosen, before any model is reachable — so the onboarding does not stall
 on an embedding runtime that is not up yet. `findery init --sync` collapses the
 two when you know it is.
 
@@ -201,7 +201,7 @@ FAIL model        qwen3.7-text-embedding (1024 dims) · store sqlite — connect
        → start your embedding runtime (LM Studio, Ollama, `make up-model`),
        → then check FINDERY_EMBED_BASE_URL and FINDERY_EMBED_MODEL
 OK   here         `their-project` covers this directory (3 project(s) indexed)
-OK   catalogs     default (3 project(s))
+OK   buckets     default (3 project(s))
 OK   storage      /home/x/.local/share/findery
 OK   daemon log   /home/x/.local/share/findery/finderyd.log
 
@@ -217,11 +217,11 @@ diagnostic down with it at the exact moment it is needed. Instead it starts,
 reports the model as unreachable, and fails only the commands that need a
 vector.
 
-The `catalogs` line is where a recipe conflict surfaces — a catalog holding
+The `buckets` line is where a recipe conflict surfaces — a bucket holding
 vectors built by a different model than the one now configured. It is reported
 here with its repair rather than raised at boot, because refusing to start would
-take the whole index down over one catalog, including the keyword search that
-still works and the `findery catalog rm` that fixes it.
+take the whole index down over one bucket, including the keyword search that
+still works and the `findery bucket rm` that fixes it.
 
 | What the user says | What it is |
 |---|---|
@@ -274,15 +274,15 @@ Replace the binaries and run `findery daemon stop`. The next command starts the
 new one.
 
 The index survives an upgrade. It does **not** survive changing the embedding
-model or its dimension — a catalog records the recipe it was built with and
+model or its dimension — a bucket records the recipe it was built with and
 refuses to mix two vector spaces, which is the correct answer but means a
 re-index. Plan model changes the way you would plan a schema migration.
 
 The refusal lands on the operation that would mix them, never on the daemon
-boot: a catalog built by another model still serves keyword search and can still
-be deleted, and taking the whole daemon down over one catalog would remove both
-of those — including the `findery catalog rm` the message recommends. A new
-model can also simply go in a **new catalog**, leaving the old index intact and
+boot: a bucket built by another model still serves keyword search and can still
+be deleted, and taking the whole daemon down over one bucket would remove both
+of those — including the `findery bucket rm` the message recommends. A new
+model can also simply go in a **new bucket**, leaving the old index intact and
 readable until you are ready to move.
 
 ---

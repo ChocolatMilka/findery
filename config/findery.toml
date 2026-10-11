@@ -65,13 +65,13 @@ query_instruction = "Given a developer question about a Rust codebase, retrieve 
 # "OpenAI-Organization" = "org-123"
 
 [store]
-# "sqlite": vectors beside the catalog, searched from a warm in-memory matrix.
+# "sqlite": vectors beside the bucket, searched from a warm in-memory matrix.
 #           Exact, no extra service, ~11 ms at 50k chunks (1024 dims).
 # "qdrant": a local vector database — HNSW, payload filters, int8 quantization.
 backend = "sqlite"
 # Platform-dependent by default: `%LOCALAPPDATA%/findery` on Windows,
 # `$XDG_DATA_HOME/findery` or `~/.local/share/findery` elsewhere.
-# Compose sets `/data`. One `catalog.db` there holds every project — it is the
+# Compose sets `/data`. One `bucket.db` there holds every project — it is the
 # file worth backing up. Uncomment to pin it.
 # data_dir = "/data"
 # `export_dir` follows `data_dir` unless you pin it here.

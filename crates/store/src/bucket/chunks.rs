@@ -4,7 +4,7 @@
 //! purpose. A keyword index that lags the chunk table returns hits pointing at
 //! text that no longer exists, which is worse than no keyword leg at all.
 
-use super::Catalog;
+use super::Bucket;
 use crate::schema::sql;
 use findery_core::Result;
 use findery_core::ids::{ChunkId, ContentHash, ProjectId};
@@ -14,10 +14,10 @@ use rusqlite::{Connection, Row, params};
 /// Ids per `IN (...)` batch. SQLite's default variable limit is 999.
 const ID_BATCH: usize = 400;
 
-impl Catalog {
+impl Bucket {
     /// Replaces every chunk of one file, returning the ids that disappeared.
     ///
-    /// The caller uses that list to evict the matching vectors: the catalog
+    /// The caller uses that list to evict the matching vectors: the bucket
     /// never reaches into the vector store itself.
     pub async fn replace_file_chunks(
         &self,
@@ -311,13 +311,13 @@ mod tests {
         }
     }
 
-    async fn catalog() -> (Catalog, ProjectId) {
-        let cat = Catalog::open_in_memory().expect("catalog");
+    async fn bucket() -> (Bucket, ProjectId) {
+        let cat = Bucket::open_in_memory().expect("bucket");
         let id = ProjectId::new("demo").expect("id");
         cat.put_project(&Project {
             id: id.clone(),
             name: "demo".into(),
-            catalog: cat.name().to_string(),
+            bucket: cat.name().to_string(),
             spec: ProjectSpec::default(),
             host_root: "C:/demo".into(),
             created_at: 1,
@@ -331,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_chunks_reports_exactly_what_disappeared() {
-        let (cat, id) = catalog().await;
+        let (cat, id) = bucket().await;
         let a = chunk(0, "src/net.rs", "fn one() {}");
         let b = chunk(1, "src/net.rs", "fn two() {}");
         let removed = cat
@@ -351,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunks_come_back_in_the_order_requested() {
-        let (cat, id) = catalog().await;
+        let (cat, id) = bucket().await;
         let a = chunk(0, "src/a.rs", "fn one() {}");
         let b = chunk(1, "src/a.rs", "fn two() {}");
         cat.replace_file_chunks(&id, "src/a.rs", vec![a.clone(), b.clone()])
@@ -372,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn keyword_search_finds_symbols_and_survives_hostile_input() {
-        let (cat, id) = catalog().await;
+        let (cat, id) = bucket().await;
         let c = chunk(0, "src/net.rs", "fn retry_with_backoff(attempts: u32) {}");
         cat.replace_file_chunks(&id, "src/net.rs", vec![c.clone()])
             .await
@@ -405,7 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn deleted_chunks_leave_no_ghost_in_the_keyword_index() {
-        let (cat, id) = catalog().await;
+        let (cat, id) = bucket().await;
         let c = chunk(0, "src/net.rs", "fn retry_with_backoff() {}");
         cat.replace_file_chunks(&id, "src/net.rs", vec![c])
             .await

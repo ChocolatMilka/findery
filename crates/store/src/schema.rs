@@ -1,6 +1,6 @@
-//! Catalog schema and forward-only migrations.
+//! Bucket schema and forward-only migrations.
 //!
-//! INTENT: the catalog is the durable truth about what is indexed. The vector
+//! INTENT: the bucket is the durable truth about what is indexed. The vector
 //! backend is swappable and rebuildable; this file is not. Migrations are
 //! append-only and numbered, and `user_version` is the single source of truth
 //! for where a database stands.
@@ -111,7 +111,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         .map_err(sql)?;
     if version > SCHEMA_VERSION {
         return Err(Error::Store(format!(
-            "catalog schema is version {version}, this binary understands {SCHEMA_VERSION}; \
+            "bucket schema is version {version}, this binary understands {SCHEMA_VERSION}; \
              upgrade findery or point FINDERY_DATA_DIR elsewhere"
         )));
     }

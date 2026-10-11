@@ -1,43 +1,43 @@
-# `findery-store` — catalog, vector stores, export
+# `findery-store` — bucket, vector stores, export
 
 Two things live here, deliberately separated.
 
-**The catalog** (`catalog/`): a SQLite file that carries the projects, the
+**The bucket** (`bucket/`): a SQLite file that carries the projects, the
 files, the chunks, the content-addressed vector cache, and the full-text
 index. Always present, whatever the vector backend. **This is the file to
 back up.**
 
 **The vector store** (`sqlite_store.rs`, `qdrant.rs`): where vectors are
-written and searched. Reconstructible from the catalog — that's what makes
+written and searched. Reconstructible from the bucket — that's what makes
 swapping it possible: a config change plus a re-sync.
 
 ---
 
 ## 0. Where it lives
 
-One SQLite file per catalog, and a daemon serves as many as you create.
+One SQLite file per bucket, and a daemon serves as many as you create.
 
-| Catalog | Path |
+| Bucket | Path |
 |---|---|
-| the default one | `$FINDERY_DATA_DIR/catalog.db` |
-| any other | `$FINDERY_DATA_DIR/catalogs/<name>/catalog.db` |
+| the default one | `$FINDERY_DATA_DIR/bucket.db` |
+| any other | `$FINDERY_DATA_DIR/buckets/<name>/bucket.db` |
 
-`catalog_path` / `catalogs_dir` (`config/sections.rs`) are the only places that
+`bucket_path` / `buckets_dir` (`config/sections.rs`) are the only places that
 spell those two layouts, so a caller never assembles one by hand.
 
 | | Native daemon *(default)* | All-Docker |
 |---|---|---|
-| Catalog + vectors | `%LOCALAPPDATA%/findery` or `~/.local/share/findery` | volume `findery_findery-data` |
+| Bucket + vectors | `%LOCALAPPDATA%/findery` or `~/.local/share/findery` | volume `findery_findery-data` |
 | Exports | `$FINDERY_DATA_DIR/exports` | `/data/exports` |
 | Model weights | volume `findery_hf-cache` | same |
 
 `finderyd --check` prints the resolved paths. `export_dir` follows
 `data_dir` unless it was pinned explicitly.
 
-A project's catalog is **not a column** — it is which file holds its row. The
-name is stamped onto `Project.catalog` when the row is read, so there is no
+A project's bucket is **not a column** — it is which file holds its row. The
+name is stamped onto `Project.bucket` when the row is read, so there is no
 second place a project's index could be recorded and no way for the two to
-disagree. That is also what makes `findery catalog rm` a single file deletion
+disagree. That is also what makes `findery bucket rm` a single file deletion
 rather than a cascade.
 
 Measured footprint: **~10.7 kB per chunk at 1024 dims**, so ~535 MB for a
@@ -46,7 +46,7 @@ Measured footprint: **~10.7 kB per chunk at 1024 dims**, so ~535 MB for a
 `vectors` (the project's live set, which also carries the payload). Roadmap R2b
 carries the measurement and the deduplication path.
 
-## 1. The catalog
+## 1. The bucket
 
 ### Schema (`schema.rs`, `user_version = 1`)
 
@@ -162,10 +162,10 @@ The `stop` is not optional: a daemon started earlier inherited the environment
 of the command that started it, and exporting a variable afterwards leaves it
 serving from SQLite.
 
-The catalog does not move, so **the switch re-embeds nothing**: every vector is
+The bucket does not move, so **the switch re-embeds nothing**: every vector is
 already in the content-addressed cache and gets upserted into the new store.
 
-The daemon notices on its own that the store is empty while the catalog is not,
+The daemon notices on its own that the store is empty while the bucket is not,
 upgrades the sync to a full pass and says so in the report. Without that, an
 incremental pass would find every file unchanged, write nothing, and leave
 search silently returning nothing.
@@ -180,14 +180,14 @@ search silently returning nothing.
 | Multiple machines on a shared index | `qdrant` |
 | Exact recall required | `sqlite` |
 
-Switching = changing `FINDERY_STORE_BACKEND` and re-running a sync. The catalog
+Switching = changing `FINDERY_STORE_BACKEND` and re-running a sync. The bucket
 doesn't move, and since vectors are cached, **the sync re-embeds nothing**.
 
 ---
 
 ## 4. Export — never locked in
 
-`export_project()` reads the **catalog** (chunks + cache), so it works
+`export_project()` reads the **bucket** (chunks + cache), so it works
 identically regardless of which backend is live.
 
 | Format | Files | For |

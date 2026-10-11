@@ -1,5 +1,5 @@
 //! End-to-end API test over the real stack: router, indexer, chunkers, SQLite
-//! catalog and vector store. Only the embedding runtime is swapped for the
+//! bucket and vector store. Only the embedding runtime is swapped for the
 //! deterministic mock, because a model is the one thing a test cannot host.
 //!
 //! What this pins down is the behaviour the README promises: register, sync,
@@ -137,15 +137,15 @@ impl Harness {
         body
     }
 
-    /// Empties the vector store and restarts the daemon over the same catalog.
+    /// Empties the vector store and restarts the daemon over the same bucket.
     ///
     /// That is what pointing the daemon at a fresh backend actually looks like:
-    /// the catalog is intact, the store is empty, and the warm matrix is gone
+    /// the bucket is intact, the store is empty, and the warm matrix is gone
     /// because the process is new.
     async fn switch_to_a_fresh_vector_store(&mut self, id: &str) {
-        let db = self.data_dir.path().join("catalog.db");
+        let db = self.data_dir.path().join("bucket.db");
         {
-            let conn = rusqlite::Connection::open(&db).expect("open catalog");
+            let conn = rusqlite::Connection::open(&db).expect("open bucket");
             conn.execute("DELETE FROM vectors WHERE project_id = ?1", [id])
                 .expect("clear vectors");
         }
@@ -155,23 +155,23 @@ impl Harness {
         self.app = findery_server::app(state);
     }
 
-    /// Rewrites the recipe a catalog records, then restarts the daemon over it.
+    /// Rewrites the recipe a bucket records, then restarts the daemon over it.
     ///
-    /// That is what a catalog built by another model looks like to this one: the
+    /// That is what a bucket built by another model looks like to this one: the
     /// vectors are the old model's, the daemon serves the new one, and only a
     /// fresh boot reads the changed recipe.
-    async fn claim_a_foreign_recipe(&mut self, catalog: &str, recipe: &str) {
-        let db = if catalog == findery_core::model::DEFAULT_CATALOG {
-            self.data_dir.path().join("catalog.db")
+    async fn claim_a_foreign_recipe(&mut self, bucket: &str, recipe: &str) {
+        let db = if bucket == findery_core::model::DEFAULT_BUCKET {
+            self.data_dir.path().join("bucket.db")
         } else {
             self.data_dir
                 .path()
-                .join("catalogs")
-                .join(catalog)
-                .join("catalog.db")
+                .join("buckets")
+                .join(bucket)
+                .join("bucket.db")
         };
         {
-            let conn = rusqlite::Connection::open(&db).expect("open catalog");
+            let conn = rusqlite::Connection::open(&db).expect("open bucket");
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('embedding_recipe', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = ?1",
@@ -404,7 +404,7 @@ async fn asynchronous_sync_returns_a_job_that_completes() {
 }
 
 #[tokio::test]
-async fn deleting_a_project_removes_it_from_the_catalog() {
+async fn deleting_a_project_removes_it_from_the_bucket() {
     let h = harness().await;
     let id = h.register().await;
     h.sync(&id, json!({})).await;
@@ -715,7 +715,7 @@ async fn an_unreachable_root_becomes_a_push_project() {
     assert_eq!(local["spec"]["push"], false, "{local}");
 }
 
-/// Switching vector backend leaves the catalog full and the new store empty.
+/// Switching vector backend leaves the bucket full and the new store empty.
 /// An incremental pass would find every file unchanged and write nothing,
 /// leaving search silently broken.
 #[tokio::test]
@@ -733,7 +733,7 @@ async fn an_empty_vector_store_is_rebuilt_instead_of_reported_clean() {
     assert_eq!(empty["vectors"], 0, "{empty}");
     assert!(
         empty["chunks"].as_u64().expect("chunks") > 0,
-        "the catalog survives: {empty}"
+        "the bucket survives: {empty}"
     );
 
     let report = h.sync(&id, json!({})).await;
@@ -762,16 +762,16 @@ async fn an_empty_vector_store_is_rebuilt_instead_of_reported_clean() {
     assert_eq!(after["vectors"], before["vectors"], "{after}");
 }
 
-/// A catalog whose vectors belong to another embedding space refuses the write
+/// A bucket whose vectors belong to another embedding space refuses the write
 /// as well as the read, and stays listable, keyword-searchable and deletable.
 ///
 /// The foreign recipe keeps this daemon's dimension on purpose: a width check
 /// cannot see this conflict, so only the recipe comparison catches it.
 #[tokio::test]
-async fn a_catalog_built_by_another_model_refuses_a_sync_but_stays_repairable() {
+async fn a_bucket_built_by_another_model_refuses_a_sync_but_stays_repairable() {
     let mut h = harness().await;
     let (status, created) = h
-        .call("POST", "/v1/catalogs", Some(json!({ "name": "work" })))
+        .call("POST", "/v1/buckets", Some(json!({ "name": "work" })))
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
 
@@ -779,11 +779,11 @@ async fn a_catalog_built_by_another_model_refuses_a_sync_but_stays_repairable() 
         .call(
             "POST",
             "/v1/projects",
-            Some(json!({ "root": h.root(), "catalog": "work" })),
+            Some(json!({ "root": h.root(), "bucket": "work" })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{project}");
-    assert_eq!(project["catalog"], "work", "{project}");
+    assert_eq!(project["bucket"], "work", "{project}");
     let id = project["id"].as_str().expect("id").to_string();
 
     h.sync(&id, json!({})).await;
@@ -804,7 +804,7 @@ async fn a_catalog_built_by_another_model_refuses_a_sync_but_stays_repairable() 
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let message = body["message"].as_str().expect("message");
     assert!(message.contains("another-model:128"), "{message}");
-    assert!(message.contains("findery catalog rm work"), "{message}");
+    assert!(message.contains("findery bucket rm work"), "{message}");
 
     // Everything that touches no vector keeps working — that is what makes the
     // conflict readable and the repair reachable.
@@ -821,11 +821,11 @@ async fn a_catalog_built_by_another_model_refuses_a_sync_but_stays_repairable() 
         "the keyword leg has no vector to compare: {hits}"
     );
 
-    let (status, catalogs) = h.call("GET", "/v1/catalogs", None).await;
-    assert_eq!(status, StatusCode::OK, "{catalogs}");
-    let work = catalogs
+    let (status, buckets) = h.call("GET", "/v1/buckets", None).await;
+    assert_eq!(status, StatusCode::OK, "{buckets}");
+    let work = buckets
         .as_array()
-        .expect("catalogs")
+        .expect("buckets")
         .iter()
         .find(|c| c["name"] == "work")
         .expect("work listed");
@@ -833,10 +833,10 @@ async fn a_catalog_built_by_another_model_refuses_a_sync_but_stays_repairable() 
         work["conflict"]
             .as_str()
             .is_some_and(|m| m.contains("another-model:128")),
-        "a conflicted catalog is reported, not hidden: {work}"
+        "a conflicted bucket is reported, not hidden: {work}"
     );
 
-    let (status, removed) = h.call("DELETE", "/v1/catalogs/work", None).await;
+    let (status, removed) = h.call("DELETE", "/v1/buckets/work", None).await;
     assert_eq!(status, StatusCode::OK, "{removed}");
     assert_eq!(removed["removed"], true, "{removed}");
     assert_eq!(removed["projects"], json!([id]), "{removed}");

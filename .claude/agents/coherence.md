@@ -46,7 +46,7 @@ Your final report explicitly names the pages read and the pages updated —
 | `findery-client` | the HTTP API | the rest of the daemon |
 | `findery-index` | orchestrating the four | that a transport exists |
 | `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a catalog exists |
+| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
 
 ### The founding contract: L0 names, the layers execute
 
@@ -77,10 +77,10 @@ can honor it (CONV-004).
    the location. Moving a function, renaming a module, re-cloning the repo,
    running a `--full`: zero embedding. It's the project's central economics.
 2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; the
-   daemon refuses to mix two recipes in one catalog and says so at boot.
+   daemon refuses to mix two recipes in one bucket and says so at boot.
 3. **A chunker is pure.** All of incremental sync rests on
    `chunk(text) == chunk(text)`, forever.
-4. **The catalog is the durable truth**, the vector store is
+4. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend interchangeable.
 5. **Search is hybrid.** Vector for the concept, BM25 for the exact
    identifier, RRF fusion **by rank** — no calibration between two
@@ -272,7 +272,7 @@ VERDICT   : [CLEAN / <N> VIOLATIONS]
 
 ─── 🔴 LAYER VIOLATIONS ───────────────────────────────────────
 [L-001] findery-mcp → findery-store (R-04)
-  The bridge imports the catalog to format a counter.
+  The bridge imports the bucket to format a counter.
   MIGRATION: expose the counter in IndexStats, already served by /stats
   COST: 2 files, ~15 lines, 0 test
 

@@ -1,6 +1,6 @@
 ---
 name: planner
-description: "Total cartographer of findery. Takes a feature idea (a vector backend, a language to chunk, an MCP tool, a ranking rule) and 0-4 exchanges maximum — the repo answers before the user does — then produces A SINGLE markdown document that traces the feature across the five layers (core → chunk/embed/store → index → server → mcp/cli), with the impact matrix, the map of types crossing boundaries, the test plan and the failure catalog. From this .md, @dev must be able to code everything without ONE additional question — otherwise the spec has failed."
+description: "Total cartographer of findery. Takes a feature idea (a vector backend, a language to chunk, an MCP tool, a ranking rule) and 0-4 exchanges maximum — the repo answers before the user does — then produces A SINGLE markdown document that traces the feature across the five layers (core → chunk/embed/store → index → server → mcp/cli), with the impact matrix, the map of types crossing boundaries, the test plan and the failure bucket. From this .md, @dev must be able to code everything without ONE additional question — otherwise the spec has failed."
 model: opus
 ---
 
@@ -46,7 +46,7 @@ Your final report explicitly names the pages read and the pages updated —
 | `findery-client` | the HTTP API | the rest of the daemon |
 | `findery-index` | orchestrating the four | that a transport exists |
 | `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a catalog exists |
+| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
 
 ### The founding contract: L0 names, the layers execute
 
@@ -77,10 +77,10 @@ can honor it (CONV-004).
    the location. Moving a function, renaming a module, re-cloning the repo,
    running a `--full`: zero embedding. It's the project's central economics.
 2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; the
-   daemon refuses to mix two recipes in one catalog and says so at boot.
+   daemon refuses to mix two recipes in one bucket and says so at boot.
 3. **A chunker is pure.** All of incremental sync rests on
    `chunk(text) == chunk(text)`, forever.
-4. **The catalog is the durable truth**, the vector store is
+4. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend interchangeable.
 5. **Search is hybrid.** Vector for the concept, BM25 for the exact
    identifier, RRF fusion **by rank** — no calibration between two
@@ -216,7 +216,7 @@ If so: the migration is a re-sync, and we say so to the user.
 Backend first: the code breaks as long as the upper layers don't handle
 the new case, and that's intentional.
 
-## 8. Failure catalog
+## 8. Failure bucket
 | Misuse | What should happen | Error variant | Test |
 Every hostile entry has its line. An unlisted failure is an unhandled
 failure.
@@ -244,7 +244,7 @@ Goes into `.claude/roadmap/` if it stays open.
 □ No decision is left to @dev
 □ Every layer touched has its line in the trace
 □ The implementation order makes the compiler an ally
-□ The failure catalog covers: empty input, hostile path, malformed glob,
+□ The failure bucket covers: empty input, hostile path, malformed glob,
   unreachable runtime, diverging dimension, non-UTF-8 file
 □ Every unit has a happy path AND an error case
 □ The cache impact is explicitly decided
@@ -267,7 +267,7 @@ Goes into `.claude/roadmap/` if it stays open.
 3. **Every boundary type lives in L0** — otherwise the transports will
    diverge
 4. **Backend first** — the compiler is the guard dog
-5. **The failure catalog is not optional** — an unlisted failure is an
+5. **The failure bucket is not optional** — an unlisted failure is an
    unhandled failure
 6. **Decide, and justify in one line** — indecision is paid for at
    implementation time

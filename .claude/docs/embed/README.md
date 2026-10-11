@@ -94,7 +94,7 @@ width — so if the width is known from somewhere else, the daemon starts
 | Width known from | Result |
 |---|---|
 | `dim` in the configuration | starts degraded |
-| the catalog's recorded recipe, when the model name still matches | starts degraded |
+| the bucket's recorded recipe, when the model name still matches | starts degraded |
 | nowhere | refuses, naming `FINDERY_EMBED_DIM` |
 
 Degraded means: the daemon is up, `/healthz` answers, `/v1/health` reports
@@ -114,26 +114,26 @@ recipe = "<model>:<dim>"
 ```
 
 This is the vector cache's namespace. Changing model or dimension opens a
-**new** space, and a catalog refuses to mix two recipes:
+**new** space, and a bucket refuses to mix two recipes:
 
 ```
-catalog `default` holds vectors built with `qwen3.7-text-embedding:1024`, but
-this daemon serves `text-embedding-3-large:3072`; re-index it — `findery catalog
-rm default` then `findery init --catalog default` — or start the daemon with the
+bucket `default` holds vectors built with `qwen3.7-text-embedding:1024`, but
+this daemon serves `text-embedding-3-large:3072`; re-index it — `findery bucket
+rm default` then `findery init --bucket default` — or start the daemon with the
 embedder settings it was built with
 ```
 
-**The refusal lands on the operation, never on the boot.** A catalog whose
-recipe disagrees is opened anyway; `CatalogHandle::conflicted` records the
+**The refusal lands on the operation, never on the boot.** A bucket whose
+recipe disagrees is opened anyway; `BucketHandle::conflicted` records the
 disagreement and `ensure_vectors_usable` raises it at every operation that would
 mix two vector spaces — the vector leg of a search, and each of the three write
 entry points: `sync::run`, `index_inline` and `push_documents`. Everything that
 touches no vector keeps working: keyword search, project listing, `findery
-catalog ls` (which prints the conflict), and `findery catalog rm`.
+bucket ls` (which prints the conflict), and `findery bucket rm`.
 
 INTENT: refusing at boot removed the very door the message recommends. The
 daemon never came up, so the `rm` the user was told to run could not run, and
-one stale catalog took the whole index — including the BM25 leg that was still
+one stale bucket took the whole index — including the BM25 leg that was still
 perfectly good — down with it.
 
 The write half matters as much as the read half, and the store's own width check

@@ -39,7 +39,7 @@ pub trait Embedder: Send + Sync {
 }
 
 /// The minimal metadata a vector store keeps next to each vector so it can
-/// filter without calling back into the catalog.
+/// filter without calling back into the bucket.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VectorPayload {
     pub path: String,

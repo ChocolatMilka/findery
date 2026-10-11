@@ -12,7 +12,7 @@
 //!   it is an error to report, never a reason to start a local process that
 //!   would silently answer from the wrong index.
 //! * **Never silent.** The daemon's output goes to a log file next to the
-//!   catalog, and a start that does not come up within the deadline fails with
+//!   bucket, and a start that does not come up within the deadline fails with
 //!   that path in the message.
 
 use crate::Client;
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 /// How long to wait for a freshly started daemon to answer.
 ///
-/// It has to open the catalog, probe the embedding runtime and warm nothing —
+/// It has to open the bucket, probe the embedding runtime and warm nothing —
 /// a couple of seconds on a cold disk, more when the model is still loading.
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 /// How long to wait on the liveness probe itself.
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn the_log_sits_next_to_the_catalog() {
+    fn the_log_sits_next_to_the_bucket() {
         let log = log_path();
         assert!(log.ends_with("finderyd.log"), "{log}");
         assert!(

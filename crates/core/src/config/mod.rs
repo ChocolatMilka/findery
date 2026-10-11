@@ -7,16 +7,18 @@
 //! the setting it overrides.
 
 mod env;
+mod legacy;
 mod sections;
 
 pub use env::{ENV_OVERRIDES, EnvOverride, env_var_for};
+pub use legacy::renamed_env_warning;
 pub use sections::{
     ChunkConfig, DEFAULT_SERVER_URL, EmbedderBackend, EmbedderConfig, ProjectDefaults,
-    QdrantConfig, SearchConfig, ServerConfig, StoreBackend, StoreConfig, catalog_path,
-    catalogs_dir, data_dir_from_env, default_data_dir, user_config_path,
+    QdrantConfig, SearchConfig, ServerConfig, StoreBackend, StoreConfig, bucket_path, buckets_dir,
+    data_dir_from_env, default_data_dir, user_config_path,
 };
 
-use crate::model::is_catalog_name;
+use crate::model::is_bucket_name;
 use crate::path_map::{Mount, PathMapper};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -78,11 +80,11 @@ impl Config {
                 "store.qdrant.url is required for the qdrant backend".into(),
             ));
         }
-        if !is_catalog_name(&self.store.default_catalog) {
+        if !is_bucket_name(&self.store.default_bucket) {
             return Err(Error::Config(format!(
-                "store.default_catalog: `{}` is not a catalog name (letters, digits, `-`, `_`, \
+                "store.default_bucket: `{}` is not a bucket name (letters, digits, `-`, `_`, \
                  `.`; must start with a letter or digit; at most 64 characters)",
-                self.store.default_catalog
+                self.store.default_bucket
             )));
         }
         Ok(())
@@ -119,7 +121,7 @@ mod tests {
             cfg.embedder.model,
             cfg.embedder.endpoint()
         );
-        // The catalog still belongs in the user's data directory, not a
+        // The bucket still belongs in the user's data directory, not a
         // container path: the daemon runs natively by default.
         assert!(
             !cfg.store.data_dir.starts_with("/data"),

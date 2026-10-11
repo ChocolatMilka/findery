@@ -39,7 +39,7 @@
 | `findery-client` | L1 | the HTTP API | the rest of the daemon |
 | `findery-index` | L2 | orchestrating the four | that a transport exists |
 | `findery-server` | L3 | HTTP, auth, status codes | how a sync works |
-| `findery-mcp`, `findery-cli` | L4 | rendering readable results | that a catalog exists |
+| `findery-mcp`, `findery-cli` | L4 | rendering readable results | that a bucket exists |
 
 ## The four rules that are verified
 

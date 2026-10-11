@@ -8,7 +8,7 @@
    disk           walker           chunker          embedder           store
  ┌────────┐  ┌──────────────┐  ┌────────────┐  ┌───────────────┐  ┌─────────────┐
  │ *.rs   │─▶│ ignore +     │─▶│ RawChunk[] │─▶│ /v1/embeddings│─▶│ vectors     │
- │ *.md   │  │ globs + ext  │  │ (pure)     │  │ (Qwen3 local  │  │ + catalog   │
+ │ *.md   │  │ globs + ext  │  │ (pure)     │  │ (Qwen3 local  │  │ + bucket   │
  └────────┘  └──────────────┘  └────────────┘  │  or remote)   │  └─────────────┘
                     │                 │        └───────────────┘         │
                     │                 │                ▲                 │
@@ -74,7 +74,7 @@ Voyage… Detail: [`../embed/README.md`](../embed/README.md).
 
 ### 5. Store — `findery-store`
 
-SQLite catalog (durable, full-text, vector cache) + pluggable vector
+SQLite bucket (durable, full-text, vector cache) + pluggable vector
 backend. Detail: [`../store/README.md`](../store/README.md).
 
 ### 6. Search — `findery-index::search`
@@ -102,9 +102,9 @@ Executable proof: `crates/server/tests/api.rs`,
 ## What changes a vector
 
 The cache namespace is `recipe = "<model>:<dim>"`. Changing model or
-dimension opens a **new** space, and a catalog refuses to mix two recipes —
+dimension opens a **new** space, and a bucket refuses to mix two recipes —
 at the operation, never at boot. This is deliberate: a corpus half embedded
 at 1024 dims and half at 2560 is silently unsearchable, so the mix has to be
 refused; but refusing it at boot would also take down the keyword search and
-the `catalog rm` that repairs it. Detail:
+the `bucket rm` that repairs it. Detail:
 [`../embed/README.md`](../embed/README.md).

@@ -4,7 +4,7 @@ version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
-description            = "L1 - SQLite catalog, pluggable vector stores (sqlite, qdrant) and exporters."
+description            = "L1 - SQLite bucket, pluggable vector stores (sqlite, qdrant) and exporters."
 
 [dependencies]
 findery-core     = { workspace = true }

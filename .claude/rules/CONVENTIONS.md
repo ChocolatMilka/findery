@@ -63,7 +63,7 @@ user is in **French**.
 |------|------|
 | **CONV-024** | **One writer, one window, then we read.** The chunker doesn't know the project; L2 stamps the identity; transports mutate nothing. |
 | **CONV-025** | A chunker is **pure**: same input, same output, no I/O, no clock, no randomness. All of incremental sync rests on this. |
-| **CONV-026** | The catalog is the durable truth. The vector store is **reconstructible** from it — that's what makes the backend interchangeable. |
+| **CONV-026** | The bucket is the durable truth. The vector store is **reconstructible** from it — that's what makes the backend interchangeable. |
 | **CONV-027** | `chunks` and `chunks_fts` are written in **the same transaction**. A full-text index that lags returns hits pointing at text that's gone. |
 | **CONV-028** | A vector write is **idempotent on its id**. A re-sync never leaves an orphan. |
 
@@ -71,7 +71,7 @@ user is in **French**.
 
 | CONV | Rule |
 |------|------|
-| **CONV-029** | **≤ 450 lines of code per file**, tests excluded. `#[cfg(test)]` modules live next to the code they lock down — that's a strength of Rust, not a smell, and they don't count. Past the budget, split **by responsibility** (see `findery-core/src/config/`, `findery-store/src/catalog/`). Mechanical truth: `bash tools/watchdogs/check_file_size.sh`. |
+| **CONV-029** | **≤ 450 lines of code per file**, tests excluded. `#[cfg(test)]` modules live next to the code they lock down — that's a strength of Rust, not a smell, and they don't count. Past the budget, split **by responsibility** (see `findery-core/src/config/`, `findery-store/src/bucket/`). Mechanical truth: `bash tools/watchdogs/check_file_size.sh`. |
 | **CONV-030** | `//!` at the top of every module: what it does, and above all **why this way**. Every `pub` has its rustdoc. |
 | **CONV-031** | Comments say **INTENT / WHY**, never WHAT. `// increments i` is noise; `// INTENT: ordering the ties keeps every cache above this honest` is information. |
 | **CONV-032** | **Zero time markers**: no "new", "refactored", "old system", no date, no orphan `TODO`. What's left to do goes in `.claude/roadmap/`. |
@@ -83,7 +83,7 @@ user is in **French**.
 | **CONV-033** | A test names a **behavior**, not a function: `a_second_sync_costs_no_embedding_at_all`, not `test_sync_2`. |
 | **CONV-034** | Every unit shipped has its happy path **and** at least one error case. The error case is the one that protects. |
 | **CONV-035** | Any performance claim is **measured and reproducible** (`cargo run -p findery-bench --release`). An unmeasured hunch is gossip. |
-| **CONV-036** | Tests touch neither the network nor a model: `EmbedderBackend::Mock` and `Catalog::open_in_memory()` exist for that. |
+| **CONV-036** | Tests touch neither the network nor a model: `EmbedderBackend::Mock` and `Bucket::open_in_memory()` exist for that. |
 
 ## 9. Documentation & roadmap
 

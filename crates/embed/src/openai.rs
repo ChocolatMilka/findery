@@ -40,7 +40,7 @@ impl OpenAiCompatEmbedder {
     ///
     /// An unreachable runtime is *not* fatal as long as the width is known —
     /// from the configuration, or from `known_dim`, which the caller reads off
-    /// an existing catalog. The daemon starts, `/v1/health` reports the model as
+    /// an existing bucket. The daemon starts, `/v1/health` reports the model as
     /// down, and only the operations that actually need a vector fail. A daemon
     /// that refused to boot would instead take the diagnostic down with it, at
     /// the exact moment the user needs it.

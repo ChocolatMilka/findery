@@ -5,12 +5,13 @@
 //! contains the current directory, so `-p` is only needed when driving a
 //! project from somewhere else.
 //!
-//! A thin shell over [`findery_client::Client`]. It never touches the catalog, a
+//! A thin shell over [`findery_client::Client`]. It never touches the bucket, a
 //! project's files or the model: whatever it can do, the HTTP API can do, which
 //! keeps the CLI and the MCP bridge honest about being peers.
 
 mod config;
 mod doctor;
+mod endpoint;
 mod push;
 mod render;
 mod run;
@@ -62,7 +63,7 @@ pub(crate) enum Command {
     /// Register the current directory (or PATH) as a project.
     ///
     /// Indexing is a separate step, so a repository can be registered — and its
-    /// catalog chosen — before a model is reachable.
+    /// bucket chosen — before a model is reachable.
     Init {
         /// Directory to index. Defaults to the current one.
         #[arg(default_value = ".")]
@@ -73,12 +74,12 @@ pub(crate) enum Command {
         /// Extensions to index, comma-separated. Defaults to `rs,md`.
         #[arg(long, value_delimiter = ',')]
         ext: Option<Vec<String>>,
-        /// Catalog to hold this project. Defaults to `store.default_catalog`.
+        /// Bucket to hold this project. Defaults to `store.default_bucket`.
         ///
         /// Chosen once: every later command follows the project, so nobody has
         /// to remember which index a directory belongs to.
         #[arg(long)]
-        catalog: Option<String>,
+        bucket: Option<String>,
         /// Index it now instead of waiting for `findery sync`.
         #[arg(long)]
         sync: bool,
@@ -135,10 +136,10 @@ pub(crate) enum Command {
     },
     /// List indexed projects.
     Projects,
-    /// Manage catalogs: independent indexes under one daemon.
-    Catalog {
+    /// Manage buckets: independent indexes under one daemon.
+    Bucket {
         #[command(subcommand)]
-        action: CatalogAction,
+        action: BucketAction,
     },
     /// Remove a project, its chunks and its vectors.
     Rm {
@@ -206,18 +207,18 @@ pub(crate) enum ConfigAction {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum CatalogAction {
-    /// Every catalog the daemon has open, with what each holds.
+pub(crate) enum BucketAction {
+    /// Every bucket the daemon has open, with what each holds.
     Ls,
     /// Create one, or report the one that is already there.
     Create {
         /// Letters, digits, `-`, `_` and `.`.
         name: String,
     },
-    /// Delete a catalog, its projects and their vectors.
+    /// Delete a bucket, its projects and their vectors.
     ///
     /// It goes through the daemon because the daemon holds the file open, and a
-    /// catalog still open cannot be removed at all.
+    /// bucket still open cannot be removed at all.
     Rm {
         name: String,
         /// Delete without asking. Required when it holds projects.
@@ -257,7 +258,7 @@ pub(crate) enum DocAction {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    let endpoint = match run::Endpoint::resolve(&cli) {
+    let endpoint = match endpoint::Endpoint::resolve(&cli) {
         Ok(endpoint) => endpoint,
         Err(e) => {
             eprintln!("findery: {e}");
@@ -348,13 +349,13 @@ mod tests {
             Command::Init {
                 path,
                 id,
-                catalog,
+                bucket,
                 sync,
                 ..
             } => {
                 assert_eq!(path, ".");
                 assert!(id.is_none());
-                assert!(catalog.is_none(), "the configured default applies");
+                assert!(bucket.is_none(), "the configured default applies");
                 assert!(!sync, "indexing is a separate, deliberate step");
             }
             _ => panic!("expected init"),
@@ -362,12 +363,12 @@ mod tests {
     }
 
     #[test]
-    fn init_can_choose_a_catalog_and_index_in_one_go() {
+    fn init_can_choose_a_bucket_and_index_in_one_go() {
         let cli =
-            Cli::try_parse_from(["findery", "init", "--catalog", "work", "--sync"]).expect("parse");
+            Cli::try_parse_from(["findery", "init", "--bucket", "work", "--sync"]).expect("parse");
         match cli.command {
-            Command::Init { catalog, sync, .. } => {
-                assert_eq!(catalog.as_deref(), Some("work"));
+            Command::Init { bucket, sync, .. } => {
+                assert_eq!(bucket.as_deref(), Some("work"));
                 assert!(sync);
             }
             _ => panic!("expected init"),
@@ -375,23 +376,23 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_command_names_what_it_acts_on() {
-        let cli = Cli::try_parse_from(["findery", "catalog", "create", "work"]).expect("parse");
+    fn the_bucket_command_names_what_it_acts_on() {
+        let cli = Cli::try_parse_from(["findery", "bucket", "create", "work"]).expect("parse");
         match cli.command {
-            Command::Catalog {
-                action: CatalogAction::Create { name },
+            Command::Bucket {
+                action: BucketAction::Create { name },
             } => assert_eq!(name, "work"),
-            _ => panic!("expected catalog create"),
+            _ => panic!("expected bucket create"),
         }
-        let cli = Cli::try_parse_from(["findery", "catalog", "rm", "work"]).expect("parse");
+        let cli = Cli::try_parse_from(["findery", "bucket", "rm", "work"]).expect("parse");
         match cli.command {
-            Command::Catalog {
-                action: CatalogAction::Rm { name, force },
+            Command::Bucket {
+                action: BucketAction::Rm { name, force },
             } => {
                 assert_eq!(name, "work");
                 assert!(!force);
             }
-            _ => panic!("expected catalog rm"),
+            _ => panic!("expected bucket rm"),
         }
     }
 

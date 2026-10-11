@@ -20,7 +20,7 @@ Two processes with two different jobs, and a set of thin clients.
                 │ HTTP — "embed these 32 texts"
  ┌──────────────▼───────────────┐
  │  finderyd                    │  THE server. It owns everything:
- │  catalog · vectors · search  │  the SQLite file, the warm matrix,
+ │  bucket · vectors · search  │  the SQLite file, the warm matrix,
  │  jobs · watchers             │  search, jobs, watchers.
  └──────────────┬───────────────┘
                 │ HTTP 127.0.0.1:8077
@@ -43,7 +43,7 @@ another machine entirely.
 
 ### Why a daemon at all?
 
-A fair question — the CLI could open the SQLite catalog directly and skip it.
+A fair question — the CLI could open the SQLite bucket directly and skip it.
 
 It exists for **one** reason that matters: the warm matrix. Searching means
 comparing your query against every chunk, from a matrix of normalized vectors
@@ -214,7 +214,7 @@ The project id is derived from the directory name, and the daemon reads your
 real filesystem — no mount to declare, no path to type.
 
 **Registration and indexing are two steps on purpose.** A repository can be
-claimed, and its catalog chosen, before any model is reachable — so the setup
+claimed, and its bucket chosen, before any model is reachable — so the setup
 does not fail because the embedding runtime is not up yet. `findery init --sync`
 does both in one go when you know the model is there.
 
@@ -226,21 +226,21 @@ findery init --ext rs,md,toml,yml,sql
 
 ### More than one index
 
-A daemon serves several **catalogs**: independent SQLite files, each holding its
+A daemon serves several **buckets**: independent SQLite files, each holding its
 own projects, chunks and vectors. Two repositories that should not share a file
-— a work one and a personal one, say — go in two catalogs, and a client can be
+— a work one and a personal one, say — go in two buckets, and a client can be
 pointed at either.
 
 ```bash
-findery catalog create work
-findery init --catalog work
-findery catalog ls                    # what each holds, and where it lives
+findery bucket create work
+findery init --bucket work
+findery bucket ls                    # what each holds, and where it lives
 ```
 
-The catalog is chosen once, at registration. Every later command follows the
+The bucket is chosen once, at registration. Every later command follows the
 project, so nobody has to remember which index a directory belongs to.
-`findery catalog rm <name>` removes one along with its projects and vectors; it
-refuses while the catalog still holds projects unless you add `--force`.
+`findery bucket rm <name>` removes one along with its projects and vectors; it
+refuses while the bucket still holds projects unless you add `--force`.
 
 ## 6. Search
 
@@ -328,7 +328,7 @@ being too large or not UTF-8) and `embeddings_computed` versus
 | `DEGRADED` / every search returns 502 | the model is down — `docker compose logs tei` |
 | search finds nothing that clearly exists | not synced yet, or a filter is too narrow — check `findery status` |
 | sync re-embeds everything | the model or dimension changed, which opens a new cache namespace |
-| a sync is refused, naming two recipes | that catalog holds vectors from another model — `findery catalog ls` names the conflict, and keyword search still works there |
+| a sync is refused, naming two recipes | that bucket holds vectors from another model — `findery bucket ls` names the conflict, and keyword search still works there |
 | first index feels endless | it is the one slow step; `findery jobs` shows progress |
 
 ### Changing a setting

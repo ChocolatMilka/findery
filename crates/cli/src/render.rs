@@ -2,7 +2,7 @@
 //! commands rather than a table of commands interleaved with `println!`.
 
 use findery_core::Result;
-use findery_core::api::{CatalogInfo, ExportReport, HealthReport, Job};
+use findery_core::api::{BucketInfo, ExportReport, HealthReport, Job};
 use findery_core::model::{IndexStats, Project, SearchHit, SyncReport};
 
 /// Prints any serializable value as indented JSON.
@@ -41,7 +41,7 @@ pub fn projects(list: &[Project], current: Option<&str>) {
         println!(
             "{here} {:<22} {:<14} {}",
             p.id.to_string(),
-            p.catalog,
+            p.bucket,
             p.host_root
         );
     }
@@ -50,14 +50,14 @@ pub fn projects(list: &[Project], current: Option<&str>) {
     }
 }
 
-/// Lists the catalogs the daemon has open, marking the default one.
+/// Lists the buckets the daemon has open, marking the default one.
 ///
-/// INTENT: a catalog whose recipe disagrees with the daemon keeps working for
+/// INTENT: a bucket whose recipe disagrees with the daemon keeps working for
 /// keyword search and can still be deleted, so the conflict is printed here as
 /// the repair instruction it carries rather than as a failure.
-pub fn catalogs(list: &[CatalogInfo]) {
+pub fn buckets(list: &[BucketInfo]) {
     if list.is_empty() {
-        println!("no catalog open — the daemon creates the default one at boot");
+        println!("no bucket open — the daemon creates the default one at boot");
         return;
     }
     for c in list {
@@ -83,7 +83,7 @@ pub fn stats(s: &IndexStats) {
     println!(
         "{} [{}]: {} files · {} chunks · {} vectors · {} ({} dims) · {} · {:.1} MB",
         s.project,
-        s.catalog,
+        s.bucket,
         s.files,
         s.chunks,
         s.vectors,

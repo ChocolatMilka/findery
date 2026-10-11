@@ -41,7 +41,7 @@ already ≥ 85%, the reranker buys nothing.
 
 ### R0 — Client-side metadata cache for push mode
 
-A pushing client has no catalog row to compare `(size, mtime)` against, so it
+A pushing client has no bucket row to compare `(size, mtime)` against, so it
 reads and hashes every candidate on every sync. Locally that is fast — 76 files
 in 11 ms on this repository — but it scales with the project, not with the
 change.
@@ -54,7 +54,7 @@ stays under a second, the cache is complexity for nothing.
 
 ### R2b — Deduplicate `embeddings` and `vectors` on the `sqlite` side
 
-Measured on a real catalog: `embeddings` and `vectors` carry **exactly the
+Measured on a real bucket: `embeddings` and `vectors` carry **exactly the
 same bytes** (1055 rows, 540 160 B on each side at 128 dims). Every vector is
 therefore written to disk twice — once in the content-addressed cache, once
 in the project's live set. At 1024 dims and 50k chunks, that's **205 MB
@@ -66,7 +66,7 @@ the cache is indexed by `(recipe, content_hash)`, not by chunk.
 
 *Lead*: `vectors` keeps only `chunk_id` + payload + `content_hash`, and the
 matrix fills in by joining on `embeddings` at warm-up. `SqliteVectorStore`
-already holds the `Catalog`, so no layer moves.
+already holds the `Bucket`, so no layer moves.
 
 *To measure before*: the cost of the join on a cold start, against the
 205 MB saved. If warm-up goes from 200 ms to 2 s, the trade-off is bad.
@@ -88,7 +88,7 @@ language, behind the same trait.
 
 ### R5 — Persistent watch
 Watchers live in the server's memory: a restart loses them. Store them in
-the catalog and relaunch them at boot.
+the bucket and relaunch them at boot.
 
 Worth more now than when it was written: the daemon starts itself and is
 expected to come and go, so "until the next restart" is a shorter promise

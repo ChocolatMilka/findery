@@ -257,7 +257,7 @@ async fn index_status(client: &Client, args: &Value) -> Result<String> {
     let stats = client.stats(&project_arg(args)?).await?;
     Ok(format!(
         "project `{}`\n  files: {}\n  chunks: {}\n  vectors: {}\n  model: {} ({} dims)\n  \
-         store: {}\n  last sync: {}\n  catalog on disk: {:.1} MB",
+         store: {}\n  last sync: {}\n  bucket on disk: {:.1} MB",
         stats.project,
         stats.files,
         stats.chunks,

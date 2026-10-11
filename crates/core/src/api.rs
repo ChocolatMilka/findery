@@ -40,12 +40,12 @@ pub struct RegisterProject {
     pub push: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_bytes: Option<u64>,
-    /// Catalog to hold this project, or the configured default.
+    /// Bucket to hold this project, or the configured default.
     ///
     /// Chosen once, at registration: every later command follows the project,
     /// so nobody has to remember which index a directory belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalog: Option<String>,
+    pub bucket: Option<String>,
 }
 
 impl RegisterProject {
@@ -58,19 +58,19 @@ impl RegisterProject {
     }
 }
 
-/// One catalog, as `GET /v1/catalogs` reports it.
+/// One bucket, as `GET /v1/buckets` reports it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CatalogInfo {
+pub struct BucketInfo {
     pub name: String,
     /// Absolute path of the database file.
     pub path: String,
-    /// The recipe this catalog was built with; `None` while it holds no vectors.
+    /// The recipe this bucket was built with; `None` while it holds no vectors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<String>,
-    /// Why this catalog cannot serve a vector query, when it cannot.
+    /// Why this bucket cannot serve a vector query, when it cannot.
     ///
     /// INTENT: a recipe mismatch is reported here rather than raised at boot,
-    /// so the daemon that owns the catalog stays up and can still delete it —
+    /// so the daemon that owns the bucket stays up and can still delete it —
     /// a conflict you can read about and repair, not a conflict that locks the
     /// door you would repair it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,15 +82,15 @@ pub struct CatalogInfo {
     pub is_default: bool,
 }
 
-/// `POST /v1/catalogs` — create a catalog.
+/// `POST /v1/buckets` — create a bucket.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CreateCatalog {
+pub struct CreateBucket {
     pub name: String,
 }
 
-/// `DELETE /v1/catalogs/{name}` — what the removal swept away.
+/// `DELETE /v1/buckets/{name}` — what the removal swept away.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CatalogRemoved {
+pub struct BucketRemoved {
     pub removed: bool,
     /// Projects that were registered in it, and went with it.
     pub projects_removed: u64,
@@ -232,7 +232,7 @@ pub struct PushDocuments {
 
 /// `POST /v1/projects/{id}/prune` — delete pushed files the client no longer has.
 ///
-/// The client sends every path it saw; whatever the catalog holds beyond that
+/// The client sends every path it saw; whatever the bucket holds beyond that
 /// list disappeared on its side.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

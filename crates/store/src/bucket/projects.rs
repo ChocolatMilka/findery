@@ -1,6 +1,6 @@
 //! Project and file records: the state incremental sync compares against disk.
 
-use super::Catalog;
+use super::Bucket;
 use crate::schema::sql;
 use findery_core::clock::now_unix;
 use findery_core::ids::{ContentHash, ProjectId};
@@ -9,7 +9,7 @@ use findery_core::{Error, Result};
 use rusqlite::{Connection, Row, params};
 use std::collections::HashMap;
 
-impl Catalog {
+impl Bucket {
     /// Creates or replaces a project definition.
     pub async fn put_project(&self, project: &Project) -> Result<()> {
         let id = project.id.to_string();
@@ -38,19 +38,19 @@ impl Catalog {
     /// Fetches one project, or `None` when it was never registered.
     pub async fn get_project(&self, id: &ProjectId) -> Result<Option<Project>> {
         let id = id.to_string();
-        let catalog = self.name.clone();
+        let bucket = self.name.clone();
         self.with_conn(move |c| {
             let mut stmt = c.prepare(PROJECT_SELECT).map_err(sql)?;
             let mut rows = stmt.query([&id]).map_err(sql)?;
             match rows.next().map_err(sql)? {
-                Some(row) => Ok(Some(read_project(row, &catalog)?)),
+                Some(row) => Ok(Some(read_project(row, &bucket)?)),
                 None => Ok(None),
             }
         })
         .await
     }
 
-    /// Same as [`Catalog::get_project`] but turns absence into an error, which
+    /// Same as [`Bucket::get_project`] but turns absence into an error, which
     /// is what every route that operates on a named project wants.
     pub async fn require_project(&self, id: &ProjectId) -> Result<Project> {
         self.get_project(id)
@@ -60,7 +60,7 @@ impl Catalog {
 
     /// Lists projects, most recently updated first.
     pub async fn list_projects(&self) -> Result<Vec<Project>> {
-        let catalog = self.name.clone();
+        let bucket = self.name.clone();
         self.with_conn(move |c| {
             let mut stmt = c
                 .prepare(&format!("{PROJECT_SELECT_ALL} ORDER BY updated_at DESC"))
@@ -68,7 +68,7 @@ impl Catalog {
             let mut rows = stmt.query([]).map_err(sql)?;
             let mut out = Vec::new();
             while let Some(row) = rows.next().map_err(sql)? {
-                out.push(read_project(row, &catalog)?);
+                out.push(read_project(row, &bucket)?);
             }
             Ok(out)
         })
@@ -78,7 +78,7 @@ impl Catalog {
     /// Removes a project and everything attached to it, in one transaction.
     ///
     /// The vector backend is purged separately by the caller: this method owns
-    /// the catalog, not the store.
+    /// the bucket, not the store.
     pub async fn delete_project(&self, id: &ProjectId) -> Result<bool> {
         let id = id.to_string();
         self.with_conn(move |c| {
@@ -163,10 +163,10 @@ impl Catalog {
         .await
     }
 
-    /// Project and chunk counts for the whole catalog.
+    /// Project and chunk counts for the whole bucket.
     ///
-    /// INTENT: what `GET /v1/catalogs` reports, so it must count rows, not
-    /// files: a catalog with three projects and no chunks is a created-but-
+    /// INTENT: what `GET /v1/buckets` reports, so it must count rows, not
+    /// files: a bucket with three projects and no chunks is a created-but-
     /// unindexed one, and the two numbers say so.
     pub async fn totals(&self) -> Result<(u64, u64)> {
         self.with_conn(move |c| {
@@ -213,7 +213,7 @@ impl Catalog {
     }
 }
 
-/// Shared by [`Catalog::put_file`] and the chunk-writing transaction.
+/// Shared by [`Bucket::put_file`] and the chunk-writing transaction.
 pub(super) fn put_file_sync(c: &Connection, project: &str, f: &FileRecord) -> Result<()> {
     c.execute(
         "INSERT INTO files
@@ -248,16 +248,16 @@ const PROJECT_SELECT: &str =
 const PROJECT_SELECT_ALL: &str =
     "SELECT id, name, spec_json, host_root, created_at, updated_at FROM projects";
 
-/// `catalog` is the name of the catalog the row was read out of, not a column:
-/// a project's catalog is where it lives, and a column could disagree with it.
-fn read_project(row: &Row<'_>, catalog: &str) -> Result<Project> {
+/// `bucket` is the name of the bucket the row was read out of, not a column:
+/// a project's bucket is where it lives, and a column could disagree with it.
+fn read_project(row: &Row<'_>, bucket: &str) -> Result<Project> {
     let id: String = row.get(0).map_err(sql)?;
     let spec_json: String = row.get(2).map_err(sql)?;
     let spec: ProjectSpec = serde_json::from_str(&spec_json)?;
     Ok(Project {
         id: ProjectId::new(id)?,
         name: row.get(1).map_err(sql)?,
-        catalog: catalog.to_string(),
+        bucket: bucket.to_string(),
         spec,
         host_root: row.get(3).map_err(sql)?,
         created_at: row.get(4).map_err(sql)?,
@@ -291,7 +291,7 @@ mod tests {
         Project {
             id: ProjectId::new(id).expect("id"),
             name: id.to_string(),
-            catalog: findery_core::model::DEFAULT_CATALOG.into(),
+            bucket: findery_core::model::DEFAULT_BUCKET.into(),
             spec: ProjectSpec {
                 root: "/workspaces/demo".into(),
                 ..ProjectSpec::default()
@@ -317,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn projects_round_trip_and_upsert() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         cat.put_project(&project("demo")).await.expect("insert");
         let mut p = project("demo");
         p.name = "renamed".into();
@@ -332,22 +332,22 @@ mod tests {
         assert_eq!(cat.list_projects().await.expect("list").len(), 1);
     }
 
-    /// The catalog a project belongs to is read off the file it came from, so a
-    /// row cannot claim one catalog while living in another.
+    /// The bucket a project belongs to is read off the file it came from, so a
+    /// row cannot claim one bucket while living in another.
     #[tokio::test]
-    async fn a_project_reports_the_catalog_it_was_read_out_of() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+    async fn a_project_reports_the_bucket_it_was_read_out_of() {
+        let cat = Bucket::open_in_memory().expect("bucket");
         cat.put_project(&project("demo")).await.expect("insert");
         let got = cat
             .require_project(&ProjectId::new("demo").expect("id"))
             .await
             .expect("get");
-        assert_eq!(got.catalog, cat.name());
+        assert_eq!(got.bucket, cat.name());
     }
 
     #[tokio::test]
     async fn a_missing_project_is_not_found_not_a_crash() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         let err = cat
             .require_project(&ProjectId::new("ghost").expect("id"))
             .await
@@ -357,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn files_are_keyed_by_path_and_overwritten_in_place() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         let id = ProjectId::new("demo").expect("id");
         cat.put_project(&project("demo")).await.expect("insert");
         cat.put_file(&id, &file("src/a.rs", "h1"))
@@ -381,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn deleting_a_project_takes_its_files_with_it() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         let id = ProjectId::new("demo").expect("id");
         cat.put_project(&project("demo")).await.expect("insert");
         cat.put_file(&id, &file("src/a.rs", "h1"))

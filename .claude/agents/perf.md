@@ -46,7 +46,7 @@ Your final report explicitly names the pages read and the pages updated —
 | `findery-client` | the HTTP API | the rest of the daemon |
 | `findery-index` | orchestrating the four | that a transport exists |
 | `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a catalog exists |
+| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
 
 ### The founding contract: L0 names, the layers execute
 
@@ -77,10 +77,10 @@ can honor it (CONV-004).
    the location. Moving a function, renaming a module, re-cloning the repo,
    running a `--full`: zero embedding. It's the project's central economics.
 2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; the
-   daemon refuses to mix two recipes in one catalog and says so at boot.
+   daemon refuses to mix two recipes in one bucket and says so at boot.
 3. **A chunker is pure.** All of incremental sync rests on
    `chunk(text) == chunk(text)`, forever.
-4. **The catalog is the durable truth**, the vector store is
+4. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend interchangeable.
 5. **Search is hybrid.** Vector for the concept, BM25 for the exact
    identifier, RRF fusion **by rank** — no calibration between two
@@ -196,7 +196,7 @@ Dominated by the model. Levers, in order of effectiveness:
 
 ```
 vector matrix = chunks × dim × 4 bytes
-catalog + cache ≈ chunks × (text + dim × 4)
+bucket + cache ≈ chunks × (text + dim × 4)
 ```
 
 Levers: lower `dim` (Matryoshka), switch to Qdrant (+ int8 quantization), or

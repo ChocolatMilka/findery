@@ -6,7 +6,7 @@
 //! — the text is identical, so the vector is reused and the GPU stays idle.
 //! This single table is what makes a re-sync of an unchanged repository free.
 
-use super::{Catalog, blob_to_vec, vec_to_blob};
+use super::{Bucket, blob_to_vec, vec_to_blob};
 use crate::schema::sql;
 use findery_core::Result;
 use findery_core::clock::now_unix;
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 /// Hashes per `IN (...)` batch.
 const HASH_BATCH: usize = 400;
 
-impl Catalog {
+impl Bucket {
     /// Looks up already-computed vectors for the given content hashes.
     pub async fn cached_vectors(
         &self,
@@ -288,7 +288,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_cache_is_keyed_by_recipe_and_content_only() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         let h = ContentHash::of(b"fn main() {}");
         cat.put_cached_vectors("qwen3:4", vec![(h.clone(), vec![1.0, 0.0, 0.0, 0.0])])
             .await
@@ -307,7 +307,7 @@ mod tests {
 
     #[tokio::test]
     async fn gc_only_removes_unreferenced_vectors() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         let h = ContentHash::of(b"orphan");
         cat.put_cached_vectors("r", vec![(h, vec![0.0; 4])])
             .await
@@ -319,7 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_vectors_upsert_delete_and_survive_a_reload() {
-        let cat = Catalog::open_in_memory().expect("catalog");
+        let cat = Bucket::open_in_memory().expect("bucket");
         let p = ProjectId::new("demo").expect("id");
         let id = ChunkId::derive(&p, "a.rs", 0);
 
