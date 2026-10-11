@@ -34,43 +34,82 @@ pub use sqlite_store::SqliteVectorStore;
 ///
 /// A move that cannot be made is an error, not a warning: opening *creates*, so
 /// the alternative is a fresh empty database beside the real index with the user
-/// told nothing. Both names present is not a failure — the current one wins.
+/// told nothing.
+///
+/// Idempotent, and resumable: every step is "complete this rename if it is still
+/// owed", so a run interrupted between the directory and the file finishes on the
+/// next one instead of leaving a bucket that no scan can see.
 pub fn migrate_legacy_layout(cfg: &StoreConfig) -> Result<()> {
     let data_dir = PathBuf::from(cfg.data_dir.trim_end_matches('/'));
+    // The default bucket is flat: <data_dir>/catalog.db -> <data_dir>/bucket.db
+    settle(&data_dir.join("catalog.db"), &data_dir.join("bucket.db"))?;
 
-    let legacy_db = data_dir.join("catalog.db");
-    let current_db = data_dir.join("bucket.db");
-    // `is_file`, not `exists`: a *directory* named `bucket.db` is not a migrated
-    // bucket, and skipping the move would leave the real index behind.
-    if legacy_db.is_file() && !current_db.is_file() {
-        rename_file_set(&legacy_db, &current_db)
-            .map_err(|e| stranded(&legacy_db, &current_db, e))?;
-    }
-
+    // Named buckets are a directory each. Moving the directory is one step and
+    // renaming the file inside it is another, so both are attempted separately.
     let legacy_dir = data_dir.join("catalogs");
     let current_dir = PathBuf::from(buckets_dir(&cfg.data_dir));
-    let Ok(entries) = std::fs::read_dir(&legacy_dir) else {
-        return Ok(());
-    };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let from = entry.path();
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        if !from.is_dir() {
-            continue;
-        }
-        let to = current_dir.join(&name);
-        if to.is_dir() {
-            continue;
-        }
-        let moved = std::fs::create_dir_all(&current_dir)
-            .and_then(|()| std::fs::rename(&from, &to))
-            .and_then(|()| rename_file_set(&to.join("catalog.db"), &to.join("bucket.db")));
-        if let Err(e) = moved {
-            return Err(stranded(&from, &to, e));
+    if let Ok(entries) = std::fs::read_dir(&legacy_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let (from, to) = (entry.path(), current_dir.join(&name));
+            if !from.is_dir() {
+                continue;
+            }
+            std::fs::create_dir_all(&current_dir)
+                .and_then(|()| std::fs::rename(&from, &to))
+                .map_err(|e| stranded(&from, &to, e))?;
         }
     }
+
+    // Whatever is still named for the old vocabulary, wherever it sits — which
+    // includes the directories just moved above, and any left half-finished by
+    // an earlier run whose `catalogs/` entry is long gone.
+    for entry in std::fs::read_dir(&current_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let dir = entry.path();
+        settle(&dir.join("catalog.db"), &dir.join("bucket.db"))?;
+    }
+    Ok(())
+}
+
+/// Completes one rename, doing nothing when there is nothing to do.
+fn settle(from: &Path, to: &Path) -> Result<()> {
+    // `is_file`, not `exists`: a *directory* named for either side is not a
+    // database, and treating one as migrated would skip the real index.
+    if !from.is_file() || to.is_file() {
+        return Ok(());
+    }
+    // Only what has to be opened is opened. A database with no journal moves as
+    // a file, and asking SQLite to open it first would impose its opinion on a
+    // file that is not a database — turning "move this" into "this is corrupt".
+    if journal_holds_pages(from) {
+        consolidate(from).map_err(|e| stranded(from, to, e))?;
+    }
+    rename_file_set(from, to).map_err(|e| stranded(from, to, e))
+}
+
+/// True when the journal beside `db` still holds committed pages.
+fn journal_holds_pages(db: &Path) -> bool {
+    std::fs::metadata(with_suffix(db, "-wal")).is_ok_and(|m| m.len() > 0)
+}
+
+/// Empties the write-ahead log by letting SQLite recover it.
+///
+/// A database with a live journal cannot be renamed safely: the rename is not
+/// atomic across the file set, and a failure between the two moves detaches
+/// committed pages from the database that owns them. SQLite is the one thing
+/// that can put those pages back, so it is asked to — after which there is no
+/// journal left to lose. Closing the last connection would do it eventually;
+/// the checkpoint says so deliberately.
+fn consolidate(db: &Path) -> std::io::Result<()> {
+    let conn = rusqlite::Connection::open(db).map_err(std::io::Error::other)?;
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        .map_err(std::io::Error::other)?;
     Ok(())
 }
 
@@ -92,19 +131,7 @@ fn stranded(from: &Path, to: &Path, cause: std::io::Error) -> findery_core::Erro
 
 /// Renames a SQLite database together with the journal files named after it —
 /// SQLite derives `-wal` and `-shm` from the database's own name.
-///
-/// A *non-empty* journal is refused: no multi-file rename is atomic, so a
-/// failure between the moves would either detach committed pages from the
-/// database that owns them or leave a journal pointing at a name that is gone.
-/// A cleanly closed database has an empty one or none.
 fn rename_file_set(from: &Path, to: &Path) -> std::io::Result<()> {
-    let wal = with_suffix(from, "-wal");
-    if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
-        return Err(std::io::Error::other(format!(
-            "{} still holds committed pages; close the database cleanly first",
-            wal.display()
-        )));
-    }
     std::fs::rename(from, to)?;
     for suffix in ["-wal", "-shm"] {
         let source = with_suffix(from, suffix);
@@ -461,25 +488,53 @@ mod tests {
         );
     }
 
-    /// Committed pages are the one thing a rename cannot carry safely, because
-    /// no multi-file rename is atomic.
+    /// A database whose journal still holds committed pages is moved by first
+    /// letting SQLite put those pages back. Refusing instead leaves the user to
+    /// resolve it by hand, and a real install has exactly this shape: a journal
+    /// from the last time the old daemon was killed.
     #[test]
-    fn a_journal_holding_pages_refuses_the_move_rather_than_splitting_it() {
+    fn a_journal_holding_pages_is_consolidated_before_the_move() {
+        // A live database, written and left with its journal — the shape a
+        // process that was killed leaves behind. It is built here and *copied*
+        // because the point of the case is a file set nothing holds open.
+        let source = tempfile::tempdir().expect("tempdir");
+        let conn = rusqlite::Connection::open(source.path().join("catalog.db")).expect("open");
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .expect("wal");
+        conn.execute("CREATE TABLE projects (id TEXT)", [])
+            .expect("schema");
+        conn.execute("INSERT INTO projects VALUES ('axle')", [])
+            .expect("row");
+
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = StoreConfig {
             data_dir: dir.path().display().to_string(),
             ..StoreConfig::default()
         };
-        std::fs::write(dir.path().join("catalog.db"), b"db").expect("write");
-        std::fs::write(dir.path().join("catalog.db-wal"), b"committed pages").expect("write");
-
-        let err = migrate_legacy_layout(&cfg).expect_err("must refuse");
-        assert!(err.to_string().contains("committed pages"), "{err}");
-        assert!(dir.path().join("catalog.db").is_file());
+        // Copied while the writer is alive, and closed only afterwards: a clean
+        // close checkpoints the journal away, which is the one thing this case
+        // is about.
+        for suffix in ["", "-wal", "-shm"] {
+            let from = source.path().join(format!("catalog.db{suffix}"));
+            if from.is_file() {
+                std::fs::copy(&from, dir.path().join(format!("catalog.db{suffix}"))).expect("copy");
+            }
+        }
+        drop(conn);
         assert!(
-            dir.path().join("catalog.db-wal").is_file(),
-            "the journal stays with the database it belongs to"
+            journal_holds_pages(&dir.path().join("catalog.db")),
+            "the fixture needs committed pages in the journal"
         );
+
+        migrate_legacy_layout(&cfg).expect("migrates");
+
+        assert!(dir.path().join("bucket.db").is_file());
+        assert!(!dir.path().join("catalog.db").exists());
+        let rows: i64 = rusqlite::Connection::open(dir.path().join("bucket.db"))
+            .expect("reopen")
+            .query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(rows, 1, "the committed row came with it");
     }
 
     /// An empty journal is what a cleanly closed database leaves, and it must
@@ -498,6 +553,54 @@ mod tests {
         assert!(dir.path().join("bucket.db").is_file());
         assert!(dir.path().join("bucket.db-wal").is_file());
         assert!(!dir.path().join("catalog.db-wal").exists());
+    }
+
+    /// A run interrupted between moving a bucket's directory and renaming the
+    /// file inside it leaves a bucket no scan can see — `list_buckets` looks for
+    /// `bucket.db`. The next run has to finish it, and `catalogs/` is already
+    /// empty by then, so the recovery cannot depend on finding the old entry.
+    #[test]
+    fn a_bucket_left_half_migrated_is_finished_on_the_next_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = StoreConfig {
+            data_dir: dir.path().display().to_string(),
+            ..StoreConfig::default()
+        };
+        let stranded = dir.path().join("buckets").join("discord");
+        std::fs::create_dir_all(&stranded).expect("mkdir");
+        Bucket::open_file(&stranded.join("catalog.db"), "discord").expect("legacy bucket");
+
+        migrate_legacy_layout(&cfg).expect("migrates");
+
+        assert!(stranded.join("bucket.db").is_file());
+        assert!(!stranded.join("catalog.db").exists());
+        assert_eq!(
+            list_buckets(&cfg).expect("list"),
+            vec!["discord".to_string()],
+            "the bucket is visible again"
+        );
+    }
+
+    /// Running the migration over an install that is already current changes
+    /// nothing: it runs on every boot.
+    #[test]
+    fn a_migrated_install_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = StoreConfig {
+            data_dir: dir.path().display().to_string(),
+            ..StoreConfig::default()
+        };
+        let bucket = open_bucket(&cfg, DEFAULT_BUCKET).expect("bucket");
+        drop(bucket);
+
+        migrate_legacy_layout(&cfg).expect("first");
+        let before = std::fs::read(dir.path().join("bucket.db")).expect("read");
+        migrate_legacy_layout(&cfg).expect("second");
+        assert_eq!(
+            std::fs::read(dir.path().join("bucket.db")).expect("read"),
+            before,
+            "an already-migrated install is untouched"
+        );
     }
 
     /// The default bucket is refused *before* anything is touched: the removal
