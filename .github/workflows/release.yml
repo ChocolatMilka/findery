@@ -138,23 +138,50 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $raw = $env:GITHUB_REF_NAME
-            if ($raw -notmatch '^v(\d+\.\d+\.\d+(\.\d+)?)$') {
-              throw "tag `$raw` is not v<major>.<minor>.<patch>; MSI versions are numeric and four parts at most"
+          # A version is two to four numbers; `v0.1` is one. An MSI's
+          # `ProductVersion` is conventionally three, so a short one is padded
+          # here rather than refused — the tag is the project's to choose, and
+          # `v0.1` is a perfectly ordinary way to name a release.
+          function Get-Version($raw, $what) {
+            $body = $raw -replace '^v', ''
+            if ($body -notmatch '^\d+(\.\d+){1,3}$') {
+              throw "$what is '$raw'; expected v<major>.<minor>[.<patch>[.<build>]], all numbers"
             }
-            $version = $Matches[1]
+            $parts = @($body.Split('.') | ForEach-Object { [int]$_ })
+            if ($parts | Where-Object { $_ -gt 65535 }) {
+              throw "$what is '$raw'; no version field may exceed 65535"
+            }
+            return , $parts
+          }
+
+          # Padded to four so `0.1`, `0.1.0` and `0.1.0.0` compare equal.
+          function Compare-Version($a, $b) {
+            $x = @($a) + @(0, 0, 0, 0)
+            $y = @($b) + @(0, 0, 0, 0)
+            for ($i = 0; $i -lt 4; $i++) {
+              if ($x[$i] -ne $y[$i]) { return $false }
+            }
+            return $true
+          }
+
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $parts = Get-Version $env:GITHUB_REF_NAME "tag"
             $declared = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
                          Select-Object -First 1).Matches[0].Groups[1].Value
-            if ($declared -ne $version) {
-              throw "tag says $version, Cargo.toml says $declared; bump the workspace version or retag"
+            if (-not (Compare-Version $parts (Get-Version $declared "the Cargo.toml version"))) {
+              throw "tag $env:GITHUB_REF_NAME and Cargo.toml version $declared disagree; bump one or retag"
             }
           } else {
             # A branch or dispatched build still produces an installer, so the
             # packaging path is exercised before a release depends on it — under a
             # placeholder version nothing should be published as.
-            $version = "0.0.0"
+            $parts = @(0, 0, 0)
           }
+
+          # At least three fields, which is what an MSI wants; a fourth is kept.
+          while ($parts.Count -lt 3) { $parts += 0 }
+          $version = $parts -join '.'
+          Write-Host "$env:GITHUB_REF_NAME -> installer version $version"
           "version=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
           # The version the upgrade test installs *first*, and only when it is
