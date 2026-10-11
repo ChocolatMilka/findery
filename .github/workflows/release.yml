@@ -1,19 +1,3 @@
-# Build, package and publish findery.
-#
-#   check      the constitution, on every push and pull request
-#   windows    the three Windows binaries, once
-#   installer  the .msi, and a real install of it
-#   release    attached to a GitHub Release, on a `v*` tag
-#
-# `check` is its own job rather than a step of the Windows build, so a change
-# that fails it never reaches packaging.
-#
-# WiX is pinned to v5: from v6 the toolset requires accepting the Open Source
-# Maintenance Fee EULA, and that is the project's licensing decision to make.
-#
-# `windows-latest` rather than cross-compiling — `rusqlite`'s bundled SQLite is
-# C, so a Windows build needs a Windows C toolchain whatever the target triple.
-
 name: release
 
 on:
