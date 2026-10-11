@@ -46,7 +46,18 @@ pub(crate) struct Cli {
     pub(crate) json: bool,
 
     /// Never start the server; fail instead if it is not already running.
-    #[arg(long, global = true, env = "FINDERY_NO_SPAWN")]
+    ///
+    /// INTENT: `BoolishValueParser` is here for the environment variable, not
+    /// for the flag. Everything that documents this setting — the compose file,
+    /// the page you are reading — writes `FINDERY_NO_SPAWN=1`, and clap's
+    /// default parser accepts only `true` and `false`. A documented spelling
+    /// that is rejected at startup is worse than no spelling.
+    #[arg(
+        long,
+        global = true,
+        env = "FINDERY_NO_SPAWN",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
     pub(crate) no_spawn: bool,
 
     #[command(subcommand)]
@@ -426,6 +437,26 @@ mod tests {
     fn the_command_surface_stays_parseable() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    /// The spelling every document uses has to be the spelling that works.
+    /// `FINDERY_NO_SPAWN=1` is written in the compose file and in three pages;
+    /// clap's default parser accepts only `true` and `false`, which made a
+    /// documented setting fail at startup.
+    #[test]
+    fn the_no_spawn_variable_accepts_the_spelling_we_document() {
+        // SAFETY: the variable is removed before the assertion, and no other
+        // test in this binary reads it.
+        unsafe { std::env::set_var("FINDERY_NO_SPAWN", "1") };
+        let parsed = Cli::try_parse_from(["findery", "status"]);
+        unsafe { std::env::remove_var("FINDERY_NO_SPAWN") };
+
+        assert!(
+            parsed
+                .expect("`FINDERY_NO_SPAWN=1` is the documented spelling")
+                .no_spawn,
+            "the documented value must set the flag"
+        );
     }
 
     /// The server is plumbing: it starts itself, so offering to manage it is

@@ -15,7 +15,7 @@ MCP API — so it plugs directly into Claude Code.
 - 📤 JSONL / JSON / raw `float32` export — you're never locked in
 - 📡 Pull or push: the daemon reads your files, or the CLI sends them — so the
   daemon can run in a container, or on another machine, with nothing mounted
-- 🧪 273 tests, clean `clippy -D warnings`, layer watchdog
+- 🧪 274 tests, clean `clippy -D warnings`, layer watchdog
 
 ---
 
@@ -283,7 +283,7 @@ team.
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 273 tests
+make test      # 274 tests
 make bench     # vector scan measurement
 ```
 
