@@ -14,6 +14,7 @@
 pub mod bucket;
 pub mod export;
 pub mod qdrant;
+pub mod registry;
 pub mod schema;
 pub mod sqlite_store;
 
@@ -114,6 +115,28 @@ pub fn open_bucket(cfg: &StoreConfig, name: &str) -> Result<Bucket> {
     Bucket::open_file(Path::new(&bucket_path(&cfg.data_dir, name)), name)
 }
 
+/// Opens a bucket at an explicit file, wherever that file is.
+///
+/// INTENT: a bucket inside the project it indexes, or on a drive it shares, is
+/// the reason the name and the location came apart. The parent directory is
+/// created here rather than by the caller, because "this bucket does not exist
+/// yet" is the ordinary state of a fresh `init` and not an error to route
+/// around.
+pub fn open_bucket_file(path: &str, name: &str) -> Result<Bucket> {
+    let file = Path::new(path);
+    if let Some(parent) = file.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            findery_core::Error::Store(format!(
+                "cannot create the directory for bucket `{name}` at {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    Bucket::open_file(file, name)
+}
+
 /// True when a bucket file already exists for `name`.
 ///
 /// INTENT: asked before opening, because opening *creates*. A `bucket rm` on a
@@ -191,6 +214,42 @@ pub fn delete_bucket(cfg: &StoreConfig, name: &str) -> Result<bool> {
         ))
     })?;
     Ok(true)
+}
+
+/// Deletes a bucket that lives at an explicit path, wherever that is.
+///
+/// The journal files go with it: a `-wal` left beside nothing is a file the user
+/// cannot explain and cannot safely delete. Returns `false` when there was
+/// nothing there — the same answer the derived-path case gives for an absent
+/// bucket, so a caller reports one thing rather than two.
+pub fn delete_bucket_file(path: &str) -> Result<bool> {
+    let file = Path::new(path);
+    if !file.is_file() {
+        return Ok(false);
+    }
+    remove_file_set(file)?;
+    if let Some(parent) = file.parent()
+        && parent.read_dir().is_ok_and(|mut d| d.next().is_none())
+    {
+        // A directory left holding nothing is a directory nobody asked for.
+        let _ = std::fs::remove_dir(parent);
+    }
+    Ok(true)
+}
+
+fn remove_file_set(file: &Path) -> Result<()> {
+    std::fs::remove_file(file).map_err(|e| {
+        findery_core::Error::Store(format!("cannot delete {}: {e}", file.display()))
+    })?;
+    for suffix in ["-wal", "-shm"] {
+        let journal = with_suffix(file, suffix);
+        if journal.is_file() {
+            std::fs::remove_file(&journal).map_err(|e| {
+                findery_core::Error::Store(format!("cannot delete {}: {e}", journal.display()))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Builds the configured vector backend on top of an open bucket.

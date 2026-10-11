@@ -32,7 +32,7 @@ impl SearchMode {
 }
 
 /// Restrictions applied BEFORE scoring.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchFilter {
     /// Path globs (`crates/core/**`, `**/*.md`).
     #[serde(default)]

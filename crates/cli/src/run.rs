@@ -12,6 +12,7 @@ use findery_client::Client;
 use findery_core::api::{AddDocument, ExportRequest, RegisterProject, SyncRequest, WatchRequest};
 use findery_core::ids::ProjectId;
 use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchRequest};
+use findery_core::project::BucketRef;
 use findery_core::prompt::QueryTask;
 use findery_core::{Error, Result};
 use std::io::Read;
@@ -53,16 +54,22 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
                 Some(explicit) => ProjectId::new(explicit)?,
                 None => derive_id(&client, &root).await?,
             };
-            let project = client
-                .register(&RegisterProject {
-                    root: root.clone(),
-                    id: Some(id.to_string()),
-                    extensions: ext,
-                    bucket,
-                    push: push.then_some(true),
-                    ..Default::default()
-                })
-                .await?;
+            // No `--bucket` means the ordinary case, which the daemon resolves
+            // from the project root: a bucket inside the project, named after
+            // it. The manifest records whichever bucket the daemon actually
+            // used, substitution included.
+            let request = RegisterProject {
+                root: root.clone(),
+                id: Some(id.to_string()),
+                extensions: ext,
+                bucket: bucket.map(|name| BucketRef {
+                    name: Some(name),
+                    path: None,
+                }),
+                push: push.then_some(true),
+                ..Default::default()
+            };
+            let project = client.register(&request).await?;
             if json {
                 render::json(&project)?;
             } else {

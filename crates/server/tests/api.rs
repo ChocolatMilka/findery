@@ -142,8 +142,26 @@ impl Harness {
     /// That is what pointing the daemon at a fresh backend actually looks like:
     /// the bucket is intact, the store is empty, and the warm matrix is gone
     /// because the process is new.
+    /// Where the bucket holding this project lives, as the daemon reports it.
+    ///
+    /// Asked rather than assumed: a project's bucket is inside the project by
+    /// default, so only the daemon knows the path — and a test that guessed
+    /// would be testing its own guess.
+    async fn bucket_file(&self, id: &str) -> std::path::PathBuf {
+        let (_, project) = self.call("GET", &format!("/v1/projects/{id}"), None).await;
+        let name = project["bucket"].as_str().expect("bucket").to_string();
+        let (_, buckets) = self.call("GET", "/v1/buckets", None).await;
+        let entry = buckets
+            .as_array()
+            .expect("buckets")
+            .iter()
+            .find(|b| b["name"] == name.as_str())
+            .expect("the project's bucket is listed");
+        std::path::PathBuf::from(entry["path"].as_str().expect("path"))
+    }
+
     async fn switch_to_a_fresh_vector_store(&mut self, id: &str) {
-        let db = self.data_dir.path().join("bucket.db");
+        let db = self.bucket_file(id).await;
         {
             let conn = rusqlite::Connection::open(&db).expect("open bucket");
             conn.execute("DELETE FROM vectors WHERE project_id = ?1", [id])
@@ -779,7 +797,7 @@ async fn a_bucket_built_by_another_model_refuses_a_sync_but_stays_repairable() {
         .call(
             "POST",
             "/v1/projects",
-            Some(json!({ "root": h.root(), "bucket": "work" })),
+            Some(json!({ "root": h.root(), "bucket": { "name": "work" } })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{project}");
@@ -840,4 +858,146 @@ async fn a_bucket_built_by_another_model_refuses_a_sync_but_stays_repairable() {
     assert_eq!(status, StatusCode::OK, "{removed}");
     assert_eq!(removed["removed"], true, "{removed}");
     assert_eq!(removed["projects"], json!([id]), "{removed}");
+}
+
+/// The ordinary case, and the one everything else is a departure from: a
+/// project indexed into a bucket that lives inside it.
+#[tokio::test]
+async fn a_project_local_bucket_is_created_inside_the_project() {
+    let h = harness().await;
+    let id = h.register().await;
+
+    let file = h.project_dir.path().join(".findery").join("bucket.db");
+    assert!(file.is_file(), "the index lives with the code: {file:?}");
+
+    let (_, buckets) = h.call("GET", "/v1/buckets", None).await;
+    let mine = buckets
+        .as_array()
+        .expect("buckets")
+        .iter()
+        .find(|b| b["name"] == id.as_str())
+        .unwrap_or_else(|| panic!("`{id}` is listed: {buckets}"));
+    assert_eq!(mine["path"], file.display().to_string().replace('\\', "/"));
+}
+
+/// An arbitrary path is honoured as written — a bucket on a shared drive is the
+/// reason the name and the location came apart.
+#[tokio::test]
+async fn a_bucket_at_an_explicit_path_is_opened_where_it_is() {
+    let h = harness().await;
+    let shared = h.data_dir.path().join("elsewhere").join("team.db");
+    let (status, project) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({
+                "root": h.root(),
+                "bucket": { "name": "team", "path": shared.display().to_string() }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{project}");
+    assert_eq!(project["bucket"], "team", "{project}");
+    assert!(shared.is_file(), "opened where it was asked for");
+}
+
+/// A root the daemon cannot write to makes a bucket inside it impossible. The
+/// registration still succeeds — it is a fact about the deployment, not a
+/// mistake — and the bucket it actually used is reported back.
+#[tokio::test]
+async fn a_root_the_daemon_cannot_reach_gets_a_bucket_it_can_write() {
+    let h = harness().await;
+    let (status, project) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({ "id": "remote", "root": "/nowhere/at/all" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{project}");
+    assert_eq!(project["spec"]["push"], true, "{project}");
+
+    let name = project["bucket"].as_str().expect("bucket");
+    let (_, buckets) = h.call("GET", "/v1/buckets", None).await;
+    let mine = buckets
+        .as_array()
+        .expect("buckets")
+        .iter()
+        .find(|b| b["name"] == name)
+        .unwrap_or_else(|| panic!("`{name}` is listed: {buckets}"));
+    let path = mine["path"].as_str().expect("path").replace('\\', "/");
+    let data_dir = h.data_dir.path().display().to_string().replace('\\', "/");
+    assert!(
+        path.starts_with(&data_dir),
+        "the substituted bucket is one the daemon can write: {path}"
+    );
+}
+
+/// The index must never index itself: a bucket inside the tree it describes
+/// would be a file that every sync changes, which is a write loop.
+#[tokio::test]
+async fn the_bucket_inside_a_project_is_never_indexed() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+
+    let (status, files) = h
+        .call("GET", &format!("/v1/projects/{id}/files"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{files}");
+    let paths: Vec<&str> = files
+        .as_array()
+        .expect("files")
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert!(
+        !paths.iter().any(|p| p.contains(".findery")),
+        "the index indexed itself: {paths:?}"
+    );
+
+    // And a second pass is a no-op rather than a growing corpus.
+    let report = h.sync(&id, json!({})).await;
+    assert_eq!(
+        report["files_added"], 0,
+        "a bucket in the tree must not add files every pass: {report}"
+    );
+}
+
+/// A bucket that lives outside the data directory has to survive a restart:
+/// nothing about its path can be derived from its name.
+#[tokio::test]
+async fn an_out_of_place_bucket_is_found_again_after_a_restart() {
+    let mut h = harness().await;
+    let shared = h.data_dir.path().join("elsewhere").join("team.db");
+    let (status, project) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({
+                "root": h.root(),
+                "id": "axle",
+                "bucket": { "name": "team", "path": shared.display().to_string() }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{project}");
+
+    // A fresh process over the same directories: the registry file is the only
+    // thing that remembers where `team` lives.
+    let state = findery_server::state_from_config(h.cfg.clone())
+        .await
+        .expect("restart");
+    h.app = findery_server::app(state);
+
+    let (status, buckets) = h.call("GET", "/v1/buckets", None).await;
+    assert_eq!(status, StatusCode::OK, "{buckets}");
+    assert!(
+        buckets
+            .as_array()
+            .expect("buckets")
+            .iter()
+            .any(|b| b["name"] == "team" && b["projects"] == 1),
+        "the out-of-place bucket came back with its project: {buckets}"
+    );
 }

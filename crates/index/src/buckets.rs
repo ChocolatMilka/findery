@@ -21,6 +21,7 @@ use findery_core::traits::VectorStore;
 use findery_core::{Error, Result};
 use findery_store::Bucket;
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::sync::Arc;
 
 /// One bucket the daemon has open.
@@ -37,13 +38,31 @@ pub struct BucketHandle {
 }
 
 impl BucketHandle {
-    /// Opens one bucket, creating it if it does not exist, and claims `recipe`
-    /// for it.
+    /// Opens the bucket a name derives its path from, creating it if needed.
     pub async fn open(cfg: &Config, name: &str, recipe: &str, dim: usize) -> Result<Self> {
+        Self::open_at(cfg, name, None, recipe, dim).await
+    }
+
+    /// Opens one bucket, creating its file if it does not exist, and claims
+    /// `recipe` for it.
+    ///
+    /// `at` overrides the path the name would derive. INTENT: a bucket can live
+    /// inside the project that indexes it, or on a shared drive — the name is
+    /// its identity, the path is only where it happens to be.
+    pub async fn open_at(
+        cfg: &Config,
+        name: &str,
+        at: Option<&str>,
+        recipe: &str,
+        dim: usize,
+    ) -> Result<Self> {
         if !is_bucket_name(name) {
             return Err(Error::Config(format!("`{name}` is not a bucket name")));
         }
-        let bucket = findery_store::open_bucket(&cfg.store, name)?;
+        let bucket = match at {
+            Some(path) => findery_store::open_bucket_file(path, name)?,
+            None => findery_store::open_bucket(&cfg.store, name)?,
+        };
         // `claim_recipe` stamps a bucket that has none and reports the one it
         // had when they differ, so a `None` means the stored recipe is ours.
         let conflict = bucket.claim_recipe(recipe).await?;
@@ -146,14 +165,35 @@ pub(crate) async fn open_all(
 )> {
     let mut buckets = BTreeMap::new();
     let mut homes = HashMap::new();
-    let mut names = findery_store::list_buckets(&cfg.store)?;
+
+    // Where each bucket's file is, for the ones whose name does not say. An
+    // entry whose file has gone is dropped with a warning: a bucket deleted
+    // between two boots is an ordinary event and not a reason to refuse to
+    // serve every other project.
+    let (registry, warnings) = findery_store::registry::Registry::load(&cfg.store);
+    for warning in warnings {
+        tracing::warn!("{warning}");
+    }
+
+    let mut locations: BTreeMap<String, Option<String>> = findery_store::list_buckets(&cfg.store)?
+        .into_iter()
+        .map(|name| (name, None))
+        .collect();
     // The default bucket always exists, so a fresh install has somewhere to put
     // its first project without a create step.
-    if !names.iter().any(|n| n == DEFAULT_BUCKET) {
-        names.insert(0, DEFAULT_BUCKET.to_string());
+    locations.entry(DEFAULT_BUCKET.to_string()).or_insert(None);
+    for (name, file) in &registry.buckets {
+        // A scan and the registry can both know a bucket. They can only disagree
+        // if the file moved behind the daemon's back, and the registry is the one
+        // that was told — but a name found on disk with no entry keeps the
+        // path its name derives, which is what makes a lost registry survivable.
+        locations
+            .entry(name.clone())
+            .or_insert_with(|| Some(file.clone()));
     }
-    for name in names {
-        let handle = Arc::new(BucketHandle::open(cfg, &name, recipe, dim).await?);
+
+    for (name, at) in locations {
+        let handle = Arc::new(BucketHandle::open_at(cfg, &name, at.as_deref(), recipe, dim).await?);
         for project in handle.bucket.list_projects().await? {
             homes.insert(project.id, name.clone());
         }
@@ -191,12 +231,21 @@ impl Indexer {
         self.handle(&self.home_of(id)?)
     }
 
-    /// Opens a bucket, creating it when it does not exist.
+    /// Opens a bucket where its name says, creating it when it does not exist.
+    pub async fn ensure_bucket(&self, name: &str) -> Result<Arc<BucketHandle>> {
+        self.ensure_bucket_at(name, None).await
+    }
+
+    /// Opens a bucket at `at`, or where its name says when `at` is `None`.
     ///
     /// Creating here rather than behind a separate command is what lets
     /// `findery init --bucket work` be the whole gesture: naming a bucket you
     /// have never used is a decision, not an error.
-    pub async fn ensure_bucket(&self, name: &str) -> Result<Arc<BucketHandle>> {
+    pub async fn ensure_bucket_at(
+        &self,
+        name: &str,
+        at: Option<&str>,
+    ) -> Result<Arc<BucketHandle>> {
         if !is_bucket_name(name) {
             return Err(Error::Config(format!("`{name}` is not a bucket name")));
         }
@@ -204,11 +253,33 @@ impl Indexer {
         // below, which is what keeps this future `Send`.
         let existing = self.buckets.read().get(name).cloned();
         if let Some(existing) = existing {
+            // A name already open elsewhere is refused rather than moved under
+            // the feet of whoever is reading through the handle. Saying so
+            // beats silently serving the old file.
+            if let Some(at) = at
+                && existing.bucket.path() != Path::new(at)
+            {
+                return Err(Error::Config(format!(
+                    "bucket `{name}` is already open at {}; remove it first with \
+                     `findery bucket rm {name}` to move it to {at}",
+                    existing.bucket.path().display()
+                )));
+            }
             return Ok(existing);
         }
         let handle = Arc::new(
-            BucketHandle::open(&self.cfg, name, &self.recipe(), self.embedder.dim()).await?,
+            BucketHandle::open_at(&self.cfg, name, at, &self.recipe(), self.embedder.dim()).await?,
         );
+        // Remembered only when the path is not the one the name derives: the
+        // registry exists for the locations nothing else could find.
+        let derived = findery_core::config::bucket_path(&self.cfg.store.data_dir, name);
+        if handle.bucket.path() != Path::new(&derived) {
+            findery_store::registry::Registry::record(
+                &self.cfg.store,
+                name,
+                &handle.bucket.path().display().to_string(),
+            )?;
+        }
         self.buckets
             .write()
             .insert(name.to_string(), handle.clone());
@@ -263,8 +334,18 @@ impl Indexer {
         // Dropped before the file is removed: the map is the last handle the
         // daemon holds, and the request's own `Arc` is dropped with `handle`.
         self.buckets.write().remove(name);
+        let path = handle.bucket.path().display().to_string();
         drop(handle);
-        let removed = findery_store::delete_bucket(&self.cfg.store, name)?;
+        // A bucket at a derived path is a directory that exists for it alone; a
+        // bucket somewhere else is a file that has neighbours, so only the file
+        // set goes — and the registry stops pointing at it.
+        let derived = findery_core::config::bucket_path(&self.cfg.store.data_dir, name);
+        let removed = if path == derived {
+            findery_store::delete_bucket(&self.cfg.store, name)?
+        } else {
+            findery_store::registry::Registry::forget(&self.cfg.store, name)?;
+            findery_store::delete_bucket_file(&path)?
+        };
         Ok(BucketRemoved {
             removed,
             projects_removed: projects.len() as u64,

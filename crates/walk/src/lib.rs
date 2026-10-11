@@ -13,6 +13,7 @@
 //! rather than dropping it in silence.
 
 use findery_core::model::{Lang, ProjectSpec};
+use findery_core::project::MANIFEST_DIR;
 use findery_core::{Error, Result};
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
@@ -75,7 +76,16 @@ pub fn walk(root: &Path, spec: &ProjectSpec) -> Result<WalkOutcome> {
         .follow_links(false)
         // `.git` is pruned structurally rather than by glob: an exclude pattern
         // still walks the thousands of loose objects before rejecting them.
-        .filter_entry(|entry| entry.file_name() != std::ffi::OsStr::new(".git"))
+        //
+        // `.findery` is pruned the same way, and for a stronger reason: it holds
+        // the bucket that indexes this very tree. Indexing it would be a write
+        // loop — every sync would see a file it had just written. A glob in the
+        // project's own exclude list would do, until someone deletes the line;
+        // this survives that.
+        .filter_entry(|entry| {
+            let name = entry.file_name();
+            name != std::ffi::OsStr::new(".git") && name != std::ffi::OsStr::new(MANIFEST_DIR)
+        })
         .build();
 
     for entry in walker {

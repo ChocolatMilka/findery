@@ -267,7 +267,10 @@ pub fn default_data_dir() -> String {
     home("LOCALAPPDATA", "/findery")
         .or_else(|| home("XDG_DATA_HOME", "/findery"))
         .or_else(|| home("HOME", "/.local/share/findery"))
-        .unwrap_or_else(|| "./.findery".to_string())
+        // Never `./.findery`: that directory is a project's manifest, and a
+        // data directory named after it would put a bucket beside a manifest
+        // that describes a different project.
+        .unwrap_or_else(|| "./.findery-data".to_string())
 }
 
 /// The configuration file a user owns, next to their bucket.

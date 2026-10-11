@@ -7,6 +7,7 @@
 //! dropping a field the server started sending.
 
 use crate::model::{SyncMode, SyncReport};
+use crate::project::BucketRef;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -40,12 +41,15 @@ pub struct RegisterProject {
     pub push: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_bytes: Option<u64>,
-    /// Bucket to hold this project, or the configured default.
+    /// Which bucket should hold this project.
     ///
-    /// Chosen once, at registration: every later command follows the project,
-    /// so nobody has to remember which index a directory belongs to.
+    /// Chosen once, at registration: every later command follows the project, so
+    /// nobody has to remember which index a directory belongs to. Absent means
+    /// the ordinary case — a bucket inside the project, named after it. The
+    /// daemon answers with what it actually used, which is not always what was
+    /// asked (see [`crate::project::BucketRef::resolve`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bucket: Option<String>,
+    pub bucket: Option<BucketRef>,
 }
 
 impl RegisterProject {
