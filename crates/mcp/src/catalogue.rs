@@ -59,14 +59,14 @@ pub fn catalogue() -> Value {
             "sync_project",
             "Re-synchronize a project with the filesystem. Incremental by default and nearly free \
              when nothing changed. Pass paths to refresh specific files after editing them. On a \
-             cold index this takes minutes: pass wait=false and follow the job with job_status.",
+             cold index this takes minutes, so it returns a job id to follow with job_status;              wait=true blocks instead.",
             json!({
                 "type": "object",
                 "properties": {
                     "project": { "type": "string" },
                     "mode": { "type": "string", "enum": ["incremental", "full"] },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Project-relative paths to refresh." },
-                    "wait": { "type": "boolean", "description": "Block until done (default true). Set false on a cold index." }
+                    "wait": { "type": "boolean", "description": "Block until done (default false). The call returns a job id to follow with job_status." }
                 },
                 "required": ["project"]
             }),

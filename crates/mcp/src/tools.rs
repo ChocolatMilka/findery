@@ -161,7 +161,7 @@ async fn sync_project(client: &Client, args: &Value) -> Result<String> {
     let request = SyncRequest {
         mode: args.get("mode").and_then(Value::as_str).map(str::to_string),
         paths: if paths.is_empty() { None } else { Some(paths) },
-        wait: args.get("wait").and_then(Value::as_bool).unwrap_or(true),
+        wait: args.get("wait").and_then(Value::as_bool).unwrap_or(false),
     };
     match client.sync(&project, &request).await? {
         findery_core::api::SyncResponse::Completed { report } => Ok(format!(

@@ -180,6 +180,12 @@ pub fn jobs(list: &[Job]) {
 /// naming the one command that reports why is the whole point.
 pub fn explain(err: &findery_core::Error, server: &str) -> String {
     let base = err.to_string();
+    if base.contains("timed out") {
+        return format!(
+            "{base}\n\n  The daemon is answering, it just did not finish in time. \
+             `findery doctor` says what it is doing."
+        );
+    }
     if base.contains("unreachable") || base.contains("Connection refused") {
         return format!(
             "{base}\n\n  Nothing answers at {server}, and starting a daemon did not help.\n  \
@@ -199,6 +205,14 @@ mod tests {
         let err = Error::upstream("findery", "http://127.0.0.1:8077 unreachable: refused");
         let text = explain(&err, "http://127.0.0.1:8077");
         assert!(text.contains("findery doctor"), "{text}");
+    }
+
+    #[test]
+    fn a_timeout_does_not_blame_a_stopped_daemon() {
+        let err = Error::upstream("findery", "http://127.0.0.1:8077 timed out: deadline");
+        let text = explain(&err, "http://127.0.0.1:8077");
+        assert!(text.contains("did not finish in time"), "{text}");
+        assert!(!text.contains("Nothing answers"), "{text}");
     }
 
     #[test]

@@ -25,8 +25,8 @@ pub mod daemon;
 
 use findery_core::api::{
     AddDocument, BucketInfo, BucketRemoved, CreateBucket, Deleted, ErrorBody, ExportReport,
-    ExportRequest, HealthReport, Job, PruneRequest, PushDocuments, RegisterProject, Removed,
-    Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
+    ExportRequest, HealthReport, Job, JobState, PruneRequest, PushDocuments, RegisterProject,
+    Removed, Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
@@ -41,6 +41,13 @@ use std::time::Duration;
 /// CLI reads the same default out of a settings file, and two literals would let
 /// `findery config show` disagree with what an unconfigured client dials.
 pub const DEFAULT_BASE_URL: &str = findery_core::config::DEFAULT_SERVER_URL;
+
+/// How often a client looks at a job it is waiting on.
+///
+/// INTENT: each look is an HTTP round trip, and a job's counters move in units
+/// of files — far slower than this. Two looks a second is live enough to watch
+/// and quiet enough to leave the daemon alone.
+const JOB_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// HTTP client for one daemon.
 #[derive(Clone)]
@@ -182,23 +189,27 @@ impl Client {
         .await
     }
 
-    /// Convenience: a blocking incremental sync.
+    /// Convenience: a blocking incremental sync, returning its report.
+    ///
+    /// INTENT: it starts a JOB and waits on it, rather than asking the daemon
+    /// to hold one request open for the length of the run. The inline form
+    /// exists on the server, but any client timeout shorter than the sync then
+    /// kills it mid-write — and the daemon looks unreachable while it is
+    /// working perfectly well. A job is also the daemon's to finish: the client
+    /// going away no longer interrupts the indexing.
     pub async fn sync_now(&self, id: &ProjectId) -> Result<SyncReport> {
-        let response = self
-            .sync(
-                id,
-                &SyncRequest {
-                    wait: true,
-                    ..SyncRequest::default()
-                },
-            )
-            .await?;
-        match response {
-            SyncResponse::Completed { report } => Ok(report),
-            SyncResponse::Accepted { job } => Err(Error::Internal(format!(
-                "expected a report, got job {}",
-                job.id
-            ))),
+        let response = self.sync(id, &SyncRequest::default()).await?;
+        let job = match response {
+            // A sync that finished inside the round trip still answers inline.
+            SyncResponse::Completed { report } => return Ok(report),
+            SyncResponse::Accepted { job } => job,
+        };
+        let done = self.await_job(&job.id).await?;
+        match (done.state, done.report) {
+            (JobState::Succeeded, Some(report)) => Ok(report),
+            (_, _) => Err(Error::Internal(done.error.unwrap_or_else(|| {
+                format!("job `{}` ended as {:?} with no report", job.id, done.state)
+            }))),
         }
     }
 
@@ -308,20 +319,19 @@ impl Client {
             .await
     }
 
-    /// Polls a job until it finishes or `deadline` elapses.
-    pub async fn await_job(&self, id: &str, deadline: Duration) -> Result<Job> {
-        let started = std::time::Instant::now();
+    /// Polls a job until it finishes and returns it.
+    ///
+    /// INTENT: no deadline. A sync's duration is a property of the corpus and
+    /// the model, not something a caller can pick in advance — a cap here would
+    /// abandon a job that is running perfectly well, which is the very failure
+    /// the job exists to avoid.
+    pub async fn await_job(&self, id: &str) -> Result<Job> {
         loop {
             let job = self.job(id).await?;
             if job.state.is_terminal() {
                 return Ok(job);
             }
-            if started.elapsed() >= deadline {
-                return Err(Error::Internal(format!(
-                    "job `{id}` still running after {deadline:?}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(JOB_POLL_INTERVAL).await;
         }
     }
 
@@ -343,10 +353,17 @@ impl Client {
         if let Some(b) = body {
             req = req.json(b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| Error::upstream("findery", format!("{} unreachable: {e}", self.base)))?;
+        let resp = req.send().await.map_err(|e| {
+            // A timeout is not an unreachable daemon: it is answering, just not
+            // yet. Two different causes, two different fixes, and the caller
+            // that cannot tell them apart sends the reader to the wrong one.
+            let what = if e.is_timeout() {
+                "timed out"
+            } else {
+                "unreachable"
+            };
+            Error::upstream("findery", format!("{} {what}: {e}", self.base))
+        })?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
 

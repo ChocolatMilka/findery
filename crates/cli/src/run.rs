@@ -129,9 +129,12 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
             let request = SyncRequest {
                 mode: full.then(|| "full".to_string()),
                 paths: (!paths.is_empty()).then_some(paths),
-                wait: !background && bar.is_none(),
+                // The daemon runs a job and the CLI follows it; see
+                // `progress::watch_sync` on why it never asks the server to
+                // hold one request open for the length of the run.
+                wait: false,
             };
-            match crate::progress::watch_sync(&client, &id, &request, bar).await? {
+            match crate::progress::watch_sync(&client, &id, &request, bar, !background).await? {
                 findery_core::api::SyncResponse::Completed { report } => {
                     if json {
                         render::json(&report)?;

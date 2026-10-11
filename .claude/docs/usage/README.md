@@ -325,8 +325,10 @@ first, so `2048` is a count of files, not an estimate.
 
 The bar only exists when someone is watching — a terminal on stderr and no
 `--json`. Piped or redirected, the run prints the same one-line summary it
-always did, which is what a script or a CI log can grep for. `--background`
-never draws one, since watching a job is the opposite of not waiting for it.
+always did, which is what a script or a CI log can grep for. Either way the run
+IS a job on the daemon, followed poll by poll: the CLI never holds one request
+open for the length of a sync, because a client timeout would then abort the
+indexing mid-write. `--background` returns the job id instead of following it.
 
 `--json` on any command prints the daemon's answer verbatim, for scripting.
 

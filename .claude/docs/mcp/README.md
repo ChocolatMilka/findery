@@ -87,9 +87,9 @@ Then `claude mcp list` to check, `/mcp` in the session to see the tools.
 ### A cold index is minutes, so it is a job
 
 `sync_project` on an index that has never been built takes minutes, and an MCP
-call that blocks that long is a call that times out and gets retried. Pass
-`wait: false`: the tool returns a job id immediately, and `job_status` answers
-with what that job has done so far —
+call that blocks that long is a call that times out and gets retried. That is
+why it does not wait by default: the tool returns a job id immediately, and
+`job_status` answers with what that job has done so far —
 
 ```
 job `a3f1…` — axle · full · running

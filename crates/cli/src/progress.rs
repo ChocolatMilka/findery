@@ -55,29 +55,43 @@ fn draw(bar: &ProgressBar, p: &Progress) {
     ));
 }
 
-/// Runs a sync, drawing it while it runs. With no bar the request asked the
-/// server to wait, so the answer comes back complete and this is a plain call.
+/// Runs a sync and, unless the caller asked not to wait, follows it to the end.
+///
+/// INTENT: always a JOB, never one request held open for the length of the run.
+/// Asking the server to block works right up to the moment the sync outlives the
+/// client's request timeout, which then aborts the indexing mid-write and
+/// reports the daemon as unreachable while it is working perfectly well. A job
+/// belongs to the daemon, so a client that goes away does not interrupt it, and
+/// every request stays short whatever the corpus weighs.
+///
+/// `wait = false` is the `--background` promise: hand back the job, now.
 pub(crate) async fn watch_sync(
     client: &Client,
     project: &ProjectId,
     request: &SyncRequest,
     bar: Option<ProgressBar>,
+    wait: bool,
 ) -> Result<SyncResponse> {
     let job = match client.sync(project, request).await? {
+        // A sync that finished inside the round trip still answers inline.
         SyncResponse::Completed { report } => return Ok(SyncResponse::Completed { report }),
         SyncResponse::Accepted { job } => job,
     };
-    let Some(bar) = bar else {
+    if !wait {
         return Ok(SyncResponse::Accepted { job });
-    };
+    }
 
     loop {
         let current = client.job(&job.id).await?;
-        if let Some(progress) = &current.progress {
-            draw(&bar, progress);
+        // A bar is a luxury; waiting is not. Without one — a pipe, `--json`, a
+        // log — the run is followed just the same, silently.
+        if let (Some(bar), Some(progress)) = (&bar, &current.progress) {
+            draw(bar, progress);
         }
         if current.state.is_terminal() {
-            bar.finish_and_clear();
+            if let Some(bar) = &bar {
+                bar.finish_and_clear();
+            }
             return terminal(current);
         }
         tokio::time::sleep(POLL_INTERVAL).await;
@@ -92,12 +106,8 @@ pub(crate) async fn sync_now(
     json: bool,
 ) -> Result<findery_core::model::SyncReport> {
     let bar = if json { None } else { bar() };
-    let request = SyncRequest {
-        mode: None,
-        paths: None,
-        wait: bar.is_none(),
-    };
-    match watch_sync(client, project, &request, bar).await? {
+    let request = SyncRequest::default();
+    match watch_sync(client, project, &request, bar, true).await? {
         SyncResponse::Completed { report } => Ok(report),
         // Unreachable while `wait` mirrors the bar, and still handled: an
         // `unreachable!` on a production path is a panic waiting for a refactor.

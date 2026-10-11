@@ -255,8 +255,8 @@ pub struct SyncRequest {
     /// Paths to sync; implies `mode = "paths"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
-    /// Block until the sync finishes and return the report inline. Convenient
-    /// from a CLI, a bad idea from an MCP client facing a cold index.
+    /// Block until the sync finishes and return the report inline. A cold index
+    /// outlives any client timeout, so callers start a job and follow it.
     #[serde(default)]
     pub wait: bool,
 }
