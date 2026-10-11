@@ -23,31 +23,24 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Least privilege. Only `release` writes anything, and it asks for it there.
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  # Cargo's incremental cache fights a CI cache that restores `target/`.
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
-  # The toolset the installer is built with, in one place: the build step and
-  # the extension restore below must agree, and a drifting pair fails obscurely.
+  # v6+ of the toolset requires accepting the Open Source Maintenance Fee EULA.
   WIX_VERSION: "5.0.2"
-  # The version the upgrade test installs before the release. Used only when it
-  # is genuinely older than the release — see the comparison in `installer`.
+  # Installed before the release to exercise the upgrade path, when it is older.
   FIXTURE_VERSION: "0.0.1"
 
 jobs:
-  # ---------------------------------------------------------------------------
   check:
     name: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # From `rust-toolchain.toml`, rustfmt and clippy included.
       - run: rustup show
 
       - uses: actions/cache@v4
@@ -59,11 +52,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      # fmt-check + clippy + test + layers + sizes: the same command a
-      # contributor runs, so "green locally" and "green in CI" are one claim.
       - run: make check
 
-  # ---------------------------------------------------------------------------
   windows:
     name: windows binaries
     runs-on: windows-latest
@@ -80,13 +70,11 @@ jobs:
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-release-
 
-      # The three binaries and nothing else; they ship together, see the manifest.
       - run: >
           cargo build --release
           -p findery-cli -p findery-server -p findery-mcp
 
-      # Staged so the manifest names a path, not a cargo layout: the .wxs can
-      # then be built by hand without knowing how the binaries were produced.
+      # The manifest reads `artifacts/`, so a .wxs can be built by hand.
       - name: Stage the binaries
         shell: pwsh
         run: |
@@ -102,7 +90,6 @@ jobs:
           path: artifacts/*.exe
           if-no-files-found: error
 
-  # ---------------------------------------------------------------------------
   installer:
     name: msi
     needs: windows
@@ -119,29 +106,23 @@ jobs:
         shell: pwsh
         run: |
           dotnet tool install --global wix --version $env:WIX_VERSION
+
+          # GITHUB_PATH only reaches later steps; this one needs it now.
           $tools = "$env:USERPROFILE\.dotnet\tools"
-          # `GITHUB_PATH` only reaches *later* steps, and the extension below is
-          # added by this one — so the current process needs it too.
           $env:Path = "$tools;$env:Path"
           $tools | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
-          # The Restart Manager integration, to close a running `finderyd` before
-          # its file is replaced. Same version as the tool: a mismatched pair
-          # fails obscurely at build time.
+          # Restart Manager integration, to close a running finderyd before it is
+          # replaced.
           wix extension add --global "WixToolset.Util.wixext/$env:WIX_VERSION"
           wix extension list --global
 
-      # A tag names the release, Cargo.toml names the binary. When they disagree
-      # the installer is labelled one version and contains another — noticed only
-      # after it is published.
       - name: Resolve the version
         id: version
         shell: pwsh
         run: |
-          # A version is two to four numbers; `v0.1` is one. An MSI's
-          # `ProductVersion` is conventionally three, so a short one is padded
-          # here rather than refused — the tag is the project's to choose, and
-          # `v0.1` is a perfectly ordinary way to name a release.
+          # An MSI version is three dot-separated numbers, so `v0.1` is padded
+          # rather than refused.
           function Get-Version($raw, $what) {
             $body = $raw -replace '^v', ''
             if ($body -notmatch '^\d+(\.\d+){1,3}$') {
@@ -154,7 +135,6 @@ jobs:
             return , $parts
           }
 
-          # Padded to four so `0.1`, `0.1.0` and `0.1.0.0` compare equal.
           function Compare-Version($a, $b) {
             $x = @($a) + @(0, 0, 0, 0)
             $y = @($b) + @(0, 0, 0, 0)
@@ -172,27 +152,16 @@ jobs:
               throw "tag $env:GITHUB_REF_NAME and Cargo.toml version $declared disagree; bump one or retag"
             }
           } else {
-            # A branch or dispatched build still produces an installer, so the
-            # packaging path is exercised before a release depends on it — under a
-            # placeholder version nothing should be published as.
             $parts = @(0, 0, 0)
           }
 
-          # At least three fields, which is what an MSI wants; a fourth is kept.
           while ($parts.Count -lt 3) { $parts += 0 }
           $version = $parts -join '.'
           Write-Host "$env:GITHUB_REF_NAME -> installer version $version"
           "version=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
-          # The version the upgrade test installs *first*, and only when it is
-          # genuinely older than the release.
-          #
-          # `MajorUpgrade` blocks downgrades — that is what stops someone
-          # replacing a newer install with an older one — so on a branch build,
-          # whose placeholder is 0.0.0, installing this fixture first would make
-          # the "upgrade" a downgrade and the install would refuse with 1603.
-          # The table says so in as many words: the 0.0.0 package carries a row
-          # `min=0.0.0 max='' attrs=2`, which blocks every version above it.
+          # MajorUpgrade blocks downgrades, so the fixture is used only when it
+          # is older than the release.
           function IsOlder($candidate, $release) {
             $a = @($candidate.Split('.') | ForEach-Object { [int]$_ })
             $b = @($release.Split('.') | ForEach-Object { [int]$_ })
@@ -219,10 +188,6 @@ jobs:
                     packaging/windows/findery.wxs `
                     -o "artifacts/findery-$v-x64.msi"
 
-          # A second package, older, from the same sources. Installing it first is
-          # the only way to exercise the upgrade path — where the `UpgradeCode`
-          # decides whether the new package replaces the old one or sits beside it
-          # as a second product. Absent when the release has nothing older.
           $fixture = "${{ steps.version.outputs.fixture }}"
           if ($fixture) {
             wix build -arch x64 `
@@ -239,9 +204,8 @@ jobs:
           $msi = "artifacts/findery-$v-x64.msi"
           $exe = "$env:ProgramFiles\findery\findery.exe"
 
-          # msiexec needs a full Windows path. Given `artifacts/x.msi`, it reads
-          # the forward slash as a switch separator and answers 1619, "the
-          # installation package could not be opened".
+          # msiexec reads a relative path's forward slash as a switch separator
+          # and answers 1619.
           function FullPath($relative) { (Resolve-Path -LiteralPath $relative).Path }
 
           function Install($package, $tag) {
@@ -252,7 +216,7 @@ jobs:
             if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "install ($tag) failed: $($p.ExitCode)" }
           }
 
-          # What Apps & features would list. One entry, always.
+          # What Apps & features would list.
           function FinderyProducts {
             @(
               Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue
@@ -268,27 +232,22 @@ jobs:
 
           Install $msi "new"
 
-          # An upgrade must REPLACE the old package, not join it: two registered
-          # products leave an entry in Apps & features that removes the other.
+          # An upgrade replaces the old package rather than joining it.
           $count = (FinderyProducts).Count
           if ($count -ne 1) { throw "$count 'findery' products are registered; the upgrade did not replace the old one" }
 
-          if (-not (Test-Path $exe)) { throw "findery.exe was not installed to Program Files" }
           foreach ($b in @("findery.exe", "finderyd.exe", "findery-mcp.exe")) {
-            $p = "$env:ProgramFiles\findery\$b"
-            if (-not (Test-Path $p)) { throw "$b is missing; the three ship together" }
+            if (-not (Test-Path "$env:ProgramFiles\findery\$b")) { throw "$b is missing" }
           }
 
           $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-          if ($machinePath -notlike "*\findery*") { throw "the installer did not add itself to PATH" }
           $entries = ([regex]::Matches($machinePath, [regex]::Escape("$env:ProgramFiles\findery"))).Count
-          if ($entries -ne 1) { throw "PATH holds the install directory $entries times; an upgrade duplicated it" }
+          if ($entries -ne 1) { throw "PATH holds the install directory $entries times" }
 
           $out = & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "findery --version exited $LASTEXITCODE" }
           Write-Host "ran: $out"
 
-          # A real execution of the second binary, not a presence check.
           & "$env:ProgramFiles\findery\finderyd.exe" --check | Select-Object -First 3
           if ($LASTEXITCODE -ne 0) { throw "finderyd --check exited $LASTEXITCODE" }
 
@@ -305,22 +264,23 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: msi
-          # The release MSI only: 0.0.1 above is a fixture, and publishing it
-          # would put a second, older installer on the release page.
+          # The fixture is not an artifact.
           path: artifacts/findery-${{ steps.version.outputs.version }}-x64.msi
           if-no-files-found: error
 
-  # ---------------------------------------------------------------------------
   release:
     name: release
     needs: installer
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      # The only job that writes anything, and the only thing it writes is the
-      # release for the tag it was triggered by.
       contents: write
     steps:
+      # gh resolves the repository from the working tree.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - uses: actions/download-artifact@v4
         with:
           name: msi
@@ -330,12 +290,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # `gh` rather than a third-party release action: it is on the runner,
-          # needs no version kept current, and the token is already here.
           ls -l artifacts
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            # A re-run after a failure past this point replaces the asset instead
-            # of failing on a release that already exists.
             gh release upload "$GITHUB_REF_NAME" artifacts/*.msi --clobber
           else
             gh release create "$GITHUB_REF_NAME" \
