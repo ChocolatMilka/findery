@@ -108,13 +108,17 @@ candidate_multiplier = 4
 max_snippet_chars = 2400
 
 [project_defaults]
-extensions = ["rs", "md"]
+# One entry per language the chunker registry knows. `.jsx` and `.tsx` are out
+# on purpose: JSX text may hold an apostrophe, which the lexical scanner reads
+# as a string opener. `.toml` has no chunker of its own and falls back.
+extensions = ["rs", "md", "toml", "js", "mjs", "cjs", "ts", "py", "php", "json"]
 # Two families: build output and vendored trees are noise; the rest are
 # secret-bearing paths, which matter because hidden entries ARE indexed.
 # `.env.example` is caught by `**/.env.*` — drop that line to index it.
 exclude = [
     "**/target/**",
     "**/node_modules/**",
+    "**/package-lock.json",
     "**/.git/**",
     "**/vendor/**",
     "**/*.lock",

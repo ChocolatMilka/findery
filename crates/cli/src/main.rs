@@ -85,7 +85,8 @@ pub(crate) enum Command {
         /// Project id. Derived from the directory name when omitted.
         #[arg(long)]
         id: Option<String>,
-        /// Extensions to index, comma-separated. Defaults to `rs,md`.
+        /// Extensions to index, comma-separated. Defaults to every
+        /// language the chunkers know: `rs,md,toml,js,mjs,cjs,ts,py,php,json`.
         #[arg(long, value_delimiter = ',')]
         ext: Option<Vec<String>>,
         /// Bucket to hold this project, by name. Defaults to a bucket inside

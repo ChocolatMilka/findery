@@ -24,12 +24,23 @@ pub enum Lang {
     Rust,
     Markdown,
     Toml,
+    /// JavaScript, and TypeScript with it: types are erased long before a brace
+    /// is ever counted.
+    #[serde(rename = "javascript")]
+    JavaScript,
+    Python,
+    Php,
+    Json,
     Other,
 }
 
 impl Lang {
     /// Infers the language from the extension. Everything else is `Other` and
     /// goes through the generic chunker.
+    ///
+    /// INTENT: `.jsx` and `.tsx` are absent on purpose — JSX text may hold an
+    /// apostrophe (`<p>don't</p>`), which a lexical scanner reads as a string
+    /// opener and lets run across the markup. They take the text fallback.
     pub fn from_path(path: &str) -> Self {
         let ext = path
             .rsplit('.')
@@ -40,6 +51,10 @@ impl Lang {
             "rs" => Self::Rust,
             "md" | "markdown" | "mdx" => Self::Markdown,
             "toml" => Self::Toml,
+            "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" => Self::JavaScript,
+            "py" | "pyi" => Self::Python,
+            "php" => Self::Php,
+            "json" | "jsonc" => Self::Json,
             _ => Self::Other,
         }
     }
@@ -49,6 +64,10 @@ impl Lang {
             Self::Rust => "rust",
             Self::Markdown => "markdown",
             Self::Toml => "toml",
+            Self::JavaScript => "javascript",
+            Self::Python => "python",
+            Self::Php => "php",
+            Self::Json => "json",
             Self::Other => "other",
         }
     }
@@ -58,6 +77,10 @@ impl Lang {
             "rust" => Some(Self::Rust),
             "markdown" => Some(Self::Markdown),
             "toml" => Some(Self::Toml),
+            "javascript" | "js" | "typescript" | "ts" => Some(Self::JavaScript),
+            "python" => Some(Self::Python),
+            "php" => Some(Self::Php),
+            "json" => Some(Self::Json),
             "other" => Some(Self::Other),
             _ => None,
         }
@@ -75,16 +98,17 @@ impl Lang {
 pub enum ChunkKind {
     /// Whole file (small file kept in one piece).
     File,
-    /// Free-standing `fn`.
+    /// Free-standing `fn`, `def` or `function`.
     Function,
-    /// `fn` inside an `impl` or a `trait`.
+    /// A `fn` / `function` / `def` inside a class, an `impl` or a `trait`.
     Method,
+    /// A `struct`, or the `class` of JavaScript, PHP and Python.
     Struct,
     Enum,
     Trait,
     /// Whole `impl` block (small enough to stay together).
     Impl,
-    /// Inline `mod`.
+    /// Inline `mod`, or a module docstring.
     Module,
     /// `macro_rules!` or a procedural macro entry point.
     Macro,

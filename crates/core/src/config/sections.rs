@@ -5,6 +5,7 @@
 //! overlay and validation. Those are one responsibility; describing every knob
 //! of every subsystem is another (CONV-029).
 
+use crate::config::default_data_dir;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -232,81 +233,6 @@ impl Default for StoreConfig {
     }
 }
 
-/// Directory holding every bucket but the default one.
-pub fn buckets_dir(data_dir: &str) -> String {
-    format!("{}/buckets", data_dir.trim_end_matches('/'))
-}
-
-/// Path of one bucket's database file.
-///
-/// INTENT: the default bucket keeps the flat `bucket.db` path it has always
-/// had, so an existing install is not migrated by this feature and a single
-/// bucket never grows a directory level. Named buckets live one level down,
-/// where their name is the directory and nothing else may be.
-pub fn bucket_path(data_dir: &str, name: &str) -> String {
-    if name == crate::model::DEFAULT_BUCKET {
-        format!("{}/bucket.db", data_dir.trim_end_matches('/'))
-    } else {
-        format!("{}/{name}/bucket.db", buckets_dir(data_dir))
-    }
-}
-
-/// Where the bucket lives when nothing says otherwise.
-///
-/// INTENT: the default targets a daemon running natively on a developer
-/// machine, because that is the setup with no bind mount, no path translation
-/// and therefore no limit on which disk a project may live on. Compose
-/// overrides it with `/data`.
-pub fn default_data_dir() -> String {
-    let home = |var: &str, suffix: &str| {
-        std::env::var(var).ok().filter(|v| !v.is_empty()).map(|v| {
-            let base = v.replace('\\', "/");
-            format!("{}{suffix}", base.trim_end_matches('/'))
-        })
-    };
-    home("LOCALAPPDATA", "/findery")
-        .or_else(|| home("XDG_DATA_HOME", "/findery"))
-        .or_else(|| home("HOME", "/.local/share/findery"))
-        // Never `./.findery`: that directory is a project's manifest, and a
-        // data directory named after it would put a bucket beside a manifest
-        // that describes a different project.
-        .unwrap_or_else(|| "./.findery-data".to_string())
-}
-
-/// The configuration file a user owns, next to their bucket.
-///
-/// INTENT: settings had only two homes, and neither belonged to the user. A
-/// path like `/etc/findery/config.toml` means nothing on Windows and needs root
-/// on Linux; environment variables live in a shell profile the daemon may never
-/// read, and vanish from the next terminal. A file beside the bucket is
-/// writable, per-user, survives a reboot, and is somewhere both the CLI and the
-/// daemon can agree on without being told.
-///
-/// Naming it here rather than in either of them is the point: two definitions
-/// of "where the settings live" is a setting that silently does nothing.
-pub fn user_config_path() -> String {
-    format!("{}/config.toml", data_dir_from_env())
-}
-
-/// Where the bucket lives for a process that has not loaded a configuration.
-///
-/// INTENT: clients need to *name* the data directory — in a diagnostic, in an
-/// error pointing at the daemon's log — without opening it. Reading
-/// `FINDERY_DATA_DIR` here is what keeps those messages pointing at the
-/// directory the daemon will actually use; [`default_data_dir`] alone would
-/// send the reader to a file that does not exist.
-///
-/// It is deliberately not the whole overlay: a configuration *file* can also
-/// move the data directory, and only the daemon reads that. Clients that need
-/// certainty ask the daemon.
-pub fn data_dir_from_env() -> String {
-    std::env::var("FINDERY_DATA_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(|v| v.replace('\\', "/").trim_end_matches('/').to_string())
-        .unwrap_or_else(default_data_dir)
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QdrantConfig {
@@ -336,13 +262,18 @@ impl Default for QdrantConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChunkConfig {
-    /// Hard ceiling of a chunk, in characters. Roughly `chars / 3.6` tokens on
-    /// Rust source.
+    /// Hard ceiling of a chunk, in **bytes** — the name is kept for the
+    /// configuration files already written, but the measure is `str::len`, so a
+    /// French or CJK comment reaches it sooner than its character count
+    /// suggests. Roughly `bytes / 3.6` tokens on ASCII source.
     pub max_chars: usize,
-    /// Below this, a chunk is merged with its neighbour instead of embedded
-    /// alone: a three-line `impl Display` is noise on its own.
+    /// Below this, an anonymous chunk is merged with its anonymous neighbour
+    /// instead of embedded alone: a run of `use` lines is noise as separate
+    /// fragments. A chunk that carries a symbol is never merged away — its
+    /// `kind` and its slot in the keyword index are exactly what a search for
+    /// an exact identifier relies on. In bytes, like `max_chars`.
     pub min_chars: usize,
-    /// Overlap when an oversized body has to be split into windows.
+    /// Overlap when an oversized body has to be split into windows. In bytes.
     pub overlap_chars: usize,
     /// Index `#[cfg(test)]` items as well.
     pub include_tests: bool,
@@ -388,6 +319,13 @@ impl Default for SearchConfig {
     }
 }
 
+/// What a project walks when it says nothing: one extension per language the
+/// chunker registry knows. A file whose extension is absent is never walked, so
+/// a language supported but not listed here is a language nobody sees.
+pub const DEFAULT_EXTENSIONS: &[&str] = &[
+    "rs", "md", "toml", "js", "mjs", "cjs", "ts", "py", "php", "json",
+];
+
 /// Defaults applied to a project that does not override them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -404,7 +342,10 @@ pub struct ProjectDefaults {
 impl Default for ProjectDefaults {
     fn default() -> Self {
         Self {
-            extensions: vec!["rs".into(), "md".into()],
+            extensions: DEFAULT_EXTENSIONS
+                .iter()
+                .map(|e| (*e).to_string())
+                .collect(),
             // Two families here. Build output and vendored trees are noise.
             // The rest are secret-bearing paths: hidden entries ARE indexed by
             // default, so the block that keeps credentials out of the index has
@@ -412,6 +353,8 @@ impl Default for ProjectDefaults {
             exclude: vec![
                 "**/target/**".into(),
                 "**/node_modules/**".into(),
+                // A generated lockfile named `.json` slips through `*.lock`.
+                "**/package-lock.json".into(),
                 "**/.git/**".into(),
                 "**/vendor/**".into(),
                 "**/*.lock".into(),

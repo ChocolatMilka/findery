@@ -22,8 +22,8 @@ pub fn catalogue() -> Value {
                     "k": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Number of excerpts (default 8)." },
                     "mode": { "type": "string", "enum": ["hybrid", "vector", "keyword"], "description": "Default hybrid. Use keyword for an exact identifier, vector for a fuzzy concept." },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Path globs, e.g. crates/core/**." },
-                    "langs": { "type": "array", "items": { "type": "string", "enum": ["rust", "markdown", "toml", "other"] } },
-                    "kinds": { "type": "array", "items": { "type": "string" }, "description": "function, method, struct, enum, trait, impl, module, test, doc_section…" },
+                    "langs": { "type": "array", "items": { "type": "string", "enum": ["rust", "markdown", "toml", "javascript", "python", "php", "json", "other"] } },
+                    "kinds": { "type": "array", "items": { "type": "string" }, "description": "function, method, struct (a class too), enum, trait, impl, module, test, const, doc_section…" },
                     "symbol_contains": { "type": "string", "description": "Restrict to symbols containing this substring." },
                     "task": {
                         "type": "string",

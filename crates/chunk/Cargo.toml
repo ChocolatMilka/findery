@@ -4,7 +4,7 @@ version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
-description            = "L1 - deterministic, dependency-free chunkers for Rust and Markdown."
+description            = "L1 - deterministic, dependency-free chunkers for Rust, JavaScript, TypeScript, Python, PHP, Markdown and JSON."
 
 [dependencies]
 findery-core = { workspace = true }
