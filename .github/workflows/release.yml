@@ -35,6 +35,9 @@ env:
   # The toolset the installer is built with, in one place: the build step and
   # the extension restore below must agree, and a drifting pair fails obscurely.
   WIX_VERSION: "5.0.2"
+  # The version the upgrade test installs before the release. Used only when it
+  # is genuinely older than the release — see the comparison in `installer`.
+  FIXTURE_VERSION: "0.0.1"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -154,6 +157,31 @@ jobs:
           }
           "version=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
+          # The version the upgrade test installs *first*, and only when it is
+          # genuinely older than the release.
+          #
+          # `MajorUpgrade` blocks downgrades — that is what stops someone
+          # replacing a newer install with an older one — so on a branch build,
+          # whose placeholder is 0.0.0, installing this fixture first would make
+          # the "upgrade" a downgrade and the install would refuse with 1603.
+          # The table says so in as many words: the 0.0.0 package carries a row
+          # `min=0.0.0 max='' attrs=2`, which blocks every version above it.
+          function IsOlder($candidate, $release) {
+            $a = @($candidate.Split('.') | ForEach-Object { [int]$_ })
+            $b = @($release.Split('.') | ForEach-Object { [int]$_ })
+            for ($i = 0; $i -lt [Math]::Max($a.Count, $b.Count); $i++) {
+              $l = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+              $r = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+              if ($l -ne $r) { return $l -lt $r }
+            }
+            return $false
+          }
+          $fixture = if (IsOlder $env:FIXTURE_VERSION $version) { $env:FIXTURE_VERSION } else { "" }
+          if (-not $fixture) {
+            Write-Host "no upgrade test: $version has no older version to install first"
+          }
+          "fixture=$fixture" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
       - name: Build the installer
         shell: pwsh
         run: |
@@ -164,16 +192,17 @@ jobs:
                     packaging/windows/findery.wxs `
                     -o "artifacts/findery-$v-x64.msi"
 
-          # A second package, one version older, from the same sources. Installing
-          # it first is the only way to exercise the upgrade path — where the
-          # `UpgradeCode` decides whether the new package replaces the old one or
-          # sits beside it as a second product.
-          if ($v -ne "0.0.1") {
+          # A second package, older, from the same sources. Installing it first is
+          # the only way to exercise the upgrade path — where the `UpgradeCode`
+          # decides whether the new package replaces the old one or sits beside it
+          # as a second product. Absent when the release has nothing older.
+          $fixture = "${{ steps.version.outputs.fixture }}"
+          if ($fixture) {
             wix build -arch x64 `
                       -ext WixToolset.Util.wixext `
-                      -d Version=0.0.1 `
+                      -d Version=$fixture `
                       packaging/windows/findery.wxs `
-                      -o "artifacts/findery-0.0.1-x64.msi"
+                      -o "artifacts/findery-$fixture-x64.msi"
           }
 
       - name: Install it, run it, upgrade it, remove it
@@ -204,8 +233,9 @@ jobs:
             ) | Where-Object { $_.DisplayName -eq "findery" }
           }
 
-          if (Test-Path "artifacts/findery-0.0.1-x64.msi") {
-            Install "artifacts/findery-0.0.1-x64.msi" "old"
+          $fixture = "${{ steps.version.outputs.fixture }}"
+          if ($fixture) {
+            Install "artifacts/findery-$fixture-x64.msi" "old"
             Write-Host "products registered before the upgrade: $((FinderyProducts).Count)"
           }
 
