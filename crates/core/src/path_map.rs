@@ -32,7 +32,7 @@ impl PathMapper {
             m.host = normalize(&m.host);
             m.container = normalize(&m.container);
         }
-        mounts.sort_by(|a, b| b.container.len().cmp(&a.container.len()));
+        mounts.sort_by_key(|m| std::cmp::Reverse(m.container.len()));
         Self { mounts }
     }
 

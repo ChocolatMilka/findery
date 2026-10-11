@@ -27,11 +27,15 @@ impl MockEmbedder {
             let mut h = blake3::Hasher::new();
             h.update(text.as_bytes());
             h.update(&counter.to_le_bytes());
-            for pair in h.finalize().as_bytes().chunks_exact(2) {
+            // A 32-byte digest, read two bytes at a time; the tail `as_chunks`
+            // leaves over is empty, 32 dividing evenly.
+            let digest = h.finalize();
+            let (pairs, _) = digest.as_bytes().as_chunks::<2>();
+            for pair in pairs {
                 if out.len() == self.dim {
                     break;
                 }
-                let raw = u16::from_le_bytes([pair[0], pair[1]]);
+                let raw = u16::from_le_bytes(*pair);
                 out.push((raw as f32 / u16::MAX as f32) - 0.5);
             }
             counter += 1;

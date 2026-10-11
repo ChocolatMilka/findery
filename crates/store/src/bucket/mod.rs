@@ -174,10 +174,10 @@ pub fn blob_to_vec(blob: &[u8]) -> Result<Vec<f32>> {
             blob.len()
         )));
     }
-    Ok(blob
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect())
+    // `as_chunks` hands back the whole 4-byte groups and whatever tail is left
+    // over; the alignment check above is what makes that tail empty.
+    let (words, _) = blob.as_chunks::<4>();
+    Ok(words.iter().copied().map(f32::from_le_bytes).collect())
 }
 
 #[cfg(test)]
