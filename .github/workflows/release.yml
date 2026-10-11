@@ -183,9 +183,16 @@ jobs:
           $msi = "artifacts/findery-$v-x64.msi"
           $exe = "$env:ProgramFiles\findery\findery.exe"
 
+          # msiexec needs a full Windows path. Given `artifacts/x.msi`, it reads
+          # the forward slash as a switch separator and answers 1619, "the
+          # installation package could not be opened".
+          function FullPath($relative) { (Resolve-Path -LiteralPath $relative).Path }
+
           function Install($package, $tag) {
-            $log = "msiexec-$tag.log"
-            $p = Start-Process msiexec -ArgumentList "/i", "$package", "/qn", "/norestart", "/l*v", "$log" -Wait -PassThru
+            $log = Join-Path $PWD "msiexec-$tag.log"
+            $p = Start-Process msiexec `
+                   -ArgumentList "/i `"$(FullPath $package)`" /qn /norestart /l*v `"$log`"" `
+                   -Wait -PassThru
             if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "install ($tag) failed: $($p.ExitCode)" }
           }
 
@@ -228,8 +235,11 @@ jobs:
           & "$env:ProgramFiles\findery\finderyd.exe" --check | Select-Object -First 3
           if ($LASTEXITCODE -ne 0) { throw "finderyd --check exited $LASTEXITCODE" }
 
-          $p = Start-Process msiexec -ArgumentList "/x", "$msi", "/qn", "/norestart", "/l*v", "uninstall.log" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content uninstall.log -Tail 40; throw "uninstall failed: $($p.ExitCode)" }
+          $uninstallLog = Join-Path $PWD "msiexec-uninstall.log"
+          $p = Start-Process msiexec `
+                 -ArgumentList "/x `"$(FullPath $msi)`" /qn /norestart /l*v `"$uninstallLog`"" `
+                 -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $uninstallLog -Tail 40; throw "uninstall failed: $($p.ExitCode)" }
 
           if (Test-Path "$env:ProgramFiles\findery\findery.exe") { throw "uninstall left the binaries behind" }
           $after = [Environment]::GetEnvironmentVariable("Path", "Machine")
