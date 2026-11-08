@@ -100,7 +100,7 @@ cargo +1.99.0 clippy --workspace --all-targets -- -D warnings
 
 ```bash
 make check                  # fmt-check + clippy -D warnings + test + layers
-make test                   # 360 tests
+make test                   # 371 tests
 make bench                  # measures the vector scan (release)
 make install                # findery + finderyd + MCP bridge into ~/.cargo/bin
 make up-model               # the model alone, in Docker — the daemon runs natively

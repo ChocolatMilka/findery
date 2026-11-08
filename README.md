@@ -1,36 +1,69 @@
-# findery
+<div align="center">
 
-**A local semantic index of your codebases, so you — and your coding agent —
-find code by what it does instead of the word you guessed.** One embedding
-model, loaded once in the background, serves every project and every client:
-a CLI, an HTTP API, a Rust client, and an MCP bridge that puts `search_code`
-into Claude Code.
+# 🔎 findery
 
-Without it, locating one function in an unfamiliar repository costs a `glob`,
-three to six `grep` and three to eight `Read` — 25,000 to 60,000 input tokens.
-With it, one call, tens of milliseconds, and a citation.
+### A local semantic index of your codebases — so you, and your coding agent, find code by **what it does** instead of the word you guessed
 
-- 🔍 **Hybrid search** — vectors for the concept, BM25 for the exact
-  identifier, fused by rank: `"where is retrying handled"` and `"with_backoff"`
-  both land, with no second index and no re-tuning
-- ⚡ **Re-syncing is free** — the three gates make an unchanged repo cost
-  **zero embeddings**: vectors are keyed by content, so a re-clone, a `--full`
-  or a file reordered cost nothing either
-- 📡 **Works with nothing mounted** — the daemon reads your files, or the CLI
-  reads them and pushes the contents: a container, another machine, any disk
-- 🔒 **No lock-in on the model** — Qwen3 out of the box, or any local runtime
-  (Ollama, llama.cpp, vLLM), or any remote provider. Nothing is hardcoded
-- 🗄️ **Pluggable store** — embedded SQLite (exact in-RAM scan, no service to
-  run) or Qdrant (HNSW) when you outgrow it
-- 📤 **Your vectors, exportable** — JSONL / JSON / raw `float32`, so you are
-  never locked in
-- 🦀 100% Rust, a five-layer workspace, 360 tests, `clippy -D warnings`, layer
-  watchdog
+**Not a grep wrapper, and not a cloud service.** One embedding model, loaded once in the background, serves every project and every client: a CLI, an HTTP API, a Rust client, and an MCP bridge that puts `search_code` into Claude Code. Locating one function in an unfamiliar repository usually costs a `glob`, three to six `grep` and three to eight `Read` — 25,000 to 60,000 input tokens. With findery it is one call, tens of milliseconds, and a citation.
 
-**On this page** — [use it](#use-it) ·
-[from Rust](#using-it-from-another-rust-project) ·
-[what it saves](#what-this-changes) ·
-[how it's built](#architecture)
+<p align="center">
+  <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-FF7A45?style=for-the-badge&labelColor=1b1b2b">
+  <img alt="MCP for Claude Code" src="https://img.shields.io/badge/MCP-Claude%20Code-5B4BE1?style=for-the-badge&labelColor=1b1b2b">
+</p>
+<p align="center">
+  <img alt="Search: hybrid vector + BM25" src="https://img.shields.io/badge/search-vector%20%2B%20BM25-5B4BE1?style=flat-square&labelColor=1b1b2b">
+  <img alt="Re-sync: zero embeddings" src="https://img.shields.io/badge/re--sync-0%20embeddings-2E7D32?style=flat-square&labelColor=1b1b2b">
+  <img alt="Store: SQLite or Qdrant" src="https://img.shields.io/badge/store-SQLite%20%C2%B7%20Qdrant-1D6FB8?style=flat-square&labelColor=1b1b2b">
+  <img alt="Model: any /v1/embeddings" src="https://img.shields.io/badge/model-any%20%2Fv1%2Fembeddings-FF7A45?style=flat-square&labelColor=1b1b2b">
+  <img alt="Tests: 371" src="https://img.shields.io/badge/tests-371-9C27B0?style=flat-square&labelColor=1b1b2b">
+  <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-555555?style=flat-square&labelColor=1b1b2b">
+</p>
+
+<img src="docs/img/search.png" width="100%" alt="findery search returning a doc section by keyword and a Rust enum by meaning, each with a path:start-end locator">
+
+<sub>One question in plain words. Each hit is a `path:start-end` locator you can quote, the file to open, and the excerpt — here a doc section found by its words and a Rust enum found by its meaning.</sub>
+
+<br>
+
+<sub><a href="#-at-a-glance">At a glance</a> · <a href="#-highlights">Highlights</a> · <a href="#use-it">Use it</a> · <a href="#using-it-from-another-rust-project">From Rust</a> · <a href="#what-this-changes">What it saves</a> · <a href="#architecture">Architecture</a> · <a href="docs/getting-started.md">Getting started</a> · <a href="docs/deploying.md">Deploying</a> · <a href="CLAUDE.md">Contributing</a></sub>
+
+</div>
+
+---
+
+> **findery** *(n.)* — a place where finding gets done. The model is warm, the index is yours, and a question
+> in plain words comes back as a line number.
+
+> **Status.** `0.1.x`: the engine, the CLI, the HTTP API and the MCP bridge run natively on Windows (an
+> `.msi` ships) and in Docker. The suite is 371 tests under `clippy -D warnings`, with a watchdog
+> on the layer law. Open work is in [`.claude/roadmap/`](.claude/roadmap/README.md), not hidden here.
+
+## 📊 At a glance
+
+| | |
+|---|---|
+| **Language** | 100% Rust — a five-layer workspace, one `findery` CLI, one `finderyd` daemon, one `findery-mcp` bridge |
+| **Search** | Hybrid: vectors for the concept, BM25 for the exact identifier, fused by **rank** (RRF) — no calibration between two incomparable scales |
+| **Chunking** | Syntactic, per item, with a symbol and a breadcrumb: **Rust, JavaScript / TypeScript, Python, PHP, Axle, Markdown, JSON**; line windows for everything else. No tree-sitter, no C toolchain — a lexical scanner that never mistakes a brace in a string for a structural one |
+| **Cost model** | A vector is keyed by `(recipe, content_hash)`, never by place. An unchanged tree, a re-clone, a `--full` or a reordered file cost **zero embeddings** |
+| **Model** | Nothing hardcoded: Qwen3 out of the box, any local runtime (Ollama, llama.cpp, LM Studio, vLLM), any remote provider. Backend, URL, route, auth header, name and width are data. Changing model opens a new space, it never mixes two |
+| **Store** | Embedded SQLite — exact in-RAM scan, **12 ms at 50k chunks**, no service to run — or Qdrant (HNSW) beyond ~150k chunks. Switching re-embeds nothing |
+| **Feeding it** | The daemon walks what it can see; a client walks what it cannot and pushes the contents. Same walk, same write path, so a container or another machine needs **nothing mounted** |
+| **Failure** | A file that cannot be read becomes a `warning` in the sync report, never a silent skip. A recipe conflict is raised by the operation that would mix, never at boot — the daemon stays up to say so |
+| **Verification** | `make check`: `fmt`, `clippy -D warnings`, 371 tests, `check_layers.sh` (the layer law), `check_file_size.sh` (≤ 450 lines of code per file). Performance claims are reproducible with `make bench` |
+| **Exit** | Your vectors export as JSONL / JSON / raw `float32`. The bucket is the durable truth, the vector store is reconstructible from it |
+
+## ✨ Highlights
+
+- 🔍 **Hybrid search** — `"where is retrying handled"` and `"with_backoff"` both land, with no second index and no re-tuning.
+- ⚡ **Re-syncing is free** — three gates (size and mtime, content hash, vector cache) make an unchanged repo cost zero embeddings; a re-sync after ten modified files takes seconds.
+- 📡 **Works with nothing mounted** — the daemon reads your files, or the CLI reads them and pushes the contents: a container, another machine, any disk, no bind mounts.
+- 🔒 **No lock-in on the model** — switch from a local Qwen3 to a hosted provider with `findery config set`; the environment still wins over the file, so one image serves every deployment.
+- 🗄️ **A pluggable store** — SQLite until you outgrow it, Qdrant after; the numbers behind that threshold are measured and reproducible, including why an *embedded* ANN index was tried and ruled out.
+- 🧭 **Scopes, not second indexes** — a `[scopes]` table in the project manifest names a restriction (`findery search --scope api "…"`) that filters the same index before scoring.
+- 🩺 **`findery doctor`** — names what is missing and the command that fixes it, including a daemon older than the CLI.
+- 🤖 **Nine MCP tools** — `search_code` becomes the agent's first reflex for locating code, in place of `glob` + `grep` + three `Read`.
+- 🧱 **A layer law, checked by a script** — dependencies go down, data comes back up through `Result`, and the three swappable seams (`Embedder`, `VectorStore`, `Chunker`) are the only places an implementation changes.
 
 > **New here?** [`docs/getting-started.md`](docs/getting-started.md) walks the
 > whole setup step by step, with sizing tables and a troubleshooting section.
@@ -329,6 +362,10 @@ avoided exploration pays back several minutes of indexing.
 
 ## Architecture
 
+<img src="docs/img/layers.png" width="100%" alt="The five layers of the findery workspace and the three swappable seams">
+
+<sub>The five layers and the three seams. Every arrow goes down; `tools/watchdogs/check_layers.sh` fails the build if one goes up.</sub>
+
 ```
  L4   findery-mcp (MCP stdio)      findery-cli (`findery`)        the edges
  L3   findery-server (axum)                              HTTP transport
@@ -408,7 +445,7 @@ including why an **embedded** ANN index was measured and then ruled out — is i
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 360 tests
+make test      # 371 tests
 make bench     # vector scan measurement
 ```
 
