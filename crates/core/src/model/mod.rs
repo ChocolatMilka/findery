@@ -31,6 +31,8 @@ pub enum Lang {
     Python,
     Php,
     Json,
+    /// The Axle language (`.axle`).
+    Axle,
     Other,
 }
 
@@ -55,6 +57,7 @@ impl Lang {
             "py" | "pyi" => Self::Python,
             "php" => Self::Php,
             "json" | "jsonc" => Self::Json,
+            "axle" => Self::Axle,
             _ => Self::Other,
         }
     }
@@ -68,6 +71,7 @@ impl Lang {
             Self::Python => "python",
             Self::Php => "php",
             Self::Json => "json",
+            Self::Axle => "axle",
             Self::Other => "other",
         }
     }
@@ -81,6 +85,7 @@ impl Lang {
             "python" => Some(Self::Python),
             "php" => Some(Self::Php),
             "json" => Some(Self::Json),
+            "axle" => Some(Self::Axle),
             "other" => Some(Self::Other),
             _ => None,
         }

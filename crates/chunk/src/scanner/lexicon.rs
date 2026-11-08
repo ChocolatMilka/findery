@@ -15,7 +15,7 @@
 
 /// How one language spells its comments, its strings and its literals.
 ///
-/// INTENT: the brace-delimited family (Rust, JavaScript, PHP, JSON) shares one
+/// INTENT: the brace-delimited family (Rust, JavaScript, PHP, JSON, Axle) shares one
 /// item grammar and differs only in its trivia. Describing that trivia as data
 /// keeps ONE scanner instead of one per language — and one place to fix when a
 /// literal is read wrong.
@@ -119,5 +119,23 @@ impl Lexicon {
         heredocs: false,
         attributes: false,
         decorators: false,
+    };
+
+    /// Axle: `//` and `/* */`, `"…"` and `` `…` `` strings, `'c'` characters,
+    /// and `@link(…)`-style annotations riding along with the item below.
+    pub const AXLE: Self = Self {
+        line_comments: &["//"],
+        block_comment: Some(BlockComment {
+            open: "/*",
+            close: "*/",
+            nested: false,
+        }),
+        strings: b"\"`",
+        char_literals: true,
+        raw_strings: false,
+        regex_literals: false,
+        heredocs: false,
+        attributes: false,
+        decorators: true,
     };
 }

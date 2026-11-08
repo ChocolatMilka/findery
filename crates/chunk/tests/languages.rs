@@ -321,3 +321,52 @@ fn every_language_keeps_a_brace_inside_a_literal_out_of_its_counting() {
         }
     }
 }
+
+#[test]
+fn an_axle_module_yields_named_items_with_their_annotations_and_docs() {
+    let src = "\
+use std::io::Path;
+
+/** Sort direction. */
+enum Sort {
+    Up,
+    Down,
+}
+
+@link(symbol = \"getpid\")
+extern \"C\" fn libc_getpid() : i32;
+
+pub(crate) class Buf<T> {
+    data : T[];
+
+    constructor(n : i64) {
+        self.data = new T[n];
+    }
+
+    /** The capacity. */
+    pub fn cap(self) : i64 {
+        return 0;
+    }
+
+    drop() {}
+}
+";
+    let out = chunks("std/buf.axle", src);
+    assert_eq!(named(&out, "Sort").kind, ChunkKind::Enum);
+    assert!(
+        named(&out, "Sort")
+            .text
+            .starts_with("/** Sort direction. */")
+    );
+    let ext = named(&out, "libc_getpid");
+    assert_eq!(ext.kind, ChunkKind::Function);
+    assert!(ext.text.starts_with("@link("));
+    assert_eq!(named(&out, "Buf").kind, ChunkKind::Struct);
+
+    let tight = chunks_under("std/buf.axle", src, 90);
+    let cap = named(&tight, "cap");
+    assert_eq!(cap.kind, ChunkKind::Method);
+    assert_eq!(cap.breadcrumb.as_deref(), Some("Buf > cap"));
+    assert_eq!(named(&tight, "constructor").kind, ChunkKind::Method);
+    assert_eq!(named(&tight, "drop").kind, ChunkKind::Method);
+}

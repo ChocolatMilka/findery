@@ -433,7 +433,7 @@ Four independent levers, applied in this order:
 
 | Lever | Default | Effect |
 |-------|---------|--------|
-| `extensions` | `rs`, `md`, `toml`, `js`, `mjs`, `cjs`, `ts`, `py`, `php`, `json` | empty means everything that survives the rest |
+| `extensions` | `rs`, `md`, `toml`, `js`, `mjs`, `cjs`, `ts`, `py`, `php`, `json`, `axle` | empty means everything that survives the rest |
 | `include` | none | globs; narrows to these |
 | `exclude` | build output + secrets | globs; subtracts |
 | `follow_gitignore` | true | honours `.gitignore` even outside a git repo |
@@ -448,7 +448,7 @@ ask about. The default `exclude` list is what keeps credentials out: `.env*`,
 Files that are not valid UTF-8, or above `max_file_bytes` (2 MB), are skipped
 and **reported** in `warnings` — never dropped in silence.
 
-**Chunking quality differs by language.** `.rs`, `.js`/`.ts`, `.py` and `.php`
+**Chunking quality differs by language.** `.rs`, `.js`/`.ts`, `.py`, `.php` and `.axle`
 get a syntactic chunker (one chunk per item, with symbol and breadcrumb), `.md`
 a heading-based one. `.json` answers as one chunk while it fits `max_chars`,
 then splits per top-level member, each carrying its key. `.toml` and

@@ -8,7 +8,7 @@
 //! else in the workspace changes.
 //!
 //! Two families share the work. The brace-delimited languages (Rust,
-//! JavaScript, PHP, JSON) differ only in their trivia and their keywords, so
+//! JavaScript, PHP, JSON, Axle) differ only in their trivia and their keywords, so
 //! they run the SAME pipeline over one [`scanner::Lexicon`] each; Python, whose
 //! blocks are indentation and not braces, has its own.
 
@@ -19,7 +19,8 @@ mod scanner;
 pub mod sizing;
 
 pub use langs::{
-    JsChunker, JsonChunker, MarkdownChunker, PhpChunker, PythonChunker, RustChunker, TextChunker,
+    AxleChunker, JsChunker, JsonChunker, MarkdownChunker, PhpChunker, PythonChunker, RustChunker,
+    TextChunker,
 };
 
 use findery_core::Result;
@@ -35,6 +36,7 @@ pub struct Registry {
     python: PythonChunker,
     php: PhpChunker,
     json: JsonChunker,
+    axle: AxleChunker,
     fallback: TextChunker,
 }
 
@@ -53,6 +55,7 @@ impl Registry {
             python: PythonChunker,
             php: PhpChunker,
             json: JsonChunker,
+            axle: AxleChunker,
             fallback: TextChunker,
         }
     }
@@ -66,6 +69,7 @@ impl Registry {
             Lang::Python => &self.python,
             Lang::Php => &self.php,
             Lang::Json => &self.json,
+            Lang::Axle => &self.axle,
             Lang::Toml | Lang::Other => &self.fallback,
         }
     }
@@ -97,6 +101,7 @@ mod tests {
         Lang::Python,
         Lang::Php,
         Lang::Json,
+        Lang::Axle,
         Lang::Other,
     ];
 
@@ -109,6 +114,7 @@ mod tests {
         assert_eq!(r.chunker_for(Lang::Python).lang(), Lang::Python);
         assert_eq!(r.chunker_for(Lang::Php).lang(), Lang::Php);
         assert_eq!(r.chunker_for(Lang::Json).lang(), Lang::Json);
+        assert_eq!(r.chunker_for(Lang::Axle).lang(), Lang::Axle);
         assert_eq!(r.chunker_for(Lang::Toml).lang(), Lang::Other);
         assert_eq!(r.chunker_for(Lang::Other).lang(), Lang::Other);
     }

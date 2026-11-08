@@ -21,17 +21,17 @@ comment, or a raw literal for a structural brace**. That's what
 `scanner/` guarantees, for every brace-delimited language, from one `Lexicon`
 per language (`scanner/lexicon.rs`):
 
-| | Rust | JavaScript / TypeScript | PHP | JSON |
-|---|---|---|---|---|
-| line comments | `//` | `//` | `//`, `#` | `//` (jsonc) |
-| block comment | `/* */`, **nested** | `/* */` | `/* */` | `/* */` |
-| strings | `"…"` | `"…"`, `'…'`, `` `…` `` | `"…"`, `'…'` | `"…"` |
-| char literals vs lifetimes | yes | no | no | no |
-| raw / byte literals | `r#"…"#`, `b"…"` | no | no | no |
-| regex literals | no | `/…/flags` | no | no |
-| heredocs | no | no | `<<<EOT … EOT` | no |
-| `#[…]` attributes | yes | no | yes | no |
-| `@Decorator(…)` | no | yes | no | no |
+| | Rust | JavaScript / TypeScript | PHP | JSON | Axle |
+|---|---|---|---|---|---|
+| line comments | `//` | `//` | `//`, `#` | `//` (jsonc) | `//` |
+| block comment | `/* */`, **nested** | `/* */` | `/* */` | `/* */` | `/* */` |
+| strings | `"…"` | `"…"`, `'…'`, `` `…` `` | `"…"`, `'…'` | `"…"` | `"…"`, `` `…` `` |
+| char literals vs lifetimes | yes | no | no | no | yes |
+| raw / byte literals | `r#"…"#`, `b"…"` | no | no | no | no |
+| regex literals | no | `/…/flags` | no | no | no |
+| heredocs | no | no | `<<<EOT … EOT` | no | no |
+| `#[…]` attributes | yes | no | yes | no | no |
+| `@Decorator(…)` | no | yes | no | no | yes (`@link(…)`, `@inline(never)`) |
 
 The regex heuristic is the classic one: `/` opens a literal unless the token
 before it is an operand — an identifier, a number, `)`, `]`, `}` or a closing
@@ -61,7 +61,7 @@ If a real AST ever becomes necessary (type resolution, a call graph), the
 `Chunker` trait is already the seam: an implementation gets added, nothing
 else moves.
 
-## The brace-delimited chunkers — Rust, JavaScript, PHP, JSON
+## The brace-delimited chunkers — Rust, JavaScript, PHP, JSON, Axle
 
 `brace.rs` holds the pipeline they share: split, classify, recurse into an
 oversized container, window what is still too big. A language is a `Profile`:
@@ -97,6 +97,7 @@ its lexicon, its keyword table, its preamble.
 | Rust | `fn` | `struct`, `union` | `const`, `static`, `type` | `fn` in `impl`/`trait` |
 | JavaScript | `function` | `class` | `const`, `let`, `var` | member of a class |
 | PHP | `function` | `class` | `const` | `function` in a class |
+| Axle | `fn`, `extern "C" fn` | `class`, `struct`, `exception` | `const`, `type` | `fn`, `constructor`, `drop` in a container |
 | Python | `def`, `async def` | `class` | `NAME = …` and `NAME: T = …` at top level | `def` in a class |
 
 An item under `#[cfg(test)]` / `#[test]` becomes `kind = test`, and
@@ -108,6 +109,18 @@ skips them and the keyword still names the item.
 JSX text may hold an apostrophe (`<p>don't</p>`), which a lexical scanner reads
 as the opening of a string and lets run across the markup. They take the text
 fallback, where nothing is claimed about their structure.
+
+### Axle
+
+`.axle` runs the shared pipeline over `Lexicon::AXLE`; the syntax is still
+moving, so the whole language lives in one keyword table in `langs/axle.rs`.
+`pub`, `pub(crate)`, `pub(file)`, `async`, `static`, `own`, `shared` and
+`extern "C"` are modifiers the scan walks past. `trait` is a `Trait`, `enum` an
+`Enum`; `constructor` and `drop` are named after the keyword (they have no
+identifier), so a hit on `drop` finds every destructor. A header ends at `{`,
+`;` or `=`, so `const FN_NAME : string = "fn x"` is named `FN_NAME`. The real
+lexer reads `"…"` and `` `…` `` as one flat token (a template's `${…}` is not
+re-entered), and the scanner does the same.
 
 ## The Python chunker
 
