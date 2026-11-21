@@ -44,9 +44,9 @@ max_sync_wait_ms = 120000
 backend = "openai_compat"
 # `qwen3.7-text-embedding` is served by DashScope; it has no Hugging Face
 # weights, so nothing local can host it. Point this at a local runtime instead
-# (http://127.0.0.1:1234 for LM Studio, :11434 for Ollama) and set `model` to
-# whatever that runtime reports — a different model is a different recipe, and
-# a recipe change is a re-index.
+# (http://127.0.0.1:8090 for runtime/, :1234 for LM Studio, :11434 for Ollama)
+# and set `model` to whatever that runtime reports — a different model is a
+# different recipe, and a recipe change is a re-index.
 base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode"
 path = "/v1/embeddings"
 model = "qwen3.7-text-embedding"
@@ -123,7 +123,7 @@ dim = 1024
 
 [store]
 # "sqlite": vectors beside the bucket, searched from a warm in-memory matrix.
-#           Exact, no extra service, ~11 ms at 50k chunks (1024 dims).
+#           Exact, no extra service, ~12 ms at 50k chunks (1024 dims).
 # "qdrant": a local vector database — HNSW, payload filters, int8 quantization.
 backend = "sqlite"
 # Platform-dependent by default: `%LOCALAPPDATA%/findery` on Windows,
