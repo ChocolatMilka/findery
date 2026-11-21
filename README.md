@@ -11,11 +11,16 @@
   <img alt="MCP for Claude Code" src="https://img.shields.io/badge/MCP-Claude%20Code-5B4BE1?style=for-the-badge&labelColor=1b1b2b">
 </p>
 <p align="center">
+  <img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-2E7D32?style=flat-square&labelColor=1b1b2b">
+  <img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-FF7A45?style=flat-square&labelColor=1b1b2b">
+  <img alt="Chunkers: 10 languages" src="https://img.shields.io/badge/chunkers-10%20languages-1D6FB8?style=flat-square&labelColor=1b1b2b">
+  <img alt="Tests: 475" src="https://img.shields.io/badge/tests-475-9C27B0?style=flat-square&labelColor=1b1b2b">
+</p>
+<p align="center">
   <img alt="Search: hybrid vector + BM25" src="https://img.shields.io/badge/search-vector%20%2B%20BM25-5B4BE1?style=flat-square&labelColor=1b1b2b">
   <img alt="Re-sync: zero embeddings" src="https://img.shields.io/badge/re--sync-0%20embeddings-2E7D32?style=flat-square&labelColor=1b1b2b">
   <img alt="Store: SQLite or Qdrant" src="https://img.shields.io/badge/store-SQLite%20%C2%B7%20Qdrant-1D6FB8?style=flat-square&labelColor=1b1b2b">
   <img alt="Model: any /v1/embeddings" src="https://img.shields.io/badge/model-any%20%2Fv1%2Fembeddings-FF7A45?style=flat-square&labelColor=1b1b2b">
-  <img alt="Tests: 371" src="https://img.shields.io/badge/tests-371-9C27B0?style=flat-square&labelColor=1b1b2b">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-555555?style=flat-square&labelColor=1b1b2b">
 </p>
 
@@ -34,8 +39,8 @@
 > **findery** *(n.)* — a place where finding gets done. The model is warm, the index is yours, and a question
 > in plain words comes back as a line number.
 
-> **Status.** `0.1.x`: the engine, the CLI, the HTTP API and the MCP bridge run natively on Windows (an
-> `.msi` ships) and in Docker. The suite is 371 tests under `clippy -D warnings`, with a watchdog
+> **Status.** `0.3.x`: the engine, the CLI, the HTTP API and the MCP bridge run natively on Windows (an
+> `.msi` ships) and in Docker. The suite is 475 tests under `clippy -D warnings`, with a watchdog
 > on the layer law. Open work is in [`.claude/roadmap/`](.claude/roadmap/README.md), not hidden here.
 
 ## 📊 At a glance
@@ -50,7 +55,7 @@
 | **Store** | Embedded SQLite — exact in-RAM scan, **12 ms at 50k chunks**, no service to run — or Qdrant (HNSW) beyond ~150k chunks. Switching re-embeds nothing |
 | **Feeding it** | The daemon walks what it can see; a client walks what it cannot and pushes the contents. Same walk, same write path, so a container or another machine needs **nothing mounted** |
 | **Failure** | A file that cannot be read becomes a `warning` in the sync report, never a silent skip. A recipe conflict is raised by the operation that would mix, never at boot — the daemon stays up to say so |
-| **Verification** | `make check`: `fmt`, `clippy -D warnings`, 371 tests, `check_layers.sh` (the layer law), `check_file_size.sh` (≤ 450 lines of code per file). Performance claims are reproducible with `make bench` |
+| **Verification** | `make check`: `fmt`, `clippy -D warnings`, 475 tests, `check_layers.sh` (the layer law), `check_file_size.sh` (≤ 450 lines of code per file). Performance claims are reproducible with `make bench` |
 | **Exit** | Your vectors export as JSONL / JSON / raw `float32`. The bucket is the durable truth, the vector store is reconstructible from it |
 
 ---
@@ -98,7 +103,7 @@ in `Program Files`, `findery` on your `PATH`:
 
 ```powershell
 # download findery-<version>-x64.msi from the latest release, then
-msiexec /i findery-0.1.0-x64.msi
+msiexec /i findery-0.3.0-x64.msi
 findery --version
 ```
 
@@ -478,7 +483,7 @@ an **embedded** ANN index was measured and then ruled out — is in
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 371 tests
+make test      # 475 tests
 make bench     # vector scan measurement
 ```
 
