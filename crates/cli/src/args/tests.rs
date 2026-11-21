@@ -295,19 +295,12 @@ fn the_server_lifecycle_is_reachable_but_not_advertised() {
 /// through.
 #[test]
 fn nothing_visible_ever_names_the_daemon() {
-    use clap::CommandFactory;
-    let surface = Cli::command();
-    for command in surface.get_subcommands() {
-        if command.is_hide_set() {
-            continue;
-        }
-        // `render_long_help` covers the summary, the flag descriptions and
-        // the subcommands in one page — the whole surface a user can read.
-        let name = command.get_name().to_string();
-        let text = command.clone().render_long_help().to_string();
+    // Every page a user can open — the root, each command, each nested
+    // one, short and long — exactly as `--help` renders it.
+    for (name, page) in crate::args::help::tests::pages(&crate::args::help::tests::built(), false) {
         assert!(
-            !text.to_lowercase().contains("daemon"),
-            "`{name}` mentions the daemon:\n{text}"
+            !page.to_lowercase().contains("daemon"),
+            "`{name}` mentions the daemon:\n{page}"
         );
     }
 }

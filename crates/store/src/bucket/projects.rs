@@ -185,6 +185,32 @@ impl Bucket {
         .await
     }
 
+    /// The project's languages with their chunk counts, most chunks first —
+    /// what an intent's `{codebase}` names. Read from `files`, which carries a
+    /// chunk count per file, rather than by scanning `chunks`.
+    pub async fn lang_mix(&self, project: &ProjectId) -> Result<Vec<(Lang, u64)>> {
+        let pid = project.to_string();
+        self.with_conn(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT lang, SUM(chunk_count) AS n FROM files WHERE project_id = ?1
+                     GROUP BY lang ORDER BY n DESC, lang",
+                )
+                .map_err(sql)?;
+            let mut rows = stmt.query([&pid]).map_err(sql)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().map_err(sql)? {
+                let lang: String = row.get(0).map_err(sql)?;
+                let chunks: i64 = row.get(1).map_err(sql)?;
+                if let Some(lang) = Lang::parse(&lang) {
+                    out.push((lang, chunks.max(0) as u64));
+                }
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     /// File and chunk counts plus the last sync timestamp.
     pub async fn counts(&self, project: &ProjectId) -> Result<(u64, u64, Option<i64>)> {
         let pid = project.to_string();
@@ -382,6 +408,25 @@ mod tests {
                 .expect("delete")
         );
         assert!(cat.file_map(&id).await.expect("map").is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_language_mix_puts_the_most_chunks_first() {
+        let cat = Bucket::open_in_memory().expect("bucket");
+        let id = ProjectId::new("demo").expect("id");
+        cat.put_project(&project("demo")).await.expect("insert");
+        let doc = FileRecord {
+            lang: Lang::Markdown,
+            chunk_count: 9,
+            ..file("README.md", "h0")
+        };
+        for record in [file("src/a.rs", "h1"), file("src/b.rs", "h2"), doc] {
+            cat.put_file(&id, &record).await.expect("put");
+        }
+        let mix = cat.lang_mix(&id).await.expect("mix");
+        assert_eq!(mix, [(Lang::Markdown, 9), (Lang::Rust, 4)]);
+        let empty = cat.lang_mix(&ProjectId::new("ghost").expect("id")).await;
+        assert!(empty.expect("no files is no mix").is_empty());
     }
 
     #[tokio::test]

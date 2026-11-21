@@ -9,6 +9,7 @@
 //! | [`api`] | the wire: what clients send and what the daemon answers |
 //! | [`config`] | the daemon's configuration, its model profiles, its environment overlay |
 //! | [`manifest`] | `.findery/config.toml`, the manifest of one project |
+//! | [`intent`] | the intent library: named retrieval tasks, their legs, and how a request resolves to a plan |
 //! | [`embedding`] | the vector space (`Recipe`) and the prompt formats a model reads |
 //! | [`support`] | the clock, host/container path translation, the serde-via-`parse` macro |
 //!
@@ -21,6 +22,7 @@ pub mod config;
 pub mod embedding;
 pub mod error;
 pub mod ids;
+pub mod intent;
 pub mod manifest;
 pub mod model;
 pub mod support;
@@ -34,6 +36,9 @@ pub use api::{
 pub use embedding::recipe::{Recipe, RecipeTag};
 pub use error::{Error, Result};
 pub use ids::{ChunkId, ContentHash, ModelAlias, ProjectId};
+pub use intent::{
+    Intent, IntentKind, IntentLibrary, IntentOverride, PlanContext, ResolvedLeg, ResolvedPlan,
+};
 pub use model::filter::CompiledFilter;
 pub use model::{
     Chunk, ChunkKind, FileRecord, IndexStats, Lang, Origin, Project, ProjectSpec, RawChunk,

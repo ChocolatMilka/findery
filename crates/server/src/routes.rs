@@ -6,8 +6,9 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
 use findery_core::api::{
-    BucketInfo, BucketRemoved, CreateBucket, HealthReport, Job, ModelInfo, ProjectDetached,
-    ProjectRemoved, RegisterProject, SearchResponse, SetDefaultModel,
+    BucketInfo, BucketRemoved, CreateBucket, FilesQuery, HealthReport, IntentInfo, Job, ModelInfo,
+    ProjectDetached, ProjectRemoved, ReadQuery, ReadResponse, RegisterProject, SearchResponse,
+    SetDefaultModel,
 };
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchRequest, SyncReport};
@@ -15,8 +16,8 @@ use findery_core::model::{FileRecord, IndexStats, Project, SearchRequest, SyncRe
 use findery_store::{ExportFormat, ExportReport};
 
 use crate::dto::{
-    AddDocument, BucketQuery, DocumentQuery, ExportRequest, PruneRequest, PushDocuments, Removed,
-    Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
+    AddDocument, BucketQuery, DocumentQuery, ExportRequest, IntentsQuery, PruneRequest,
+    PushDocuments, Removed, Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use crate::{ApiResult, AppState};
 
@@ -37,11 +38,13 @@ pub fn router() -> Router<AppState> {
             post(add_document).delete(remove_document),
         )
         .route("/v1/projects/{id}/documents/batch", post(push_documents))
-        .route("/v1/projects/{id}/files", get(file_manifest))
+        .route("/v1/projects/{id}/files", get(list_files))
+        .route("/v1/projects/{id}/chunks", get(read_chunk))
         .route("/v1/projects/{id}/prune", post(prune))
         .route("/v1/buckets", get(list_buckets).post(create_bucket))
         .route("/v1/buckets/{name}", delete(delete_bucket))
         .route("/v1/search", post(search))
+        .route("/v1/intents", get(list_intents))
         .route("/v1/models", get(list_models))
         .route("/v1/models/default", post(set_default_model))
         .route("/v1/shutdown", post(shutdown))
@@ -154,15 +157,25 @@ async fn push_documents(
     ))
 }
 
-/// What the bucket knows about a project's files, so a pushing client can send
-/// only what changed.
-async fn file_manifest(
+/// What the bucket knows about a project's files — so a pushing client can
+/// send only what changed — or the ones `?glob=` names.
+async fn list_files(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<FilesQuery>,
 ) -> ApiResult<Json<Vec<FileRecord>>> {
-    Ok(Json(
-        state.indexer.file_manifest(&ProjectId::new(id)?).await?,
-    ))
+    let id = ProjectId::new(id)?;
+    Ok(Json(state.indexer.files(&id, query.glob.as_deref()).await?))
+}
+
+/// One chunk by id, or the lines a locator names, with `?context=` around.
+async fn read_chunk(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ReadQuery>,
+) -> ApiResult<Json<ReadResponse>> {
+    let id = ProjectId::new(id)?;
+    Ok(Json(state.indexer.read(&id, &query).await?))
 }
 
 /// Removes pushed files absent from the list the client saw.
@@ -182,6 +195,14 @@ async fn search(
     Json(body): Json<SearchRequest>,
 ) -> ApiResult<Json<SearchResponse>> {
     Ok(Json(state.indexer.search(&body).await?))
+}
+
+async fn list_intents(
+    State(state): State<AppState>,
+    Query(query): Query<IntentsQuery>,
+) -> ApiResult<Json<Vec<IntentInfo>>> {
+    let project = query.project.map(ProjectId::new).transpose()?;
+    Ok(Json(state.indexer.intents(project.as_ref()).await?))
 }
 
 async fn export_project(

@@ -70,6 +70,7 @@ pub(crate) async fn run(client: &Client, options: Options, json: bool) -> Result
             scopes: Some(existing.scopes.clone()),
             instruction: Some(existing.instruction.clone().unwrap_or_default()),
             task: existing.task,
+            intents: Some(existing.intents.clone()),
             model: Some(model.clone().unwrap_or_default()),
             push: options.push.then_some(true),
             ..Default::default()
@@ -91,6 +92,7 @@ pub(crate) async fn run(client: &Client, options: Options, json: bool) -> Result
     config.scopes = existing.scopes;
     config.instruction = existing.instruction;
     config.task = existing.task;
+    config.intents = existing.intents;
     config.model = model;
     let manifest = crate::workspace::manifest::write(project_root, &config)?;
 

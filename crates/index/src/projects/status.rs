@@ -10,7 +10,7 @@ use std::path::Path;
 use findery_core::api::{HealthReport, ModelInfo};
 use findery_core::embedding::recipe::Recipe;
 use findery_core::ids::{ModelAlias, ProjectId};
-use findery_core::model::IndexStats;
+use findery_core::model::{IndexStats, LangShare};
 use findery_core::{Error, Result};
 
 use findery_store::{ExportFormat, ExportReport};
@@ -38,6 +38,10 @@ impl Indexer {
             }
             None => (0, 0, None, 0, 0),
         };
+        let langs = match &lease.member {
+            Some(member) => member.bucket.lang_mix(id).await?,
+            None => Vec::new(),
+        };
         Ok(IndexStats {
             project: id.to_string(),
             bucket: lease.family.name.clone(),
@@ -52,6 +56,10 @@ impl Indexer {
             ),
             last_sync_at,
             disk_bytes,
+            langs: langs
+                .into_iter()
+                .map(|(lang, chunks)| LangShare { lang, chunks })
+                .collect(),
         })
     }
 

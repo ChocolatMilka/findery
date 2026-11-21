@@ -7,18 +7,25 @@
 //! dropping a field the server started sending.
 
 mod buckets;
+mod intents;
 mod jobs;
 mod lifecycle;
 mod models;
 mod progress;
+mod read;
 mod search;
 
 pub use buckets::{BucketInfo, BucketMember, BucketRemoved, CreateBucket};
+pub use intents::IntentInfo;
 pub use jobs::{Job, JobState};
 pub use lifecycle::{ProjectDetached, ProjectRemoved};
 pub use models::{ModelHealth, ModelInfo, SetDefaultModel};
 pub use progress::{Progress, ProgressPhase, RateMeter};
-pub use search::{SearchResponse, SearchWire};
+pub use read::{FilesQuery, ReadChunk, ReadQuery, ReadResponse, ReadSource};
+pub use search::{
+    Duplicate, EchoLeg, HitRef, LegHits, PairMatch, Pairing, ResolvedEcho, SearchResponse,
+    SearchWire,
+};
 
 use std::collections::BTreeMap;
 
@@ -31,7 +38,7 @@ use crate::{Error, Result};
 /// `POST /v1/projects` — register or update a project.
 ///
 /// Re-registering an id that exists is a MERGE: a field left absent keeps what
-/// the project already has — its bucket, scopes, instruction, pin,
+/// the project already has — its bucket, scopes, instruction, intents, pin,
 /// include and exclude lists. An explicitly empty value clears it: `[]`, `{}`,
 /// or `""` for `instruction` and `model`.
 ///
@@ -86,7 +93,11 @@ pub struct RegisterProject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<crate::embedding::prompt::QueryTask>,
+    pub task: Option<crate::intent::QueryTask>,
+    /// The manifest's `[intents.<name>]` layer, carried for the same reason
+    /// as `scopes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intents: Option<BTreeMap<String, crate::intent::IntentOverride>>,
     /// The model profile to pin this project to (`[models.<alias>]`, or
     /// `embedder`); absent follows the daemon's default model.
     ///

@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{StoreConfig, bucket_path};
-use crate::embedding::prompt::QueryTask;
 use crate::ids::{ModelAlias, ProjectId};
+use crate::intent::{IntentLibrary, IntentOverride, QueryTask};
 use crate::model::filter::CompiledFilter;
 use crate::model::{SearchFilter, is_bucket_name};
 use crate::{Error, Result};
@@ -209,7 +209,7 @@ fn name_from_path(path: &str) -> Result<String> {
 
 /// The manifest of one project.
 ///
-/// INTENT: `deny_unknown_fields` is the same choice [`crate::config::Config`] makes. A
+/// INTENT: `deny_unknown_fields` is the same choice [`Config`] makes. A
 /// misspelled key in a committed file is a setting that silently does nothing,
 /// and the moment to say so is when it is written, not a month later when
 /// someone wonders why their scope never applied.
@@ -228,6 +228,10 @@ pub struct ProjectConfig {
     pub instruction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<QueryTask>,
+    /// `[intents.<name>]`: overrides of the daemon's intents, or new ones, for
+    /// this project only.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub intents: BTreeMap<String, IntentOverride>,
     /// The model profile this project is pinned to; absent follows the
     /// daemon's default model. Text here, validated by [`ProjectConfig::validate`]
     /// and again by the daemon, which alone knows which profiles exist.
@@ -272,6 +276,10 @@ impl ProjectConfig {
             CompiledFilter::new(filter)
                 .map_err(|e| Error::Config(format!("scope `{name}`: {e}")))?;
         }
+        // Checked against the built-in library alone: the daemon's own layer
+        // is not visible from here, and an intent only this project defines
+        // must stand on its own.
+        IntentLibrary::builtin()?.merged(&self.intents)?;
         Ok(())
     }
 
@@ -565,5 +573,30 @@ paths = ["docs/**"]
         let rendered = starter.to_toml_string().expect("render");
         let parsed = ProjectConfig::from_toml_str(&rendered).expect("parse");
         assert_eq!(parsed.bucket, starter.bucket);
+    }
+
+    /// A manifest's `[intents.<name>]` is checked when the file is read: an
+    /// unknown key, or a new intent missing its sentence, is refused there.
+    #[test]
+    fn a_manifest_intent_layer_is_validated_where_it_is_written() {
+        let ok = ProjectConfig::from_toml_str(
+            "[intents.usage]\ninstruction = \"Given an API, retrieve its importers.\"\n\n\
+             [intents.migration]\nsummary = \"Schema migrations.\"\n\
+             instruction = \"Given a schema change, retrieve the migrations that apply it.\"\n",
+        )
+        .expect("parse");
+        ok.validate().expect("valid");
+        let rendered = ok.to_toml_string().expect("render");
+        let again = ProjectConfig::from_toml_str(&rendered).expect("reparse");
+        assert_eq!(again.intents, ok.intents);
+
+        let typo = ProjectConfig::from_toml_str("[intents.usage]\ninstructions = \"x\"\n")
+            .expect_err("unknown key");
+        assert!(typo.to_string().contains("unknown field"), "{typo}");
+
+        let half =
+            ProjectConfig::from_toml_str("[intents.migration]\nsummary = \"s\"\n").expect("parse");
+        let err = half.validate().expect_err("no instruction");
+        assert!(err.to_string().contains("instruction"), "{err}");
     }
 }

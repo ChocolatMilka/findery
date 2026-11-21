@@ -1,0 +1,367 @@
+# Built-in intents: named retrieval tasks an agent picks instead of writing an
+# instruction. Embedded in the binary, and parsed by `cargo test`. A daemon
+# config or a project manifest overrides any field with `[intents.<name>]`, or
+# adds an intent the same way.
+#
+# instruction  one sentence, "Given <input>, retrieve <what>.". `{codebase}`
+#              renders "a Rust and PHP codebase" (or "a codebase"), `{project}`
+#              likewise — the languages come from the search.
+# hints        constructs per language, appended for the languages searched.
+# legs         the searches a workflow runs; `intent = "…"` borrows a locate one.
+
+# --- Locate: one question, one search ---------------------------------------
+
+[[intent]]
+name = "code"
+kind = "locate"
+summary = "The default: where and how something is done — the code or docs that answer a developer question."
+instruction = "Given a developer question about {codebase}, retrieve the source code or documentation passages that answer it."
+
+[[intent]]
+name = "symbol"
+aliases = ["definition", "declaration"]
+kind = "locate"
+summary = "A name in hand: its definition — declaration, signature or type, and doc comment."
+instruction = "Given the name of a symbol in {codebase}, retrieve the passage that defines it: its declaration, its signature or type, and its documentation comment."
+
+[intent.hints]
+rust = ["`fn`, `struct`, `enum`, `trait`, `type`, `const` and `macro_rules!` items", "their `///` docs", "`#[derive]` attributes"]
+axle = ["`fn`, `class`, `struct`, `trait`, `enum`, `exception` and `const` declarations", "`@derive` and `@target` annotations"]
+php = ["`function`, `class`, `interface`, `trait` and `enum` declarations", "PHPDoc blocks", "attributes"]
+javascript = ["`function`, `class`, `interface` and `type` declarations", "`export const` bindings", "JSDoc"]
+python = ["`def` and `class` statements", "decorators", "docstrings", "module-level assignments"]
+java = ["`class`, `interface`, `record` and `enum` declarations", "annotations", "Javadoc"]
+kotlin = ["`fun`, `class`, `data class`, `object`, `interface` and `typealias` declarations", "KDoc"]
+go = ["`func` and `type` declarations", "methods by receiver", "`const` and `var` blocks", "the doc comment above"]
+
+[[intent]]
+name = "usage"
+aliases = ["callers", "uses", "references"]
+kind = "locate"
+summary = "An API in hand: its call sites, instantiations, imports and the code wired to it."
+instruction = "Given an API, function or type of {codebase}, retrieve the passages that call, instantiate, import or depend on it, showing how it is used in practice."
+
+[intent.hints]
+rust = ["call sites", "`impl Trait for` blocks", "generic bounds", "macro invocations", "`use` paths"]
+axle = ["calls passing `own`, `mut` or `copy`", "`class Foo : Base, Trait`", "`impl Type : Trait`", "`when T : Bound` groups", "`use crate::…`"]
+php = ["`new X`", "`X::` static calls", "`use` imports", "`implements`", "`extends`", "DI container wiring"]
+javascript = ["calls", "`new X`", "`import` and `require`", "re-exports", "`extends`", "JSX `<X />`"]
+python = ["calls", "`import` and `from … import`", "subclassing", "decorator usages", "`__init__.py` re-exports"]
+java = ["method calls", "`new X`", "`implements`", "`extends`", "`@Override`", "`@Autowired` and `@Bean` wiring"]
+kotlin = ["calls", "extension receivers", "`override`", "`by` delegation", "constructor injection"]
+go = ["method calls on receivers", "package-qualified calls", "struct embedding", "interfaces satisfied by method set"]
+
+[[intent]]
+name = "implementations"
+aliases = ["impls", "implementors", "subclasses", "overrides"]
+kind = "locate"
+summary = "A trait, interface or base class in hand: every type that implements, extends or overrides it."
+instruction = "Given a trait, interface or base class of {codebase}, retrieve the types that implement, extend or override it, together with their implementing methods."
+
+[intent.hints]
+rust = ["`impl Trait for Type` blocks", "blanket `impl<T: Bound>` impls", "`#[derive]` of the trait"]
+axle = ["`impl Type : Trait` blocks", "`class Foo : Base, Trait`", "`when T : Bound` method groups"]
+php = ["classes that `implements` or `extends` it", "`use` of the trait in a class"]
+javascript = ["classes that `extends` the base", "TypeScript `implements`", "objects shaped to the type"]
+python = ["subclasses", "ABC and `Protocol` implementations", "overridden methods"]
+java = ["classes that `implements` or `extends` it", "`@Override` methods"]
+kotlin = ["types listing it after `:`", "`override` members", "`by` delegation"]
+go = ["types whose methods satisfy the interface implicitly"]
+
+[[intent]]
+name = "api"
+aliases = ["entrypoints", "endpoints", "surface"]
+kind = "locate"
+summary = "The public surface: routes, handlers, CLI commands, exported functions and types."
+instruction = "Given a capability of {codebase}, retrieve its public entry points: HTTP routes and handlers, CLI commands, exported functions and types, and the signatures a caller depends on."
+
+[intent.hints]
+rust = ["`pub` items", "`pub use` re-exports in `lib.rs`", "router tables", "clap `Subcommand` enums", "`fn main`"]
+axle = ["`pub` declarations", "exported `extern \"C\" fn`", "`fn main() : i32`"]
+php = ["controllers", "route attributes and route files", "public methods", "console commands"]
+javascript = ["`export` declarations", "barrel `index` files", "Express or Fastify routes", "`package.json` `bin` and `exports`"]
+python = ["`__all__`", "`__init__.py` exports", "FastAPI, Flask or Django routes", "`argparse` or `click` commands"]
+java = ["`public` interface methods", "`@RestController` handlers", "`main`"]
+kotlin = ["public declarations", "Ktor `routing { }`", "Spring `@RestController` handlers", "`fun main`"]
+go = ["exported identifiers", "`http.HandleFunc` and router registrations", "cobra commands", "`func main`"]
+
+[[intent]]
+name = "flow"
+aliases = ["trace", "dataflow"]
+kind = "locate"
+summary = "End-to-end path of a request or a value: the entry point, each call in between, the sink."
+instruction = "Given an operation or a piece of data in {codebase}, retrieve the passages along its execution path, from the entry point through each call that transforms or forwards it to where it is stored, sent or returned."
+
+[intent.hints]
+rust = ["handlers", "`async fn` chains through `.await`", "channel sends", "trait-object dispatch", "`?` hops"]
+axle = ["`async fn` and `await` chains", "`spawn` hand-offs", "`synchronized` blocks", "trait dispatch"]
+php = ["controller, service and repository calls", "middleware", "event listeners", "queued jobs"]
+javascript = ["route handlers", "middleware chains", "`await` chains", "event emitters", "callbacks"]
+python = ["view and handler functions", "service calls", "`await` chains", "signal handlers", "task queues"]
+java = ["controller, service and repository layers", "interceptors", "listeners", "`CompletableFuture` chains"]
+kotlin = ["`suspend` call chains", "coroutine scopes", "`Flow` operators", "service layers"]
+go = ["handlers", "goroutines and channel sends", "`context.Context` propagation", "interface method calls"]
+
+[[intent]]
+name = "docs"
+aliases = ["doc", "documentation", "rationale"]
+kind = "locate"
+summary = "Design rationale and prose: READMEs, design notes, doc comments — the why, not the code."
+instruction = "Given a question about {project}, retrieve the documentation, design notes and doc comments that explain how and why it works, rather than the implementation code."
+
+[intent.hints]
+rust = ["`//!` module docs", "`///` item docs"]
+axle = ["doc comments on declarations and modules"]
+php = ["PHPDoc blocks"]
+javascript = ["JSDoc and TSDoc comments"]
+python = ["docstrings"]
+java = ["Javadoc", "`package-info.java`"]
+kotlin = ["KDoc"]
+go = ["package doc comments", "`doc.go` files"]
+markdown = ["READMEs", "guides", "ADRs", "design pages"]
+
+[[intent]]
+name = "test"
+aliases = ["tests"]
+kind = "locate"
+summary = "A behaviour in hand: the tests that exercise and assert it."
+instruction = "Given a described behaviour of {codebase}, retrieve the tests that exercise and assert it, with their fixtures and expected outcomes."
+
+[intent.hints]
+rust = ["`#[test]` and `#[tokio::test]` functions", "`#[cfg(test)]` modules", "`tests/` files", "`assert_eq!`"]
+axle = ["test functions", "their assertions"]
+php = ["PHPUnit `test*` methods", "`#[Test]` cases", "`assert*` calls", "data providers"]
+javascript = ["`describe`, `it` and `test` blocks", "`*.test.*` and `*.spec.*` files", "`expect`"]
+python = ["pytest `test_*` functions", "fixtures", "`parametrize`", "`unittest.TestCase`"]
+java = ["JUnit `@Test` methods", "assertions", "Mockito setups"]
+kotlin = ["`@Test` functions", "kotest specs", "`runTest` blocks"]
+go = ["`TestXxx(t *testing.T)`", "`_test.go` files", "table-driven cases", "`t.Run` subtests"]
+
+[[intent]]
+name = "config"
+aliases = ["configuration", "settings", "env"]
+kind = "locate"
+summary = "A setting, flag or environment variable: where it is declared, defaulted, validated and read."
+instruction = "Given a setting, flag or environment variable of {codebase}, retrieve the passages that declare it, set its default, validate it and read it."
+
+[intent.hints]
+rust = ["`Config` structs with serde defaults", "`std::env::var`", "clap arguments", "Cargo `[features]`"]
+axle = ["configuration types and their defaults", "`axle.toml`", "`@target` conditions"]
+php = ["`getenv` and `$_ENV`", "`config/*.php` arrays", "container parameters"]
+javascript = ["`process.env`", "`package.json` fields", "config modules"]
+python = ["`os.environ`", "settings modules", "pydantic settings", "`pyproject.toml`"]
+java = ["`@Value` and `@ConfigurationProperties`", "`application.properties` and `application.yml`"]
+kotlin = ["`@ConfigurationProperties`", "`System.getenv`", "Gradle build settings"]
+go = ["`os.Getenv`", "`flag` definitions", "config structs with tags"]
+toml = ["keys and tables with their comments"]
+json = ["keys and their default values"]
+
+[[intent]]
+name = "error"
+aliases = ["diagnostic", "errors", "exception"]
+kind = "locate"
+summary = "An error message, panic, exception or diagnostic code: what raises it, what handles it, what defines it."
+instruction = "Given an error message, a panic, an exception or a diagnostic code from {codebase}, retrieve the code that raises it, the code that propagates or handles it, and the type that defines it."
+
+[intent.hints]
+rust = ["`?` propagation", "`thiserror` enums with `#[error]`", "`panic!`", "`.expect`"]
+axle = ["error sets `! E` in signatures", "`exception` declarations", "`throw`", "`try`/`catch`", "`expr catch e { }`"]
+php = ["`throw new`", "`try`/`catch`", "custom `Exception` classes", "error handlers"]
+javascript = ["`throw`", "`try`/`catch`", "rejected promises", "custom `Error` subclasses"]
+python = ["`raise`", "`try`/`except`", "custom exception classes", "logging calls"]
+java = ["`throw new`", "`throws` clauses", "`try`/`catch`", "`@ExceptionHandler`"]
+kotlin = ["`throw`", "`runCatching` and `Result`", "`require` and `check`", "sealed error types"]
+go = ["`if err != nil` returns", "`errors.Is` and `errors.As`", "`fmt.Errorf(\"%w\")`", "sentinel errors"]
+
+[[intent]]
+name = "similar"
+aliases = ["duplicates", "clones"]
+kind = "locate"
+summary = "A passage in hand: code that does the same thing elsewhere, near-duplicates that diverged included."
+instruction = "Given a code passage from {codebase}, retrieve other passages that implement the same logic or follow the same pattern, including near-duplicates that have since diverged."
+
+# --- Workflow: the searches one task needs ----------------------------------
+
+[[intent]]
+name = "review"
+aliases = ["impact"]
+kind = "workflow"
+summary = "Reviewing a change to a target: its callers, the tests that pin it, the docs that describe it, similar code that should change with it."
+instruction = "Given a function, type or module of {codebase} under review, retrieve the passages a reviewer must read alongside it: its callers, its tests, its documentation and similar code."
+
+[[intent.legs]]
+label = "callers"
+intent = "usage"
+k = 8
+
+[[intent.legs]]
+label = "tests"
+intent = "test"
+k = 5
+
+[[intent.legs]]
+label = "docs"
+intent = "docs"
+k = 3
+
+[[intent.legs]]
+label = "similar"
+intent = "similar"
+k = 5
+
+[[intent]]
+name = "refactor"
+aliases = ["rename"]
+kind = "workflow"
+summary = "Changing a target everywhere: its definition, every usage, its implementations, its tests and its duplicates."
+instruction = "Given a symbol of {codebase} about to be refactored, retrieve every passage the change must touch: its definition, its usages, its implementations, its tests and its duplicates."
+
+[[intent.legs]]
+label = "definition"
+intent = "symbol"
+k = 3
+
+[[intent.legs]]
+label = "usages"
+intent = "usage"
+k = 10
+
+[[intent.legs]]
+label = "implementations"
+intent = "implementations"
+k = 5
+
+[[intent.legs]]
+label = "tests"
+intent = "test"
+k = 5
+
+[[intent.legs]]
+label = "duplicates"
+intent = "similar"
+k = 5
+
+# `pairing` matches each hit of the first leg with its nearest hits of the
+# second, by stored vector: a weak best match is a doc that drifted.
+[[intent]]
+name = "doc-sync"
+aliases = ["drift"]
+kind = "workflow"
+pairing = true
+summary = "Docs against code: each documentation section beside the code that implements it, to spot what drifted."
+instruction = "Given a feature or behaviour of {project}, retrieve the documentation that describes it and the code that implements it, so the two can be compared for drift."
+
+[intent.hints]
+markdown = ["README and reference sections stating options, defaults and guarantees"]
+
+[[intent.legs]]
+label = "docs"
+instruction = "Given a feature or behaviour of {project}, retrieve the documentation sections that describe what it does, its options and the guarantees it makes."
+langs = ["markdown"]
+kinds = ["doc_section"]
+
+[[intent.legs]]
+label = "code"
+instruction = "Given a documented feature or behaviour of {codebase}, retrieve the source code that implements it, including its defaults and the checks that enforce its guarantees."
+exclude_langs = ["markdown"]
+
+# `duplicates` also reports near-identical code in different files among the
+# hits — copies that diverged.
+[[intent]]
+name = "divergence"
+aliases = ["diverged", "inconsistencies"]
+kind = "workflow"
+pairing = true
+duplicates = true
+summary = "Where docs and code disagree and where copies drifted apart: doc claims, the code that should honour them, near-duplicates."
+instruction = "Given an area of {project}, retrieve the documentation claims about it, the code that should honour them, and near-duplicate code that may have diverged."
+
+[intent.hints]
+markdown = ["statements of behaviour, defaults, limits and guarantees"]
+
+[[intent.legs]]
+label = "docs"
+instruction = "Given an area of {project}, retrieve the documentation passages that make claims about its behaviour, its defaults, its limits or its guarantees."
+langs = ["markdown"]
+kinds = ["doc_section"]
+
+[[intent.legs]]
+label = "code"
+instruction = "Given an area of {codebase}, retrieve the source code that implements its behaviour, its defaults, its limits and its guarantees."
+exclude_langs = ["markdown"]
+
+[[intent.legs]]
+label = "duplicates"
+intent = "similar"
+exclude_langs = ["markdown"]
+k = 10
+
+[[intent]]
+name = "onboard"
+aliases = ["overview", "tour"]
+kind = "workflow"
+summary = "First contact with an area: its overview docs and READMEs, its entry points, its central types."
+instruction = "Given an area of {project} a newcomer must learn, retrieve the passages that introduce it: its overview documentation, its entry points and its central types."
+
+[intent.hints]
+rust = ["`lib.rs` and `mod.rs` with their `//!` docs", "central `struct`, `trait` and `enum` items"]
+axle = ["central `class`, `trait` and `struct` declarations", "`axle.toml`", "`fn main() : i32`"]
+php = ["service classes", "interfaces", "`composer.json` autoload roots"]
+javascript = ["`index` modules", "exported classes and types", "`package.json`"]
+python = ["`__init__.py` modules", "core classes", "`pyproject.toml`"]
+java = ["core interfaces and classes", "`package-info.java`", "`main`"]
+kotlin = ["core interfaces", "data classes", "sealed hierarchies"]
+go = ["package doc comments", "core structs and interfaces", "`cmd/` mains"]
+
+[[intent.legs]]
+label = "overview"
+intent = "docs"
+k = 5
+
+[[intent.legs]]
+label = "entry-points"
+intent = "api"
+k = 5
+
+[[intent.legs]]
+label = "types"
+instruction = "Given an area of {codebase} a newcomer must learn, retrieve its central types and interfaces: the declarations the rest of the area is built around."
+exclude_langs = ["markdown"]
+k = 5
+
+[[intent]]
+name = "security"
+aliases = ["audit"]
+kind = "workflow"
+summary = "Attack surface of an area: input validation, authentication, unsafe and FFI code, SQL and shell building, secrets."
+instruction = "Given a component of {codebase} under security review, retrieve the passages that handle untrusted input, authentication or authorization, unsafe or foreign code, query or command construction, and secrets."
+
+[intent.hints]
+rust = ["`unsafe` blocks", "`extern \"C\"` bindings", "`std::process::Command`", "`format!`-built SQL", "path joins accepting `..`"]
+axle = ["`unsafe { }` over `ptr<T>`", "`extern \"C\"` bindings", "`@link` symbols"]
+php = ["`$_GET` and `$_POST`", "concatenated SQL", "`exec` and `shell_exec`", "`unserialize` and `eval`"]
+javascript = ["`req.body` and `req.query`", "template-built SQL", "`child_process.exec`", "`eval`", "`innerHTML`"]
+python = ["request data", "f-string SQL", "`subprocess` with `shell=True`", "`pickle` and `yaml.load`", "`eval`"]
+java = ["`@RequestParam` and `@RequestBody`", "concatenated JDBC SQL", "`ProcessBuilder`", "deserialization"]
+kotlin = ["request parameters", "templated SQL", "`ProcessBuilder`", "JNI `external fun`"]
+go = ["`r.FormValue`", "`fmt.Sprintf`-built SQL", "`exec.Command`", "`unsafe.Pointer` and cgo"]
+
+[[intent.legs]]
+label = "input"
+instruction = "Given a component of {codebase} under security review, retrieve the code that parses, validates or sanitizes untrusted input such as request bodies, paths, globs and file contents."
+
+[[intent.legs]]
+label = "auth"
+instruction = "Given a component of {codebase} under security review, retrieve the code that authenticates callers, checks tokens or permissions, and decides what a caller may do."
+
+[[intent.legs]]
+label = "unsafe"
+instruction = "Given a component of {codebase} under security review, retrieve the unsafe blocks, raw-pointer operations and foreign-function bindings, and the code that calls them."
+
+[[intent.legs]]
+label = "injection"
+instruction = "Given a component of {codebase} under security review, retrieve the code that builds SQL queries, shell commands, file paths or URLs from data that may come from outside."
+
+[[intent.legs]]
+label = "secrets"
+instruction = "Given a component of {codebase} under security review, retrieve the code and configuration that read, store, log or transmit secrets such as API keys, tokens and passwords."

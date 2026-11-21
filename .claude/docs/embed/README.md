@@ -176,52 +176,187 @@ The default instruction is language-neutral ("Given a developer question about
 a codebase, …"): one daemon indexes Rust, Axle, PHP and prose side by side.
 Changing it moves query vectors only, never a stored one.
 
-### The presets — what an agent can actually choose
+### The intent library — what an agent can actually choose
 
 Asking a model to invent a good instruction on every call produces a
 paraphrase of the query, which is **worse** than the default: it duplicates
 the signal the query already carries instead of describing the TASK.
 
-Hence named intents, defined in `QueryTask` (L0, CONV-012):
+Hence named **intents** (`findery_core::intent`, L0). They are **data**:
+`crates/core/intents.toml`, embedded with `include_str!` and parsed once — a
+unit test parses the same bytes, and `Config::validate` refuses to boot on a
+library that does not load.
 
-| `task`             | For                  | The instruction describes             |
-|--------------------|----------------------|---------------------------------------|
-| `code` *(default)* | "where is X handled" | code or docs that answer it           |
-| `symbol`           | a name in hand       | the declaration, the type, the docs   |
-| `usage`            | an API               | the call sites                        |
-| `docs`             | an intent            | the rationale, not the implementation |
-| `test`             | a behavior           | the tests that assert it              |
-| `config`           | a setting            | declaration, default, where it's read |
-| `error`            | a message, a panic   | what produces it and what handles it  |
+Each intent carries:
 
-Each also answers to an alias: `definition`, `callers`, `doc`, `tests`,
-`configuration`, `diagnostic`. Anything else is a 422.
+- a `name`, `aliases`
+- a one-line `summary` (for an agent choosing)
+- a `kind`
+- ONE instruction sentence ("Given …, retrieve …", language-neutral)
+- per-language `hints`
+- `pairing` / `duplicates` flags for a workflow
+- one or more **legs** —
+  `{ label, intent?, instruction?, kinds?, langs?, exclude_langs?, mode?, k? }`
 
-Precedence is resolved in `SearchRequest::resolve()` in L0 so the three
-transports can't diverge — the instruction and the filter are resolved by the
-same call, so there is one ladder to learn rather than two:
+A leg that names `intent = "usage"` borrows that locate intent's sentence,
+hints and restrictions.
+
+**Locate intents** — one leg:
+
+| Intent | Aliases | For |
+|---|---|---|
+| `code` *(default)* | | where and how something is done |
+| `symbol` | `definition`, `declaration` | a name in hand: declaration, signature, doc comment |
+| `usage` | `callers`, `uses`, `references` | call sites, instantiations, imports, wiring |
+| `implementations` | `impls`, `implementors`, `subclasses`, `overrides` | what implements, extends or overrides a trait, interface, base |
+| `api` | `entrypoints`, `endpoints`, `surface` | routes, handlers, CLI commands, exported items |
+| `flow` | `trace`, `dataflow` | entry point → each hop → sink |
+| `docs` | `doc`, `documentation`, `rationale` | the why: READMEs, design notes, doc comments |
+| `test` | `tests` | the tests that assert a behaviour |
+| `config` | `configuration`, `settings`, `env` | declared, defaulted, validated, read |
+| `error` | `diagnostic`, `errors`, `exception` | what raises it, handles it, defines it |
+| `similar` | `duplicates`, `clones` | the same logic elsewhere, diverged copies included |
+
+**Workflow intents** — several legs:
+
+| Intent | Legs |
+|---|---|
+| `review` (`impact`) | `callers` (usage) · `tests` (test) · `docs` (docs) · `similar` (similar) |
+| `refactor` (`rename`) | `definition` (symbol) · `usages` (usage) · `implementations` · `tests` · `duplicates` (similar) |
+| `doc-sync` (`drift`) | `docs` (markdown, `doc_section`) ↔ `code` (everything but markdown); `pairing` |
+| `divergence` (`diverged`, `inconsistencies`) | `docs` ↔ `code`, then `duplicates`; `pairing` |
+| `onboard` (`overview`, `tour`) | `overview` (docs) · `entry-points` (api) · `types` |
+| `security` (`audit`) | `input` · `auth` · `unsafe` · `injection` · `secrets` |
+
+`pairing` matches each hit of the first leg with its nearest hits of the
+second, by stored vector; `duplicates` reports near-identical code across files
+among the hits. Both run in `Indexer::search` — see `index/README.md`.
+
+#### Languages in the instruction
+
+Two placeholders name the languages a search touches, and render a plain noun
+when none is known:
 
 ```text
-request.instruction  >  request.task  >  the project's manifest  >  query_instruction
+"Given an API, function or type of {codebase}, retrieve …"
+  [rust, php]       → "… of a Rust and PHP codebase, retrieve …"
+  [axle]            → "… of an Axle codebase, retrieve …"
+  []                → "… of a codebase, retrieve …"
+"Given a question about {project}, retrieve …"   → "an Axle project", "a project"
 ```
 
-The project's own entry is the manifest's `instruction` / `task`, carried on
-`ProjectSpec` at registration.
+Any other `{word}` and a line break are refused when the library is built;
+other braces (`{ }`, `#[cfg(test)]`) stay literal. Markdown, TOML and JSON never
+name a codebase.
 
-It exists because "how should this corpus be asked about" is a property of the
-corpus, and a team should be able to commit that opinion rather than pass it on
-every call.
+`hints` are short lists of constructs per language, joined at render time into
+one clause per language, in the caller's priority order, inside the same
+sentence:
+
+```toml
+[intent.hints]
+rust = ["call sites", "`impl Trait for` blocks", "generic bounds", "macro invocations", "`use` paths"]
+```
+
+```text
+…; Rust: call sites, `impl Trait for` blocks, generic bounds, macro invocations and `use` paths; PHP: ….
+```
+
+They name each language's real constructs for the task — `impl Trait for` for
+Rust usage, `! E` error sets for Axle errors, `if err != nil` for Go, `@Test`
+for Java and Kotlin, pytest fixtures for Python.
+
+`search.max_instruction_chars` (default 640) caps the whole: the sentence is
+never cut, and the hints kept are always a prefix of the priority order (`0`
+keeps none).
+
+The neutral rendering of `code` is exactly `DEFAULT_QUERY_INSTRUCTION`, so
+naming nothing and naming `code` with no known language send the same bytes.
+
+#### Layers and precedence
+
+Three layers, each one overriding the one before:
+
+1. `IntentLibrary::builtin()`
+2. the daemon's `[intents.<name>]` (`Config.intents`, `Config::intent_library`)
+3. the manifest's `[intents.<name>]` (`ProjectConfig.intents`, carried on
+   `ProjectSpec.intents` at registration, where the daemon validates it before
+   writing anything)
+
+A key names an intent or an alias. Within a layer:
+
+- every field a key sets replaces that field
+- `hints` merge language by language (an empty list removes one)
+- `legs` replace the whole plan
+- a key that names nothing defines a new intent and must set `summary` and
+  `instruction`
+
+Each layer is re-validated as a whole, so an override of `usage` reaches the
+`review` leg that borrows it. Unknown keys are refused (`deny_unknown_fields`),
+at the moment the file is read.
+
+The engine keeps each project's layered library with the overrides it was built
+from, and rebuilds it only when the spec carries different ones.
+
+The ladder, resolved in ONE place — `SearchRequest::resolve_plan` — so three
+transports cannot diverge:
+
+```text
+raw_query  >  instruction  >  intent / task  >  like (runs `similar`)
+           >  project instruction  >  project task  >  query_instruction
+```
+
+- `raw_query: true` sends the query verbatim: `QueryPrompt::Raw`, which every
+  embedder renders through `prompt::render_query` — no instruction, no
+  template, whatever the profile's `query_template`.
+- A free `instruction` replaces every leg's sentence; the intent still decides
+  the legs.
+- `intent` and `task` are the same namespace (`task` keeps its closed set —
+  `code`, `symbol`, `usage`, `docs`, `test`, `config`, `error` and the aliases
+  `definition`, `callers`, `doc`, `tests`, `configuration`, `diagnostic`, a 422
+  for anything else). Naming two different intents through them is refused.
+- An unknown `intent` is `Error::Invalid` (400) listing the known names —
+  never a silent fallback.
+- `like` with no intent runs `similar`; with an intent, it feeds that intent's
+  `similar` legs, and an intent without one is refused. A `like` leg embeds
+  nothing (`by_example`).
+
+Filters narrow, never widen: the request's filter is laid over the scope
+(`SearchFilter::layer`), then each leg intersects its `langs` / `kinds` with it
+and subtracts its `exclude_langs`.
+
+A leg left with nothing (`doc-sync` with `langs = ["rust"]` loses its markdown
+leg) is dropped with a warning, and `pairing` is lifted; a filter that empties
+every leg is `Error::Invalid`. A leg's `k` and `mode` apply unless the request
+names its own.
+
+The instruction names the filter's languages when they were chosen, otherwise
+the project's language mix — its files' languages by chunk count
+(`Bucket::lang_mix`) — minus what the leg excludes.
 
 The other half of the pair, `query`, is never defaulted and never derived: the
 model is handed the two as `Instruct: {…}` and `Query: {…}`, and a client that
 can send one and not the other cannot express the format the model documents.
 
-Exposed everywhere:
+The project's own entry is the manifest's `instruction` / `task`. It exists
+because "how should this corpus be asked about" is a property of the corpus,
+and a team should be able to commit that opinion rather than pass it on every
+call.
 
-- HTTP body (`task`, `instruction`)
+`SearchRequest` is `deny_unknown_fields`: `{"instructions": …}` is a 422, not a
+search that silently ignored its caller.
+
+Exposed:
+
+- the HTTP body (`task`, `intent`, `instruction`, `raw_query`, `like`)
+- `GET /v1/intents`
 - `findery-client`
-- the MCP tool `search_code`
-- `findery search --task symbol` / `--instruct "…"`
+- the MCP tool `search` (`intent` as an enum of the built-in names,
+  `instruction`, `raw_query`, `like` — not the legacy `task`, which `intent`
+  covers)
+- `findery search --intent … --instruct … --raw --like …` / `findery intents`
+
+Every response echoes the resolution (`resolved`).
 
 ## The dimension probe
 

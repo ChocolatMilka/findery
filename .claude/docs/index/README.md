@@ -78,7 +78,8 @@ nothing, its member never moved.
 |---|---|---|
 | `sync`, `add_document`, `push_documents` | write | the model's, created if missing |
 | `register` | **write side of the gate** (`hold_still`) | the model's, created if missing — every member gets the row |
-| `search`, `stats`, `export`, `file_manifest` | read | the model's when it exists (see §2 for search) |
+| `search`, `stats`, `export`, `file_manifest`, `files` | read | the model's when it exists (see §2 for search) |
+| `read` | read | the model's when it holds chunks, else the freshest sibling that does — like the keyword leg (§2) |
 | `prune`, `remove_document` | read | **every** member: a document the user deleted must not come back the day they switch model |
 | `get_project`, `list_projects` | none | the freshest row; no gate, no embedder — a lookup answers while a sync holds the project and its runtime is down |
 
@@ -103,7 +104,7 @@ never "not attached".
 
 A registration of a project that exists is a **merge** (`merged_spec`): each
 field the request leaves absent keeps the project's current value — its
-bucket, scopes, instruction, pin, include/exclude and extension lists,
+bucket, scopes, instruction, intents, pin, include/exclude and extension lists,
 walk flags — and only an explicitly empty value clears one (`[]`, `{}`, `""`
 for `instruction` and `model`).
 
@@ -313,14 +314,23 @@ deleting each other:
 
 ### What a request means before it is run
 
-A search arrives with a filter, an optional `scope` **name**, an optional task
-or instruction, over a project that has its own defaults.
+A search arrives with a filter, an optional `scope` **name**, an optional
+intent, instruction or `like`, over a project that has its own defaults.
 
-The ladder is resolved in one call — `SearchRequest::resolve` — in L0, so the
-daemon, the MCP bridge and the CLI cannot answer different questions (the
-ladder itself: `embed/README.md`). Its inputs are read here, in the engine:
-the project's scope of that name (an unknown one is refused with the list),
-and the spec's own `instruction` / `task`.
+The ladder is resolved in one call — `SearchRequest::resolve_plan` — in L0, so
+the daemon, the MCP bridge and the CLI cannot answer different questions (the
+ladder itself: `embed/README.md`). Its context is read here, in the engine:
+
+| `PlanContext` field | Comes from |
+|---|---|
+| `library` | the built-in intents, the daemon's `[intents.*]`, the project's manifest layer — cached per project, rebuilt only when the spec carries other overrides |
+| `scope` | the project's scope of that name; an unknown one is refused with the list |
+| `project_instruction` / `project_intent` | the spec's `instruction` / `task` |
+| `langs` | `Bucket::lang_mix` — the project's languages by chunk count, read from `files` |
+
+The result is a `ResolvedPlan`: one leg for a plain query or a locate intent,
+several for a workflow intent (`review`, `doc-sync`…), each with its own
+filter, instruction, `k` and mode.
 
 The scope is resolved **here** and not by the client that named it: the
 daemon holds the project's definition, and a client reads a manifest only to
@@ -334,23 +344,38 @@ nothing.
 A scope **restricts and never widens**: a filter applied before scoring, never
 a second index and never a cut applied after the ranking.
 
-### Running it
+### Running the legs
 
 ```text
-resolve → member with the model's vectors
-        → the query embedded once
-        → the query's BM25 list
-        → vector list + BM25 list → fused → hydrated
+resolve plan → member with the model's vectors (once)
+            → example vector, for a `like` leg (from the cache, zero embedding)
+            → each DISTINCT prompt embedded once, concurrently
+            → the query's BM25 list, once
+            → every leg concurrently: vector list + BM25 list → fused → hydrated
+            → pairs / near-duplicates, from stored vectors
 ```
 
-Both lists are read from ONE member: a chunk id means nothing in another file.
+Legs that render their query the same way — every leg of a `raw_query`
+workflow — share one embedding. The BM25 list is fetched once, with the largest
+candidate count any leg needs, and each leg narrows it with its own filter once
+the chunks are in hand.
 
-`SearchResponse` is `{ hits, warnings }`: the hits best first, and why the
-answer is narrower than asked, each warning naming the repair.
+Every list is read from ONE member: a chunk id means nothing in another file.
+
+`SearchResponse`:
+
+- **`hits`** — for a single search
+- **`legs`** — for a workflow intent (`label`, `instruction`, `hits` per leg),
+  with `hits` repeating the first leg for a client that predates `legs`
+- **`resolved`** — always echoes the intent and each leg's instruction (or
+  `raw`, or `by_example`)
+
+Warnings of the plan (a leg the filter emptied) come first, then the run's; a
+degraded leg's warning is given once however many legs share its failure.
 
 ### Two lists — and what happens when one cannot run
 
-A search fuses a **vector list** and a **BM25 list**:
+Each leg fuses a **vector list** and a **BM25 list**:
 
 | List   | Finds                                                      | Misses                                           |
 |--------|------------------------------------------------------------|--------------------------------------------------|
@@ -372,12 +397,46 @@ sibling member with the freshest row that does — BM25 needs no vector, so any
 model's chunks answer it, which keeps a search useful right after a model
 switch.
 
-A search in **vector** mode makes the same failure the answer (409 for
-`VectorsUnavailable`).
+A leg in **vector** mode makes the same failure the answer (409 for
+`VectorsUnavailable`), and so does a `like` leg, whose query IS a vector.
 
-The candidate count is `k × search.candidate_multiplier`, capped at
-`search.max_k × search.candidate_ceiling_multiplier`; a BM25 list narrowed
+A leg's candidate count is `k × search.candidate_multiplier`, capped at
+`search.max_k × search.candidate_ceiling_multiplier`; a BM25 list a leg narrows
 after the fact over-fetches `search.keyword_overfetch` times.
+
+### `like` — search by a stored vector
+
+`like = "src/net.rs:L12-L48"` (or `src/net.rs:12-48`, the locator a hit prints,
+or a chunk id) names a chunk; the locator is parsed in L0 (`Locator`), the path
+through `sanitize_rel`. A line range picks the chunk of that file that overlaps
+it most.
+
+Its vector is read from the bucket's content-addressed cache under the lease's
+recipe — `(recipe, content_hash)`, the same key a sync reuses — so the search
+**embeds nothing**. The `similar` legs search with it, vector-only, and the
+example itself is left out of the answer.
+
+A locator no chunk covers is `not_found`; a chunk with no vector under the
+model yet is `vectors_unavailable`.
+
+### Pairing and near-duplicates
+
+Computed from the **stored** vectors of the hits returned — no embedding, and
+work bounded by the answer (a few dozen hits), never by the project:
+
+- **pairing** (`doc-sync`, `divergence`): each hit of the first leg with its
+  `search.pair_matches` (2) nearest hits of the second, by cosine. A hit whose
+  best match is below `search.drift_below` (0.5) — or that has no match at all —
+  is `drifted`: what the doc says may no longer be what the code does.
+- **duplicates** (`divergence`): every two code hits (not Markdown, TOML, JSON)
+  of **different files** whose cosine falls in
+  `[search.duplicate_min, search.duplicate_max]` (0.85–0.98) — copies that
+  diverged; above the band they are plain copies. A chunk found by several legs
+  is compared once.
+
+Pairs and duplicates point into `legs` by `HitRef { leg, hit }`. A hit whose
+vector the cache does not hold (a degraded search) is left out, with a warning.
+The thresholds depend on the model's similarity scale; tune them per profile.
 
 ### The fusion
 
@@ -396,7 +455,7 @@ calibration at all.
 Ties are broken **by id**: two identical queries must return the same
 list, otherwise any cache sitting above this one lies.
 
-With one list only (a vector or keyword search), the native score is kept: an
+With one list only (a vector or keyword leg), the native score is kept: an
 operator reading `0.83` on a vector search should see a cosine, not an RRF
 artifact that means nothing in isolation.
 
@@ -414,6 +473,37 @@ it `… [truncated]` — cutting mid-token while implying the file stops there
 would be a lie.
 
 It's the most direct lever an MCP client has over its own spend.
+
+### Reading what a search pointed at (`search/read.rs`)
+
+`Indexer::read(id, &ReadQuery)` answers a locator (`path:L12-L48`, those
+lines) or a chunk id (that chunk's lines), plus `context` lines on each side —
+capped by `search.max_read_context` (200) — within `search.max_read_lines`
+(1000) in all; a longer range is cut and says where the rest starts.
+
+The target is parsed before the lease, and a path goes through `sanitize_rel`.
+
+Where the lines come from is the rule worth knowing:
+
+| The file is | Lines from | Why |
+|---|---|---|
+| walked by the daemon (`Origin::File`, project not push-fed) and still readable | **the disk**, as it is now | the agent is about to edit it; a file whose hash differs from the bucket's record says so in a warning (`changed since it was indexed`) |
+| pushed, inline, or unreadable / too big / not UTF-8 on disk | **the stored chunks**, rebuilt line by line | they are the only copy; a line no chunk holds reads empty — the numbering never shifts — and the uncovered ranges are reported |
+
+A file is read from disk only when the bucket lists it as walked, and every
+file walked into the bucket — by a full pass or a targeted one (§1) — passed the
+project's walk rules: a read can never reach a file they exclude (`.env`,
+`*.pem`, `.findery/`…).
+
+A path no chunk covers is a 404 that points at the glob listing; a line past
+the end is a 400 naming the file's length.
+
+The answer (`ReadResponse`) carries the overlapped chunk's kind and symbol,
+`source` (`disk` or `index`) and `total_lines`.
+
+`Indexer::files(id, glob)` is `file_manifest` filtered by
+`CompiledFilter::matches_file` — the same matcher as a search's path filter
+(CONV-011); a broken glob is refused before the lease.
 
 ---
 
@@ -644,7 +734,9 @@ any `..` segment**. This string arrives from an MCP tool call:
 `root.join(..)`.
 
 A targeted sync adds a second lock: a sanitized path is admitted only when the
-walk rules admit it (§1).
+walk rules admit it (§1). A `read` adds a third: it opens a file on disk only
+when the bucket holds a walked record of it, so the walk's exclusions bound
+what it can reach.
 
 `PathMapper` then translates host ↔ container, at a segment boundary — a
 raw `starts_with` would make `/workspaces-old` match against `/workspaces`.

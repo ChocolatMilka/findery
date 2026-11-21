@@ -4,17 +4,17 @@
 
 ### A local semantic index of your codebases — so you, and your coding agent, find code by **what it does** instead of the word you guessed
 
-**Not a grep wrapper, and not a cloud service.** One embedding model, loaded once in the background, serves every project and every client: a CLI, an HTTP API, a Rust client, and an MCP bridge that puts `search_code` into Claude Code. Locating one function in an unfamiliar repository usually costs a `glob`, three to six `grep` and three to eight `Read` — 25,000 to 60,000 input tokens. With findery it is one call, tens of milliseconds, and a citation.
+**Not a grep wrapper, and not a cloud service.** One embedding model, loaded once in the background, serves every project and every client: a CLI, an HTTP API, a Rust client, and an MCP bridge that puts `search` and `read` into Claude Code. Locating one function in an unfamiliar repository usually costs a `glob`, three to six `grep` and three to eight `Read` — 25,000 to 60,000 input tokens. With findery it is one call, tens of milliseconds, and a citation.
 
 <p align="center">
   <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-FF7A45?style=for-the-badge&labelColor=1b1b2b">
   <img alt="MCP for Claude Code" src="https://img.shields.io/badge/MCP-Claude%20Code-5B4BE1?style=for-the-badge&labelColor=1b1b2b">
 </p>
 <p align="center">
-  <img alt="Version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-2E7D32?style=flat-square&labelColor=1b1b2b">
+  <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-2E7D32?style=flat-square&labelColor=1b1b2b">
   <img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-FF7A45?style=flat-square&labelColor=1b1b2b">
   <img alt="Chunkers: 10 languages" src="https://img.shields.io/badge/chunkers-10%20languages-1D6FB8?style=flat-square&labelColor=1b1b2b">
-  <img alt="Tests: 743" src="https://img.shields.io/badge/tests-743-9C27B0?style=flat-square&labelColor=1b1b2b">
+  <img alt="Tests: 886" src="https://img.shields.io/badge/tests-886-9C27B0?style=flat-square&labelColor=1b1b2b">
 </p>
 <p align="center">
   <img alt="Search: hybrid vector + BM25" src="https://img.shields.io/badge/search-vector%20%2B%20BM25-5B4BE1?style=flat-square&labelColor=1b1b2b">
@@ -39,8 +39,8 @@
 > **findery** *(n.)* — a place where finding gets done. The model is warm, the index is yours, and a question
 > in plain words comes back as a line number.
 
-> **Status.** `0.4.x`: the engine, the CLI, the HTTP API and the MCP bridge run natively on Windows (an
-> `.msi` ships) and in Docker. The suite is 743 tests under `clippy -D warnings`, with a watchdog
+> **Status.** `0.5.x`: the engine, the CLI, the HTTP API and the MCP bridge run natively on Windows (an
+> `.msi` ships) and in Docker. The suite is 886 tests under `clippy -D warnings`, with a watchdog
 > on the layer law. Open work is in [`.claude/roadmap/`](.claude/roadmap/README.md), not hidden here.
 
 ## 📊 At a glance
@@ -55,7 +55,7 @@
 | **Store** | Embedded SQLite — exact in-RAM scan, **12 ms at 50k chunks**, no service to run — or Qdrant (HNSW) beyond ~150k chunks. Switching re-embeds nothing |
 | **Feeding it** | The daemon walks what it can see; a client walks what it cannot and pushes the contents. Same walk, same write path, so a container or another machine needs **nothing mounted** |
 | **Failure** | A file that cannot be read becomes a `warning` in the sync report, never a silent skip. A recipe conflict is raised by the operation that would mix, never at boot — the daemon stays up to say so |
-| **Verification** | `make check`: `fmt`, `clippy -D warnings`, 743 tests, `check_layers.sh` (the layer law), `check_file_size.sh` (≤ 450 lines of code per file), `check_imports.sh` (imports grouped by layer). Performance claims are reproducible with `make bench` |
+| **Verification** | `make check`: `fmt`, `clippy -D warnings`, 886 tests, `check_layers.sh` (the layer law), `check_file_size.sh` (≤ 450 lines of code per file), `check_imports.sh` (imports grouped by layer). Performance claims are reproducible with `make bench` |
 | **Exit** | Your vectors export as JSONL / JSON / raw `float32`. The bucket is the durable truth, the vector store is reconstructible from it |
 
 ---
@@ -69,7 +69,7 @@
 - 🗄️ **A pluggable store** — SQLite until you outgrow it, Qdrant after; the numbers behind that threshold are measured and reproducible, including why an *embedded* ANN index was tried and ruled out.
 - 🧭 **Scopes, not second indexes** — a `[scopes]` table in the project manifest names a restriction (`findery search --scope api "…"`) that filters the same index before scoring.
 - 🩺 **`findery doctor`** — names what is missing and the command that fixes it, including a daemon older than the CLI.
-- 🤖 **Nine MCP tools** — `search_code` becomes the agent's first reflex for locating code, in place of `glob` + `grep` + three `Read`.
+- 🤖 **Five MCP tools and seven prompts** — `search` (with intents like `usage`, `review`, `doc-sync`) and `read` become the agent's first reflex for locating code, in place of `glob` + `grep` + three `Read`; `project` is detected from the working directory, and `/mcp__findery__review` hands it a playbook with a checklist for the project's own languages.
 - 🧱 **A layer law, checked by a script** — dependencies go down, data comes back up through `Result`, and the three swappable seams (`Embedder`, `VectorStore`, `Chunker`) are the only places an implementation changes.
 
 > **New here?** [`docs/getting-started.md`](docs/getting-started.md) walks the
@@ -103,7 +103,7 @@ in `Program Files`, `findery` on your `PATH`:
 
 ```powershell
 # download findery-<version>-x64.msi from the latest release, then
-msiexec /i findery-0.4.0-x64.msi
+msiexec /i findery-0.5.0-x64.msi
 findery --version
 ```
 
@@ -117,6 +117,18 @@ findery config set model <the name that runtime reports>
 ```
 
 More cases in [Choosing your model](#choosing-your-model).
+
+**Tab completion** — commands, flags, and names too: project ids after `-p`,
+intents after `--intent`, model aliases, buckets, scopes. `findery completions
+install` prints the one line to add to your shell's profile; on PowerShell,
+that is this line in `$PROFILE`:
+
+```powershell
+findery completions powershell | Out-String | Invoke-Expression
+```
+
+`findery --help` lists the commands by theme; `findery <command> --help` ends
+with examples to copy.
 
 ### 2. Index a project, then search it
 
@@ -182,8 +194,8 @@ That is the path the installer produces:
 Whichever you name, it must be the bridge from the same build as the server it
 talks to.
 
-Restart Claude Code, then `/mcp`: nine tools appear, `search_code` among them,
-which becomes the agent's first reflex for locating code — in place of `glob` +
+Restart Claude Code, then `/mcp`: five tools appear — `search`, `read`,
+`projects`, `sync`, `note` — and seven prompts; `search` becomes the agent's first reflex for locating code — in place of `glob` +
 `grep` + three `Read`.
 
 The bridge is launched by Claude Code rather than by your shell, so it takes its
@@ -483,7 +495,7 @@ an **embedded** ANN index was measured and then ruled out — is in
 
 ```bash
 make check     # fmt-check + clippy -D warnings + test + layers + sizes
-make test      # 743 tests
+make test      # 886 tests
 make bench     # vector scan measurement
 ```
 

@@ -270,6 +270,7 @@ mod tests {
             store_backend: "sqlite".into(),
             last_sync_at: None,
             disk_bytes: 0,
+            langs: Vec::new(),
         };
         let check = vector_check(&project, &stats).expect("missing vectors");
         assert_eq!(check.detail, "`axle` has no vectors under `harrier` yet");

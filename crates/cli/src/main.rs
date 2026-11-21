@@ -13,7 +13,7 @@
 //!
 //! | Module | Holds |
 //! |---|---|
-//! | `args` | the argument surface clap parses, and nothing else |
+//! | `args` | the argument surface clap parses, its grouped help and its completion |
 //! | `dispatch` | one arm per command, each handing off to `commands` |
 //! | `commands` | one module per command or family of commands |
 //! | `settings` | the settings file the CLI shares with the server, and the address resolved from it |
@@ -27,12 +27,13 @@ mod settings;
 mod ui;
 mod workspace;
 
-use clap::Parser;
-
 use args::Cli;
 
 fn main() -> std::process::ExitCode {
-    let cli = Cli::parse();
+    // First, before anything is parsed or started: a TAB press runs this
+    // binary and must get its candidates back, and nothing else.
+    args::complete::intercept();
+    let cli: Cli = args::help::parse();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(e) => {

@@ -374,7 +374,8 @@ findery projects                   # all of them, current one marked *
 |---------|--------------|
 | `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,js,py` to choose extensions, `--bucket <name>` to choose its index, `--model <alias>` to pin its model, `--sync` to index it immediately |
 | `findery sync` | incremental. `--full` ignores the metadata and hash gates (never the vector cache). `--path src/a.rs` targets files. `--background` returns a job id instead of waiting |
-| `findery search "…"` | hybrid search of the current project. `--task <name>` picks a retrieval intent, `--instruct` writes your own — §3 |
+| `findery search "…"` | hybrid search of the current project. `--intent <name>` picks a task (`usage`, `review`, `doc-sync`…), `--like <path:12-48>` finds look-alikes, `--raw` sends the query verbatim — §3 |
+| `findery intents` | the intents a search can name in this project, workflows with the searches they run |
 | `findery jobs [id]` | what each background job is doing, and where a running one has got to |
 | `findery bucket ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves, one line per model file. `rm` needs `--force` while one holds projects; `rm <name> --model <alias>` deletes one model's file |
 | `findery model ls` / `show [alias]` / `use <alias>` | the model profiles, which one is the default, which projects use each — and the switch (§5) |
@@ -385,6 +386,7 @@ findery projects                   # all of them, current one marked *
 | `findery detach` | takes a project off the server and **keeps** its index: the files are closed, unlocked, and not reopened at the next start. `findery init` in the project attaches it again, instantly |
 | `findery rm` | **deletes** a project, its chunks and its vectors — and its bucket's files when no other project shares them. The manifest stays |
 | `findery health` | whether the index answers, and what it serves |
+| `findery completions <shell>` | the shell completion script; `install` prints the profile line that loads it — [below](#--help-and-tab) |
 
 ### `detach` or `rm`
 
@@ -474,50 +476,169 @@ following it.
 repository can be claimed — and its bucket chosen — before any model is
 reachable. `--sync` collapses the two.
 
+### `--help`, and TAB
+
+`findery --help` lists the commands by what they are for, each with its
+one-line summary:
+
+```text
+Get started       init  doctor  health
+Search            search  intents
+Index             sync  watch  status  jobs
+Projects          projects  detach  rm  doc
+Models & storage  model  bucket  export
+Settings          config  completions
+```
+
+`-h` on a command is one line per option. `--help` adds:
+
+- the details;
+- the accepted values of every closed list (`--mode`, `--task`, `--lang`,
+  `--kind`, `export --format`);
+- an **Examples** block of lines to copy as they are.
+
+A command's own options come first; `--server`, `--token`, `--json` and
+`--no-spawn` sit under *Global options*.
+
+Colour reaches a terminal only: piped, redirected or with `NO_COLOR` set, the
+help is plain text, wrapped to the terminal width.
+
+The grouping is one table in `crates/cli/src/args/help/mod.rs`. A test fails when a
+command is missing from it, and another parses every example against the real
+argument surface.
+
+Completion is one line in your shell's profile. `findery completions install`
+prints it for the shell it detects — `$SHELL`, else PowerShell on Windows — as
+a comment naming the file and the line itself. It edits nothing; appending its
+output (`findery completions install >> ~/.bashrc`) works because both lines
+are valid shell.
+
+| Shell | Add to | The line |
+|-------|--------|----------|
+| PowerShell | `$PROFILE` | `findery completions powershell \| Out-String \| Invoke-Expression` |
+| bash | `~/.bashrc` | `source <(findery completions bash)` |
+| zsh | `~/.zshrc`, after `compinit` | `source <(findery completions zsh)` |
+| fish | `~/.config/fish/config.fish` | `findery completions fish \| source` |
+| elvish | `~/.config/elvish/rc.elv` | `eval (findery completions elvish \| slurp)` |
+
+The script asks `findery` itself at each TAB (with `FINDERY_COMPLETE` set), so
+it follows the binary on your `PATH` with nothing to regenerate, and completes
+names as well as commands and flags:
+
+| After | Offers | From |
+|-------|--------|------|
+| `-p` | project ids | the manifest above the current directory, then the server |
+| `init --bucket`, `bucket rm` | bucket names | the manifest, then the server |
+| `init --model`, `model use` / `show`, `bucket rm --model` | model aliases | the settings file's profiles, then the server |
+| `--intent` | intents, with their summaries | the built-in library, the settings and the manifest |
+| `--scope` | scopes | the manifest |
+| `config set` / `unset` | short setting names | the CLI |
+
+Intents, scopes and the current project come from disk, so they complete with
+no server at all. A server is asked only **if it is already running**, with a
+300 ms limit; a TAB never starts one, whatever `FINDERY_NO_SPAWN` says.
+
+`--static` prints a self-contained script instead — commands, flags and closed
+lists, but no names — for a shell that should never run a program to complete
+a word.
+
 ---
 
 ## 3. Searching precisely
 
-### Retrieval intent — the cheapest accuracy you will get
+### Intents — the cheapest accuracy you will get
 
 `qwen3.7-text-embedding` is instruction-aware: a task-tailored instruction buys
 1-5% retrieval accuracy for the cost of one prefix on a string that was going to
 be embedded anyway.
 
+An **intent** names the task, and findery writes the instruction — naming the
+project's languages and their idioms (`impl Trait for`, `if err != nil`,
+`@Test`…).
+
 ```bash
-findery search "QueryTask" --task symbol            # you have a name, you want its definition
-findery search "retry_with_backoff" --task usage    # you want the call sites
-findery search "why rank fusion" --task docs        # rationale, not implementation
+findery intents                                       # the library this project sees
+findery search "QueryTask" --intent symbol            # you have a name, you want its definition
+findery search "retry_with_backoff" --intent usage    # you want the call sites
+findery search "why rank fusion" --intent docs        # rationale, not implementation
 ```
 
-| `--task` | Use it when |
+| `--intent` | Use it when |
 |----------|-------------|
 | `code` *(default)* | a general "where is X handled" question |
 | `symbol` | you have a name and want the declaration |
 | `usage` | you have an API and want its callers |
+| `implementations` | every type implementing a trait, interface or base class |
+| `api` | the public surface: routes, handlers, commands, exports |
+| `flow` | the path of a request or a value, entry to sink |
 | `docs` | you want design rationale, not code |
 | `test` | you want the tests pinning a behaviour |
 | `config` | a setting, a flag, an environment variable |
 | `error` | a message, a panic, a diagnostic code |
+| `similar` | the same logic elsewhere, diverged copies included |
 
-`--task` also takes their aliases (`--task callers`). An unknown task,
-`--lang` or `--kind` is refused with the list of valid ones — never dropped.
+**Workflow intents** run several searches at once and print them grouped:
 
-`--instruction "…"` (`--instruct`) overrides the preset with free-form text.
-Describe the TASK, not the query — restating the query duplicates signal the
-query already carries and performs worse than the default.
+| `--intent` | Runs |
+|---|---|
+| `review` | callers · tests · docs · similar code |
+| `refactor` | definition · usages · implementations · tests · duplicates |
+| `doc-sync` | doc sections ↔ the code they describe, **paired**, weak pairs flagged `possibly drifted` |
+| `divergence` | doc claims ↔ code, plus **near-duplicates** across files |
+| `onboard` | overview docs · entry points · central types |
+| `security` | input · auth · unsafe · injection · secrets |
+
+```text
+$ findery search --intent doc-sync "how buckets are removed"
+intent doc-sync · 2 legs: docs, code                     (stderr, dim)
+
+docs  2 hits
+  [1] 0.031  .claude/docs/index/README.md:210-238  doc_section  Detach and rm
+      ## Detach and rm
+  …
+code  2 hits
+  [1] 0.031  crates/index/src/lifecycle/project.rs:140-196  method  Indexer > remove_project
+      pub async fn remove_project(&self, id: &ProjectId) -> Result<ProjectRemoved> {
+  …
+pairs  docs → code
+  .claude/docs/index/README.md:210-238
+      0.712  crates/index/src/lifecycle/project.rs:140-196
+  .claude/docs/store/README.md:88-102  possibly drifted
+      0.431  crates/index/src/storage/buckets.rs:61-110
+```
+
+`--task` is the older spelling of the seven first intents, and takes their
+aliases (`--task callers`).
+
+An unknown intent, task, `--lang` or `--kind` is refused with the list of valid
+ones — never dropped.
+
+A manifest's `[intents.<name>]` (or the daemon's) overrides an intent or adds
+one; see `embed/README.md`.
+
+`--instruction "…"` (`--instruct`) replaces the intent's sentence with
+free-form text — the intent still decides which searches run. Describe the
+TASK, not the query: restating the query duplicates signal the query already
+carries and performs worse than the default.
+
+`--raw` sends the query to the model verbatim, with no instruction and no
+template.
 
 **The model reads a pair.** Qwen and Harrier are handed `Instruct: <the
 task>\nQuery: <your question>` — the default `query_template`; a model with
 another format gets its own (§5). The two halves are separate all the way from
 the CLI or the MCP tool to the embedding request.
 
+Every search prints the resolved intent and instruction on one dim line on
+**stderr**, so you see what the model was handed; `--json` carries it as
+`resolved`.
+
 The whole precedence, resolved once in L0 so no transport can invent its own
 ordering:
 
 ```text
---instruction  >  --task  >  the project's manifest  >  the daemon's
-                                                          embedder.query_instruction
+--raw  >  --instruction  >  --intent / --task  >  --like (runs `similar`)
+       >  the project's manifest  >  the daemon's embedder.query_instruction
 ```
 
 A manifest can therefore give a project its own default:
@@ -525,6 +646,18 @@ A manifest can therefore give a project its own default:
 ```toml
 instruction = "Given a question about axle, retrieve the passage that answers it."
 ```
+
+### Look-alikes — `--like`
+
+```bash
+findery search --like crates/net/src/retry.rs:L12-L48      # code doing the same thing
+findery search --like crates/net/src/retry.rs:12-48 --intent review "retry"
+```
+
+`--like` takes the locator a hit prints (`path:12-48`, `path:L12-L48`,
+`path:L12`) or a chunk id, and searches with that chunk's **stored** vector:
+nothing is embedded, and the chunk itself is left out. Alone it runs `similar`
+(no query needed); with a workflow intent it feeds that intent's `similar` leg.
 
 ### Mode
 
@@ -541,7 +674,7 @@ When the vector half cannot run — the project was never synced under the model
 it now uses, or that model's runtime is down — `hybrid` still answers, from the
 keyword half, and prints one `findery: keyword results only: …` line on
 **stderr** naming the model and the fix. stdout (and `--json`) carries the hits
-as always. `--mode vector` fails instead.
+as always. `--mode vector` and `--like` fail instead.
 
 ### Filters — applied before scoring, not after
 
@@ -565,17 +698,33 @@ The two levers that matter, in order:
 
 ```bash
 findery search "…" --max-chars 600    # per-excerpt ceiling — the strongest lever
-findery search "…" -k 3               # fewer excerpts
+findery search "…" -k 3               # fewer excerpts per list
 ```
 
-`-k` defaults to the daemon's `search.default_k` (10).
+`-k` defaults to the daemon's `search.default_k` (10); a workflow intent's legs
+keep their own (`review`: 8 callers, 5 tests, 3 docs, 5 similar) unless `-k`
+names one.
 
 `k=8` at 1200 characters is roughly 2,500-3,500 tokens for a full answer
 (measured: `.claude/docs/mcp/README.md`). Truncation happens on a line boundary
 and is marked `… [truncated]`.
 
-The wait a sync request may ask for (`wait_ms`) is capped by
-`server.max_sync_wait_ms` (120000).
+`[search]` also holds the pairing knobs — cosines on the model's own scale,
+worth re-tuning when the model changes:
+
+| Key | Default |
+|-----|---------|
+| `drift_below` | 0.5 |
+| `pair_matches` | 2 |
+| `duplicate_min` / `duplicate_max` | 0.85 / 0.98 |
+
+What a read may hand back is bounded in the same section:
+
+- `max_read_context` — 200 lines on each side of a target
+- `max_read_lines` — 1000 in all
+
+The wait a sync request may ask for (`wait_ms`, what the MCP `sync` tool sends)
+is capped by `server.max_sync_wait_ms` (120000).
 
 ---
 

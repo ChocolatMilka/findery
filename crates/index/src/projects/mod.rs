@@ -94,6 +94,9 @@ impl Indexer {
             return Err(Error::Invalid("root must not be empty".into()));
         }
         let pin = self.requested_pin(req.model.as_deref())?;
+        if let Some(layer) = &req.intents {
+            self.intent_cache.validate(layer)?;
+        }
         Ok(pin)
     }
 
@@ -262,6 +265,7 @@ impl Indexer {
             .ensure_project(&project.id, recipe.dim())
             .await?;
         family.put_row_everywhere(project).await?;
+        self.intent_cache.forget(&project.id);
         Ok(())
     }
 

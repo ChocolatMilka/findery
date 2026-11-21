@@ -117,7 +117,10 @@ pub struct ProjectSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<crate::embedding::prompt::QueryTask>,
+    pub task: Option<crate::intent::QueryTask>,
+    /// The manifest's `[intents.<name>]` layer over the daemon's library.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub intents: BTreeMap<String, crate::intent::IntentOverride>,
     /// The model profile this project is pinned to; `None` follows the
     /// daemon's default model.
     ///
@@ -130,17 +133,6 @@ pub struct ProjectSpec {
 }
 
 impl ProjectSpec {
-    /// The instruction a query in this project gets when the request says
-    /// nothing. Mirrors `SearchRequest::resolved_instruction`, and the two are
-    /// read in that order by `SearchRequest::resolve`.
-    pub fn resolved_instruction(&self) -> Option<&str> {
-        match (&self.instruction, self.task) {
-            (Some(free), _) if !free.trim().is_empty() => Some(free),
-            (_, Some(task)) => Some(task.instruction()),
-            _ => None,
-        }
-    }
-
     /// The scope a name refers to, or the sentence that says which names exist.
     pub fn scope(&self, name: &str) -> Result<&SearchFilter> {
         self.scopes.get(name).ok_or_else(|| {
@@ -178,6 +170,7 @@ impl Default for ProjectSpec {
             scopes: BTreeMap::new(),
             instruction: None,
             task: None,
+            intents: BTreeMap::new(),
             model: None,
         }
     }

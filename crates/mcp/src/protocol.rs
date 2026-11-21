@@ -1,9 +1,10 @@
 //! Minimal JSON-RPC 2.0 over stdio, the transport MCP speaks.
 //!
 //! INTENT: the protocol surface an MCP server actually needs is `initialize`,
-//! `tools/list`, `tools/call` and `ping`. Hand-rolling it is about eighty lines
-//! and pins the wire format to something this repository controls, instead of
-//! to a client library that revises its API faster than the spec it implements.
+//! `tools/list`, `tools/call`, `prompts/list`, `prompts/get` and `ping`.
+//! Hand-rolling it is about a hundred lines and pins the wire format to
+//! something this repository controls, instead of to a client library that
+//! revises its API faster than the spec it implements.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -32,6 +33,7 @@ pub struct Outgoing {
     pub error: Option<RpcError>,
 }
 
+/// A JSON-RPC error: its code and a message for a human.
 #[derive(Debug, Serialize)]
 pub struct RpcError {
     pub code: i32,
@@ -39,6 +41,7 @@ pub struct RpcError {
 }
 
 impl Outgoing {
+    /// A successful answer to request `id`.
     pub fn ok(id: Value, result: Value) -> Self {
         Self {
             jsonrpc: "2.0",
@@ -62,22 +65,38 @@ impl Outgoing {
     }
 }
 
+/// What the model reads once, at the start of a session: when to reach for
+/// which tool. A decision table, because that is what it consults mid-task.
+pub const INSTRUCTIONS: &str = "findery indexes this codebase by meaning and by identifier: it is your eyes on code you have not opened. `project` is optional everywhere — it is detected from .findery/config.toml above the working directory, else from the registered root that contains it.
+
+| You need | Call |
+|---|---|
+| where or how something is done, a concept, a behaviour | search {query} |
+| a definition / callers / implementors / tests / a setting / an error | search {query, intent: symbol / usage / implementations / test / config / error} |
+| everything a review, refactor, doc check or security pass must read | search {query, intent: review / refactor / doc-sync / divergence / security / onboard} — or the prompts of the same names |
+| an exact identifier or message | search {query, mode: \"keyword\"}; grep when you need every occurrence |
+| the rest of a hit, or the lines around it | read {locator: \"path:L12-L40\", context: 20} |
+| which files exist under a path | read {glob: \"crates/**/*.rs\"} |
+| a file you are about to edit | your own Read tool |
+| results that miss code you just wrote | sync {paths: [...]} |
+
+Cite hits by their locator. A `note:` line above the hits means the answer is narrower than asked (keyword-only, stale index): read it first.";
+
 /// The `initialize` result: what this server is and what it can do.
 pub fn initialize_result(requested_version: Option<&str>) -> Value {
     json!({
         // Echoing the client's version when it states one keeps older clients
         // working; the spec allows the server to answer with its own otherwise.
         "protocolVersion": requested_version.unwrap_or(PROTOCOL_VERSION),
-        "capabilities": { "tools": { "listChanged": false } },
+        "capabilities": {
+            "tools": { "listChanged": false },
+            "prompts": { "listChanged": false },
+        },
         "serverInfo": {
             "name": "findery",
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions":
-            "Semantic index over local codebases. Prefer `search_code` over reading files or \
-             grepping when you need to LOCATE something: it returns ranked, line-numbered \
-             excerpts with host paths you can open directly. Sync a project after large \
-             external changes; small edits are picked up by `sync_project` incrementally."
+        "instructions": INSTRUCTIONS,
     })
 }
 
@@ -119,6 +138,19 @@ mod tests {
         assert_eq!(v["protocolVersion"], "2024-11-05");
         assert_eq!(initialize_result(None)["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(v["serverInfo"]["name"], "findery");
+        assert_eq!(v["capabilities"]["prompts"]["listChanged"], false);
+    }
+
+    #[test]
+    fn the_instructions_are_a_decision_table_over_the_five_tools() {
+        for tool in ["search {", "read {", "sync {"] {
+            assert!(INSTRUCTIONS.contains(tool), "{tool}");
+        }
+        assert!(INSTRUCTIONS.contains("optional everywhere"));
+        assert!(
+            INSTRUCTIONS.len() < 2_000,
+            "read once per session: keep it short"
+        );
     }
 
     #[test]

@@ -8,6 +8,9 @@
 //! * `FINDERY_LOG`        — log filter; logs go to stderr, never stdout
 //! * `FINDERY_NO_SPAWN`   — set to forbid starting the daemon automatically
 //!
+//! A call that leaves `project` out is resolved from the directory the bridge
+//! was started in — Claude Code starts it in the project it opened.
+//!
 //! stdout carries the protocol and nothing else. A stray `println!` here
 //! corrupts the JSON-RPC stream and the client drops the session, which is why
 //! tracing is pinned to stderr below.
@@ -36,7 +39,11 @@ async fn main() -> std::process::ExitCode {
     }
     tracing::info!(daemon = client.base_url(), "mcp bridge ready");
 
-    match findery_mcp::serve(client, tokio::io::stdin(), tokio::io::stdout()).await {
+    // The directory Claude Code started the bridge in is the project a call
+    // without `project` means. Unreadable, it degrades to "name the project".
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let session = findery_mcp::Session::new(client, cwd);
+    match findery_mcp::serve(&session, tokio::io::stdin(), tokio::io::stdout()).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!(error = %e, "stdio loop ended");

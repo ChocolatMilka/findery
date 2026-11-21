@@ -1,39 +1,52 @@
-//! The query vector of a search: the member that holds the project's vectors
-//! under its model, and the query embedded once — or, where hybrid allows it,
-//! the warning that replaces them.
+//! The query vectors of a search: the member that holds the project's vectors
+//! under its model, the example of a `like` leg, and each distinct prompt
+//! embedded once — or, where hybrid allows it, the warning that replaces them.
 
 use std::sync::Arc;
 
 use findery_core::embedding::prompt::QueryPrompt;
-use findery_core::model::SearchMode;
+use findery_core::intent::ResolvedPlan;
+use findery_core::model::{SearchMode, SearchRequest};
 use findery_core::{Error, Result};
 
-use super::vectors;
+use super::vectors::{self, Example};
 use crate::gates::Lease;
 use crate::storage::families::BucketHandle;
 
-/// The vectors a search compares against: the member holding them, and the
-/// query vector, if any.
+/// The vectors a search compares against: the member holding them, and for
+/// each leg the query vector it searches with, if any.
 #[derive(Default)]
 pub(super) struct Gathered {
     pub(super) member: Option<Arc<BucketHandle>>,
-    /// `None` in keyword mode, or where the embedder failed and hybrid degraded.
-    pub(super) vector: Option<Vec<f32>>,
+    pub(super) example: Option<Example>,
+    /// One per distinct prompt; `None` where the embedder failed and the leg
+    /// degraded.
+    embedded: Vec<Option<Vec<f32>>>,
+    /// Per leg, which of `embedded` it uses.
+    slots: Vec<Option<usize>>,
 }
 
-/// The member and the query vector `mode` needs. In hybrid mode a failure
-/// becomes a warning; in vector mode it is the answer.
+impl Gathered {
+    pub(super) fn vector_of(&self, leg: usize, by_example: bool) -> Option<&[f32]> {
+        if by_example {
+            return self.example.as_ref().map(|e| e.vector.as_slice());
+        }
+        let slot = self.slots.get(leg).copied().flatten()?;
+        self.embedded.get(slot)?.as_deref()
+    }
+}
+
 pub(super) async fn gather(
     lease: &Lease,
-    query: &str,
-    instruction: Option<&str>,
-    mode: SearchMode,
+    req: &SearchRequest,
+    plan: &ResolvedPlan,
+    modes: &[SearchMode],
     warnings: &mut Vec<String>,
 ) -> Result<Gathered> {
-    if mode == SearchMode::Keyword {
+    let strict = modes.contains(&SearchMode::Vector);
+    if modes.iter().all(|m| *m == SearchMode::Keyword) {
         return Ok(Gathered::default());
     }
-    let strict = mode == SearchMode::Vector;
     let member = match vectors::vector_member(lease).await {
         Ok(member) => member,
         Err(e) if !strict && degrades(&e) => {
@@ -42,26 +55,97 @@ pub(super) async fn gather(
         }
         Err(e) => return Err(e),
     };
-    let prompt = match instruction {
-        Some(instruction) => QueryPrompt::Instruct(instruction),
-        None => QueryPrompt::Default,
+    let example = match &req.like {
+        Some(raw) => Some(vectors::example(lease, &member, raw).await?),
+        None => None,
     };
-    let embedded = match lease.embedder().await {
-        Ok(embedder) => embedder.embed_query(query, prompt).await,
-        Err(e) => Err(e),
-    };
-    let vector = match embedded {
-        Ok(vector) => Some(vector),
-        Err(e) if !strict && degrades(&e) => {
+
+    let prompts = Prompts::of(plan, modes);
+    let embedded = embed(lease, &req.query, &prompts, warnings).await?;
+    Ok(Gathered {
+        member: Some(member),
+        example,
+        embedded,
+        slots: prompts.slots,
+    })
+}
+
+/// The distinct prompts of a plan — legs that render their query the same
+/// way share one embedding — and which one each leg uses.
+struct Prompts<'p> {
+    distinct: Vec<QueryPrompt<'p>>,
+    /// Per prompt: a strict vector leg uses it, so its failure is the answer.
+    strict: Vec<bool>,
+    /// Per leg; `None` for a keyword or a `like` leg, which embeds nothing.
+    slots: Vec<Option<usize>>,
+}
+
+impl<'p> Prompts<'p> {
+    fn of(plan: &'p ResolvedPlan, modes: &[SearchMode]) -> Self {
+        let mut prompts = Self {
+            distinct: Vec::new(),
+            strict: Vec::new(),
+            slots: Vec::with_capacity(plan.legs.len()),
+        };
+        for (leg, mode) in plan.legs.iter().zip(modes) {
+            let embeds = !leg.by_example && *mode != SearchMode::Keyword;
+            let slot = if embeds {
+                Some(prompts.slot_for(leg.prompt(), *mode))
+            } else {
+                None
+            };
+            prompts.slots.push(slot);
+        }
+        prompts
+    }
+
+    fn slot_for(&mut self, prompt: QueryPrompt<'p>, mode: SearchMode) -> usize {
+        let slot = match self.distinct.iter().position(|p| *p == prompt) {
+            Some(slot) => slot,
+            None => {
+                self.distinct.push(prompt);
+                self.strict.push(false);
+                self.distinct.len() - 1
+            }
+        };
+        self.strict[slot] |= mode == SearchMode::Vector;
+        slot
+    }
+}
+
+/// Each prompt embedded once; a failure degrades the legs using it, unless one
+/// of them is a strict vector leg.
+async fn embed(
+    lease: &Lease,
+    query: &str,
+    prompts: &Prompts<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Option<Vec<f32>>>> {
+    let (distinct, strict) = (&prompts.distinct, &prompts.strict);
+    if distinct.is_empty() {
+        return Ok(Vec::new());
+    }
+    let embedder = match lease.embedder().await {
+        Ok(embedder) => embedder,
+        Err(e) if !strict.contains(&true) && degrades(&e) => {
             push_once(warnings, degraded(lease.alias.as_str(), &e));
-            None
+            return Ok(vec![None; distinct.len()]);
         }
         Err(e) => return Err(e),
     };
-    Ok(Gathered {
-        member: Some(member),
-        vector,
-    })
+    let results = vectors::embed_all(embedder.as_ref(), query, distinct).await;
+    let mut out = Vec::with_capacity(results.len());
+    for (result, strict) in results.into_iter().zip(strict) {
+        match result {
+            Ok(vector) => out.push(Some(vector)),
+            Err(e) if !strict && degrades(&e) => {
+                push_once(warnings, degraded(lease.alias.as_str(), &e));
+                out.push(None);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
 }
 
 /// The failures of the vector list a hybrid search survives.

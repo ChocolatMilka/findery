@@ -87,15 +87,17 @@ it a home, not to add a neighbor.
 
 | Crate | Root | Directories |
 |-------|------|-------------|
-| `findery-core` | `error`, `ids`, `traits`, `manifest` | `model/` (what is indexed and how it is asked for, `filter` included) · `api/` (the wire) · `config/` (the daemon's settings and profiles) · `embedding/` (`recipe`, `prompt`) · `support/` (`clock`, `path_map`, `serde_str`) |
+| `findery-core` | `error`, `ids`, `traits`, `manifest` | `model/` (what is indexed and how it is asked for, `filter` included) · `api/` (the wire) · `config/` (the daemon's settings and profiles) · `intent/` (the intent library and the plans it resolves to) · `embedding/` (`recipe`, `prompt`) · `support/` (`clock`, `path_map`, `serde_str`) |
 | `findery-store` | `lib` (the factories), `export` | `bucket/` (the SQLite file and its `schema`) · `files/` (`layout`, `journal`, `registry`, `adopt`, `migrate`: which files make a bucket and how they move) · `vectors/` (`sqlite`, `qdrant`) |
-| `findery-index` | `lib` (the `Indexer` and its boot order), `gates`, `models` | `storage/` (families, members, boot, the blocking pool) · `projects/` (registration, spec, documents, status) · `lifecycle/` (drain, `detach` / `rm`, `bucket rm`, removals and tombstones) · `jobs/` (the registry, progress, watchers) · `sync/` · `search/` |
-| `findery-cli` | `main` (the entry), `dispatch` (one arm per command) | `args/` (the clap surface, nothing else) · `commands/` (one module per command or family) · `settings/` (the settings file, the endpoint) · `workspace/` (the project around the cwd, its manifest) · `ui/` (palette, renderers, the sync board) |
+| `findery-index` | `lib` (the `Indexer` and its boot order), `gates`, `models` | `storage/` (families, members, boot, the blocking pool) · `projects/` (registration, spec, documents, status) · `lifecycle/` (drain, `detach` / `rm`, `bucket rm`, removals and tombstones) · `jobs/` (the registry, progress, watchers) · `sync/` · `search/` (legs, fusion, intents, pairing, `read`) |
+| `findery-cli` | `main` (the entry), `dispatch` (one arm per command) | `args/` (the clap surface, its grouped `help/`, its `complete/`ion, the `vocab` it advertises) · `commands/` (one module per command or family) · `settings/` (the settings file, the endpoint) · `workspace/` (the project around the cwd, its manifest) · `ui/` (palette, renderers, the search view, the sync board) |
 
 `findery-chunk` already splits by concern (`langs/`, `scanner/`, the shared
 `brace` / `header` / `items` / `sizing` passes). `findery-embed`, `findery-walk`,
 `findery-client` and `findery-server` are a handful of files each, one concern
 per file, and stay flat.
+`findery-mcp` splits what a tool takes (`args`), what it does (`tools/`), how
+its answer reads (`render/`) and the playbooks it serves (`prompts/`).
 
 ## The trap we already dodged once
 

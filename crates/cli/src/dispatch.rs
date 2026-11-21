@@ -25,7 +25,7 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
     // is where the plumbing is named, and only when there is something to fix.
     if !matches!(
         cli.command,
-        Command::Doctor | Command::Daemon { .. } | Command::Config { .. }
+        Command::Doctor | Command::Daemon { .. } | Command::Config { .. } | Command::Completions(_)
     ) {
         if cli.no_spawn {
             // SAFETY: set before any request, on the single CLI thread.
@@ -56,6 +56,7 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
             commands::init::run(&client, options, json).await
         }
         Command::Search(args) => commands::search::run(&client, *args, json).await,
+        Command::Intents { scope } => commands::search::intents(&client, &scope, json).await,
         Command::Sync {
             scope,
             full,
@@ -87,6 +88,7 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
         Command::Health => commands::server::health(&client, json).await,
         Command::Doctor => commands::doctor::run(&client, json).await,
         Command::Config { action } => commands::config::run(&client, action, json).await,
+        Command::Completions(args) => crate::args::complete::print(&args),
         Command::Daemon { action } => commands::server::daemon(&client, action).await,
         Command::Jobs { id } => commands::sync::jobs(&client, id.as_deref(), json).await,
     }

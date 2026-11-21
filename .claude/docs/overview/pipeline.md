@@ -93,9 +93,14 @@ Detail: [`../store/README.md`](../store/README.md).
 
 ### 6. Search — `findery-index::search`
 
-Two lists, fused by **rank** and not by score: cosine lives in `[-1,1]`,
+The request resolves to a plan of one or more searches — an intent such as
+`review` runs several, concurrently, answered grouped.
+
+Each fuses two lists by **rank** and not by score: cosine lives in `[-1,1]`,
 BM25 is unbounded, calibrating one against the other would be a permanent
 tuning job. RRF fuses them with no calibration.
+
+`like` and pairing read stored vectors back from the cache: no embedding.
 
 Detail: [`../index/README.md`](../index/README.md).
 

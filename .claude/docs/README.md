@@ -22,9 +22,9 @@ avoided.
 | [`chunk/README.md`](chunk/README.md) | Chunking per language, the lexical lexicons, item boundaries, windows, merging |
 | [`embed/README.md`](embed/README.md) | Models, Qwen3 instruction, local and remote providers, cache recipe |
 | [`store/README.md`](store/README.md) | SQLite bucket, vector backends, **the measurements that justify the choice**, export |
-| [`index/README.md`](index/README.md) | Which file an operation works in (members, leases), incremental sync (the three gates), hybrid search and how it degrades, jobs, watch, detach / rm |
+| [`index/README.md`](index/README.md) | Which file an operation works in (members, leases), incremental sync (the three gates), search — intents run as legs, `like`, pairing — and how it degrades, jobs, watch, detach / rm |
 | [`server/README.md`](server/README.md) | HTTP API reference |
-| [`mcp/README.md`](mcp/README.md) | MCP tools, wiring into Claude Code, token budget |
+| [`mcp/README.md`](mcp/README.md) | The five MCP tools and seven prompts, project auto-detection, rendering, wiring into Claude Code, measured token budget |
 
 **Open** work lives in [`../roadmap/README.md`](../roadmap/README.md) — not
 here. Fixing a roadmap entry means deleting it (CONV-038).

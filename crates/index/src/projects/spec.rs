@@ -58,6 +58,7 @@ pub(crate) fn merged_spec(
             None => previous.and_then(|p| p.instruction.clone()),
         },
         task: req.task.or(previous.and_then(|p| p.task)),
+        intents: pick(req.intents, previous.map(|p| &p.intents), Default::default),
         model: match decided.pin {
             Some(pin) => pin,
             None => previous.and_then(|p| p.model.clone()),

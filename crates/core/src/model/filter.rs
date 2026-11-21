@@ -54,6 +54,13 @@ impl CompiledFilter {
             && self.symbol_contains.is_none()
     }
 
+    /// Evaluates the dimensions a whole file has — its path and its language;
+    /// a kind or a symbol belongs to a chunk, so those are not asked here.
+    pub fn matches_file(&self, path: &str, lang: crate::model::Lang) -> bool {
+        let path_ok = self.paths.as_ref().is_none_or(|set| set.is_match(path));
+        path_ok && (self.langs.is_empty() || self.langs.contains(&lang))
+    }
+
     /// Evaluates the predicate against a stored payload.
     pub fn matches(&self, payload: &VectorPayload) -> bool {
         if let Some(set) = &self.paths
@@ -92,6 +99,24 @@ mod tests {
             kind,
             symbol: symbol.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn a_file_is_matched_on_its_path_and_language_only() {
+        let f = CompiledFilter::new(&SearchFilter {
+            paths: vec!["crates/**/*.rs".into()],
+            kinds: vec![ChunkKind::Function],
+            ..Default::default()
+        })
+        .expect("compile");
+        assert!(f.matches_file("crates/core/src/lib.rs", Lang::Rust));
+        assert!(!f.matches_file("docs/README.md", Lang::Markdown));
+        let rust_only = CompiledFilter::new(&SearchFilter {
+            langs: vec![Lang::Rust],
+            ..Default::default()
+        })
+        .expect("compile");
+        assert!(!rust_only.matches_file("a.md", Lang::Markdown));
     }
 
     #[test]

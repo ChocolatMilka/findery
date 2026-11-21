@@ -101,7 +101,11 @@ impl SearchFilter {
 
 /// A search as a caller states it. Shared verbatim by the HTTP API, the Rust
 /// client and the MCP tools: one request type, no translation layer.
+///
+/// INTENT: `deny_unknown_fields`, because a misspelled knob (`instructions`,
+/// `intnet`) is a search that silently ignores what the caller asked for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchRequest {
     pub project: ProjectId,
     pub query: String,
@@ -116,18 +120,34 @@ pub struct SearchRequest {
     /// The most direct lever an MCP client has on its own token spend.
     #[serde(default)]
     pub max_snippet_chars: Option<usize>,
-    /// Named retrieval intent. The embedding model is instruction-aware, and a
-    /// task-tailored instruction buys 1-5% retrieval accuracy for free.
+    /// A legacy intent name (`code`, `symbol`, `usage`, `docs`, `test`,
+    /// `config`, `error` and their aliases). Means exactly what the same name
+    /// means as `intent`.
     #[serde(default)]
-    pub task: Option<crate::embedding::prompt::QueryTask>,
-    /// Free-form instruction, overriding both `task` and the configured default.
+    pub task: Option<crate::intent::QueryTask>,
+    /// A named intent from the library — built-in, or defined by the daemon or
+    /// the project — by name or alias. An unknown name is refused with the list
+    /// of known ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    /// Free-form instruction, overriding the intent's sentence and every
+    /// default.
     #[serde(default)]
     pub instruction: Option<String>,
+    /// Sends the query to the model exactly as written: no instruction, no
+    /// template. Beats every instruction.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw_query: bool,
+    /// A chunk whose STORED vector the `similar` legs search with, by locator
+    /// (`path:L12-L48`) or chunk id: zero embedding, the chunk itself left out.
+    /// With no intent named, the search runs `similar`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like: Option<String>,
     /// A named restriction the project declared, narrowing the SAME index.
     ///
-    /// Sent as a name, not an expanded filter: the daemon already holds the
-    /// project's definition, and the MCP bridge is a different process that never
-    /// reads a manifest.
+    /// Sent as a name, not an expanded filter: the daemon holds the project's
+    /// definition, so every client — CLI, MCP bridge, script — means the same
+    /// filter by the same name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
 }
@@ -143,7 +163,10 @@ impl SearchRequest {
             filter: SearchFilter::default(),
             max_snippet_chars: None,
             task: None,
+            intent: None,
             instruction: None,
+            raw_query: false,
+            like: None,
             scope: None,
         }
     }
@@ -154,45 +177,17 @@ impl SearchRequest {
         self
     }
 
-    /// Picks a named retrieval intent.
-    pub fn with_task(mut self, task: crate::embedding::prompt::QueryTask) -> Self {
+    /// Picks a legacy intent name.
+    pub fn with_task(mut self, task: crate::intent::QueryTask) -> Self {
         self.task = Some(task);
         self
     }
 
-    /// The instruction this request resolves to on its own. `None` means nothing
-    /// was said here — the project's default applies next, then the daemon's.
-    /// See [`SearchRequest::resolve`] for the whole ladder.
-    pub fn resolved_instruction(&self) -> Option<&str> {
-        match (&self.instruction, self.task) {
-            (Some(free), _) if !free.trim().is_empty() => Some(free),
-            (_, Some(task)) => Some(task.instruction()),
-            _ => None,
-        }
+    /// Picks a named intent.
+    pub fn with_intent(mut self, intent: impl Into<String>) -> Self {
+        self.intent = Some(intent.into());
+        self
     }
-
-    /// What this request means once the project has had its say. `scope` is the
-    /// filter the project declared under the name the request carried — empty
-    /// when it named none — and `instruction` is the project's own default.
-    ///
-    /// The ladder is resolved here, in L0, so a transport cannot resolve it
-    /// differently. See [`SearchFilter::layer`] for how the filters combine.
-    pub fn resolve(&self, scope: &SearchFilter, instruction: Option<&str>) -> Resolved {
-        Resolved {
-            filter: scope.layer(&self.filter),
-            instruction: self
-                .resolved_instruction()
-                .or(instruction)
-                .map(str::to_string),
-        }
-    }
-}
-
-/// What a request means once the project's own defaults have been applied.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Resolved {
-    pub filter: SearchFilter,
-    pub instruction: Option<String>,
 }
 
 /// A (chunk, score) pair returned by a `VectorStore`.
@@ -221,7 +216,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::embedding::prompt::{DEFAULT_QUERY_INSTRUCTION, QueryTask};
+    use crate::embedding::prompt::DEFAULT_QUERY_INSTRUCTION;
+    use crate::intent::{DEFAULT_MAX_INSTRUCTION_CHARS, IntentLibrary, PlanContext, QueryTask};
     use crate::model::ProjectSpec;
 
     fn request() -> SearchRequest {
@@ -229,6 +225,20 @@ mod tests {
             ProjectId::new("demo").expect("id"),
             "where is retry handled",
         )
+    }
+
+    /// The instruction the plan gives `req`'s one leg, with no project default.
+    fn alone(req: &SearchRequest) -> Option<String> {
+        let ctx = PlanContext {
+            library: IntentLibrary::builtin().expect("the shipped library loads"),
+            scope: &SearchFilter::default(),
+            project_instruction: None,
+            project_intent: None,
+            langs: &[],
+            max_instruction_chars: DEFAULT_MAX_INSTRUCTION_CHARS,
+        };
+        let plan = req.resolve_plan(&ctx).expect("resolves");
+        plan.legs.into_iter().next().and_then(|leg| leg.instruction)
     }
 
     #[test]
@@ -243,38 +253,44 @@ mod tests {
 
     #[test]
     fn with_no_hint_the_daemon_default_is_used() {
-        assert_eq!(request().resolved_instruction(), None);
+        assert_eq!(alone(&request()), None);
     }
 
     #[test]
     fn a_preset_supplies_its_instruction() {
         let req = request().with_task(QueryTask::Symbol);
-        assert_eq!(
-            req.resolved_instruction(),
-            Some(QueryTask::Symbol.instruction())
-        );
-        assert_ne!(req.resolved_instruction(), Some(DEFAULT_QUERY_INSTRUCTION));
+        assert_eq!(alone(&req).as_deref(), QueryTask::Symbol.instruction());
+        assert_ne!(alone(&req).as_deref(), Some(DEFAULT_QUERY_INSTRUCTION));
     }
 
     #[test]
     fn free_text_beats_the_preset() {
         let mut req = request().with_task(QueryTask::Docs);
         req.instruction = Some("Given a migration question, retrieve the upgrade notes.".into());
-        assert!(
-            req.resolved_instruction()
-                .expect("instruction")
-                .contains("upgrade notes")
-        );
+        assert!(alone(&req).expect("instruction").contains("upgrade notes"));
     }
 
     #[test]
     fn a_blank_instruction_does_not_shadow_the_preset() {
         let mut req = request().with_task(QueryTask::Test);
         req.instruction = Some("   ".into());
-        assert_eq!(
-            req.resolved_instruction(),
-            Some(QueryTask::Test.instruction())
-        );
+        assert_eq!(alone(&req).as_deref(), QueryTask::Test.instruction());
+    }
+
+    #[test]
+    fn a_misspelled_field_is_refused_rather_than_ignored() {
+        let err = serde_json::from_str::<SearchRequest>(
+            r#"{"project":"demo","query":"x","instructions":"typo"}"#,
+        )
+        .expect_err("unknown field");
+        assert!(err.to_string().contains("instructions"), "{err}");
+        let back: SearchRequest = serde_json::from_str(
+            r#"{"project":"demo","query":"x","intent":"callers","raw_query":true,"like":"a.rs:L1-L2"}"#,
+        )
+        .expect("the new fields parse");
+        assert_eq!(back.intent.as_deref(), Some("callers"));
+        assert!(back.raw_query);
+        assert_eq!(back.like.as_deref(), Some("a.rs:L1-L2"));
     }
 
     #[test]
@@ -291,7 +307,12 @@ mod tests {
         let back: SearchRequest =
             serde_json::from_str(r#"{"project":"demo","query":"x"}"#).expect("deserialize");
         assert_eq!(back.task, None);
-        assert_eq!(back.resolved_instruction(), None);
+        assert_eq!(alone(&back), None);
+        let wire = serde_json::to_string(&back).expect("serialize");
+        assert!(
+            !wire.contains("raw_query") && !wire.contains("intent") && !wire.contains("like"),
+            "an unset knob stays off the wire: {wire}"
+        );
     }
 
     /// A dimension the request names replaces the scope's; a dimension it leaves
@@ -333,45 +354,6 @@ mod tests {
         assert_eq!(merged.paths, vec!["docs/**"]);
         assert_eq!(merged.kinds, vec![ChunkKind::Function]);
         assert!(!merged.is_empty());
-    }
-
-    /// The whole ladder in one place: request, then project, then nothing — the
-    /// daemon's configured default being what "nothing" means.
-    #[test]
-    fn the_request_instruction_beats_the_projects_which_beats_nothing() {
-        let project = Some("Given the project, retrieve what it needs.");
-        let filter = SearchFilter::default();
-
-        let from_request = SearchRequest {
-            instruction: Some("Given the request, retrieve this.".into()),
-            ..SearchRequest::new(ProjectId::new("demo").expect("id"), "q")
-        };
-        let resolved = from_request.resolve(&filter, project);
-        assert_eq!(
-            resolved.instruction.as_deref(),
-            Some("Given the request, retrieve this.")
-        );
-
-        let silent = SearchRequest::new(ProjectId::new("demo").expect("id"), "q");
-        assert_eq!(
-            silent.resolve(&filter, project).instruction.as_deref(),
-            project,
-            "a request that says nothing gets the project's default"
-        );
-        assert_eq!(silent.resolve(&filter, None).instruction, None);
-    }
-
-    /// A request whose only instruction is whitespace is a request that said
-    /// nothing, and must not shadow the project's.
-    #[test]
-    fn a_blank_request_instruction_does_not_shadow_the_projects() {
-        let request = SearchRequest {
-            instruction: Some("   ".into()),
-            task: None,
-            ..SearchRequest::new(ProjectId::new("demo").expect("id"), "q")
-        };
-        let resolved = request.resolve(&SearchFilter::default(), Some("the project's"));
-        assert_eq!(resolved.instruction.as_deref(), Some("the project's"));
     }
 
     /// A scope name the project does not declare names the ones it does: the
