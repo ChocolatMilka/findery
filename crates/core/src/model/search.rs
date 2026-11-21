@@ -23,11 +23,23 @@ pub enum SearchMode {
 }
 
 impl SearchMode {
+    /// Every mode — what a refusal of an unknown one lists.
+    pub const ALL: &'static [SearchMode] = &[Self::Hybrid, Self::Vector, Self::Keyword];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Vector => "vector",
             Self::Keyword => "keyword",
             Self::Hybrid => "hybrid",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "vector" => Some(Self::Vector),
+            "keyword" => Some(Self::Keyword),
+            "hybrid" => Some(Self::Hybrid),
+            _ => None,
         }
     }
 }
@@ -217,6 +229,16 @@ mod tests {
             ProjectId::new("demo").expect("id"),
             "where is retry handled",
         )
+    }
+
+    #[test]
+    fn every_mode_round_trips_through_its_name_and_its_serde_form() {
+        for mode in SearchMode::ALL {
+            assert_eq!(SearchMode::parse(mode.as_str()), Some(*mode));
+            let wire = serde_json::to_string(mode).expect("serialize");
+            assert_eq!(wire, format!("\"{}\"", mode.as_str()));
+        }
+        assert_eq!(SearchMode::parse("semantic"), None);
     }
 
     #[test]

@@ -15,7 +15,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use findery_core::config::{Config, EmbedderBackend};
+use findery_core::config::{Config, EmbedderBackend, bucket_member_path};
+use findery_core::embedding::recipe::Recipe;
 
 struct Harness {
     app: Router,
@@ -53,6 +54,12 @@ async fn harness_with(token: Option<&str>) -> Harness {
     cfg.store.export_dir = data_dir.path().join("exports").display().to_string();
     cfg.server.api_token = token.map(str::to_string);
     cfg.chunk.min_chars = 1;
+    // A second profile of the same width: only the recipe tells it apart. Lazy,
+    // so it costs nothing to a test that never switches to it.
+    cfg.models.insert(
+        "other".into(),
+        toml::from_str("weights = \"other\"").expect("profile"),
+    );
 
     let state = findery_server::state_from_config(cfg.clone())
         .await
@@ -67,6 +74,12 @@ async fn harness_with(token: Option<&str>) -> Harness {
 
 async fn harness() -> Harness {
     harness_with(None).await
+}
+
+/// The file the harness's model writes into, for a bucket whose base path is
+/// `base`: one member per recipe, named after it.
+fn member_of(base: &Path) -> std::path::PathBuf {
+    bucket_member_path(base, &Recipe::parse("mock:128").expect("recipe"))
 }
 
 impl Harness {
@@ -163,7 +176,7 @@ impl Harness {
     }
 
     async fn switch_to_a_fresh_vector_store(&mut self, id: &str) {
-        let db = self.bucket_file(id).await;
+        let db = member_of(&self.bucket_file(id).await);
         {
             let conn = rusqlite::Connection::open(&db).expect("open bucket");
             conn.execute("DELETE FROM vectors WHERE project_id = ?1", [id])
@@ -175,11 +188,12 @@ impl Harness {
         self.app = findery_server::app(state);
     }
 
-    /// Rewrites the recipe a bucket records, then restarts the daemon over it.
+    /// Rewrites the recipe the member of this daemon's model records, then
+    /// restarts the daemon over it.
     ///
-    /// That is what a bucket built by another model looks like to this one: the
-    /// vectors are the old model's, the daemon serves the new one, and only a
-    /// fresh boot reads the changed recipe.
+    /// That is what a file renamed by hand looks like to the daemon: named for
+    /// this model, holding another's vectors — and only a fresh boot reads the
+    /// changed recipe.
     async fn claim_a_foreign_recipe(&mut self, bucket: &str, recipe: &str) {
         let db = if bucket == findery_core::model::DEFAULT_BUCKET {
             self.data_dir.path().join("bucket.db")
@@ -190,8 +204,14 @@ impl Harness {
                 .join(bucket)
                 .join("bucket.db")
         };
+        self.claim_a_foreign_recipe_at(&db, recipe).await;
+    }
+
+    /// The same rewrite for a bucket whose base is not where its name puts it —
+    /// a bucket inside the project, say.
+    async fn claim_a_foreign_recipe_at(&mut self, base: &Path, recipe: &str) {
         {
-            let conn = rusqlite::Connection::open(&db).expect("open bucket");
+            let conn = rusqlite::Connection::open(member_of(base)).expect("open bucket");
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('embedding_recipe', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = ?1",
@@ -255,7 +275,8 @@ async fn register_sync_and_search_round_trip() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{hits}");
-    let hits = hits.as_array().expect("array");
+    assert_eq!(hits["warnings"], json!([]), "a complete answer: {hits}");
+    let hits = hits["hits"].as_array().expect("array");
     assert!(!hits.is_empty(), "search returned nothing");
 
     let first = &hits[0];
@@ -429,9 +450,15 @@ async fn deleting_a_project_removes_it_from_the_bucket() {
     let id = h.register().await;
     h.sync(&id, json!({})).await;
 
+    let file = member_of(&h.bucket_file(&id).await);
     let (status, body) = h.call("DELETE", &format!("/v1/projects/{id}"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["deleted"], true);
+    assert_eq!(
+        body["deleted"], true,
+        "the older envelope still reads: {body}"
+    );
+    assert_eq!(body["rows_only"], false, "{body}");
+    assert!(!file.exists(), "a lone project takes its files with it");
 
     let (status, _) = h.call("GET", &format!("/v1/projects/{id}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -516,7 +543,7 @@ async fn search_filters_narrow_the_result_set() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{hits}");
-    for hit in hits.as_array().expect("array") {
+    for hit in hits["hits"].as_array().expect("array") {
         assert_eq!(hit["chunk"]["lang"], "markdown", "{hit}");
     }
 
@@ -547,7 +574,7 @@ async fn snippets_respect_the_caller_token_budget() {
             Some(json!({ "project": id, "query": "retry", "k": 3, "max_snippet_chars": 40 })),
         )
         .await;
-    for hit in hits.as_array().expect("array") {
+    for hit in hits["hits"].as_array().expect("array") {
         let text = hit["chunk"]["text"].as_str().expect("text");
         assert!(
             text.len() <= 40 + "\n… [truncated]".len(),
@@ -598,6 +625,25 @@ async fn the_instruction_aware_knobs_reach_the_wire() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
+/// A task is accepted by its name and by its aliases.
+#[tokio::test]
+async fn a_task_searches_by_its_name_and_by_its_alias() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+    for task in ["usage", "callers"] {
+        let (status, body) = h
+            .call(
+                "POST",
+                "/v1/search",
+                Some(json!({ "project": id, "query": "retry", "task": task })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{task}: {body}");
+        assert!(body["hits"].is_array(), "{task}: {body}");
+    }
+}
+
 /// The push path end to end: a project fed entirely over HTTP, never read from
 /// disk by the daemon.
 #[tokio::test]
@@ -646,7 +692,7 @@ async fn pushed_documents_are_indexed_searchable_and_prunable() {
             ),
         )
         .await;
-    let paths: Vec<&str> = hits
+    let paths: Vec<&str> = hits["hits"]
         .as_array()
         .expect("array")
         .iter()
@@ -828,10 +874,21 @@ async fn a_bucket_built_by_another_model_refuses_a_sync_but_stays_repairable() {
             Some(json!({ "wait": true, "mode": "full" })),
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // A conflict the user resolves: 409 with its own code, not a 400 that
+    // reads as a typo in the request nor a 500 that reads as a bug.
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "recipe_mismatch", "{body}");
     let message = body["message"].as_str().expect("message");
     assert!(message.contains("another-model:128"), "{message}");
-    assert!(message.contains("findery bucket rm work"), "{message}");
+    // `work` lives where its name puts it, so re-creating it by name is right.
+    assert!(
+        message.contains("findery bucket rm work --force"),
+        "{message}"
+    );
+    assert!(
+        message.contains("findery init --bucket work --sync"),
+        "{message}"
+    );
 
     // Everything that touches no vector keeps working — that is what makes the
     // conflict readable and the repair reachable.
@@ -844,7 +901,7 @@ async fn a_bucket_built_by_another_model_refuses_a_sync_but_stays_repairable() {
         .await;
     assert_eq!(status, StatusCode::OK, "{hits}");
     assert!(
-        !hits.as_array().expect("hits").is_empty(),
+        !hits["hits"].as_array().expect("hits").is_empty(),
         "the keyword leg has no vector to compare: {hits}"
     );
 
@@ -867,6 +924,177 @@ async fn a_bucket_built_by_another_model_refuses_a_sync_but_stays_repairable() {
     assert_eq!(status, StatusCode::OK, "{removed}");
     assert_eq!(removed["removed"], true, "{removed}");
     assert_eq!(removed["projects"], json!([id]), "{removed}");
+}
+
+/// Polls a job until it is terminal and returns its last body.
+async fn finished_job(h: &Harness, job_id: &str) -> Value {
+    for _ in 0..200 {
+        let (_, job) = h.call("GET", &format!("/v1/jobs/{job_id}"), None).await;
+        if job["state"] == "failed" || job["state"] == "succeeded" {
+            return job;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("job `{job_id}` never finished");
+}
+
+/// A background job that fails keeps the variant it failed with all the way to
+/// the client: the job carries the error's code beside its payload, and the
+/// client's `Job::failure` rebuilds the very error the sync returned — so the
+/// CLI prints `recipe mismatch: …` and the repair, not `internal: config: …`.
+#[tokio::test]
+async fn a_failing_background_job_keeps_its_error_code_through_the_client() {
+    let mut h = harness().await;
+    let (status, _) = h
+        .call("POST", "/v1/buckets", Some(json!({ "name": "work" })))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, project) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({ "root": h.root(), "bucket": { "name": "work" } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{project}");
+    let id = project["id"].as_str().expect("id").to_string();
+    h.sync(&id, json!({})).await;
+    h.claim_a_foreign_recipe("work", "another-model:128").await;
+
+    let (status, accepted) = h
+        .call(
+            "POST",
+            &format!("/v1/projects/{id}/sync"),
+            Some(json!({ "mode": "full" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "the job is accepted: {accepted}");
+    let job_id = accepted["job"]["id"].as_str().expect("job id").to_string();
+
+    let last = finished_job(&h, &job_id).await;
+    assert_eq!(last["state"], "failed", "{last}");
+    assert_eq!(last["error_code"], "recipe_mismatch", "{last}");
+    let error = last["error"].as_str().expect("error");
+    assert!(
+        error.starts_with("bucket `work` holds vectors built with `another-model:128`"),
+        "the payload, without any variant's prefix: {error}"
+    );
+
+    // What the client does with the body it polled.
+    let job: findery_core::api::Job = serde_json::from_value(last).expect("a job");
+    let failure = job.failure().expect("a failed job has a failure");
+    assert!(
+        matches!(failure, findery_core::Error::RecipeMismatch(_)),
+        "{failure:?}"
+    );
+    assert!(
+        failure
+            .to_string()
+            .starts_with("recipe mismatch: bucket `work`"),
+        "{failure}"
+    );
+}
+
+/// A job that succeeds carries no error code at all.
+#[tokio::test]
+async fn a_succeeding_background_job_carries_no_error_code() {
+    let h = harness().await;
+    let id = h.register().await;
+    let (_, accepted) = h
+        .call("POST", &format!("/v1/projects/{id}/sync"), Some(json!({})))
+        .await;
+    let job_id = accepted["job"]["id"].as_str().expect("job id").to_string();
+    let last = finished_job(&h, &job_id).await;
+    assert_eq!(last["state"], "succeeded", "{last}");
+    assert!(last.get("error_code").is_none(), "{last}");
+    let job: findery_core::api::Job = serde_json::from_value(last).expect("a job");
+    assert!(job.failure().is_none());
+}
+
+/// Registering into a bucket from another embedding space is refused with the
+/// repair — before the project leaves the bucket it is in, and before the
+/// store warms a matrix whose width check could only answer with a 500.
+#[tokio::test]
+async fn registering_into_a_conflicting_bucket_is_refused_before_anything_moves() {
+    let mut h = harness().await;
+    let (status, _) = h
+        .call("POST", "/v1/buckets", Some(json!({ "name": "work" })))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    // Another project fills `work`, so the vectors in it are the foreign ones.
+    let other = tempfile::tempdir().expect("other project");
+    std::fs::write(other.path().join("lib.rs"), "pub fn other() {}").expect("write");
+    let other_root = other.path().display().to_string().replace('\\', "/");
+    let (status, filler) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({ "root": other_root, "bucket": { "name": "work" } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{filler}");
+    h.sync(filler["id"].as_str().expect("id"), json!({})).await;
+
+    let id = h.register().await;
+    let (_, before) = h.call("GET", &format!("/v1/projects/{id}"), None).await;
+    h.claim_a_foreign_recipe("work", "another-model:64").await;
+
+    let (status, body) = h
+        .call(
+            "POST",
+            "/v1/projects",
+            Some(json!({ "root": h.root(), "bucket": { "name": "work" } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "recipe_mismatch", "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("another-model:64")),
+        "{body}"
+    );
+
+    let (status, after) = h.call("GET", &format!("/v1/projects/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(
+        after["bucket"], before["bucket"],
+        "the project did not move: {after}"
+    );
+}
+
+/// A bucket inside a project is not where its name would put it, so the repair
+/// must not be `init --bucket <name>` — that re-creates it in the data
+/// directory and silently moves the project out of its own tree.
+#[tokio::test]
+async fn a_project_local_bucket_in_conflict_is_rebuilt_from_the_project_root() {
+    let mut h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+    let db = h.bucket_file(&id).await;
+    assert!(
+        db.starts_with(h.project_dir.path()),
+        "the default bucket of a project is inside it: {}",
+        db.display()
+    );
+    h.claim_a_foreign_recipe_at(&db, "another-model:128").await;
+
+    let (status, body) = h
+        .call(
+            "POST",
+            &format!("/v1/projects/{id}/sync"),
+            Some(json!({ "wait": true, "mode": "full" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "recipe_mismatch", "{body}");
+    let message = body["message"].as_str().expect("message");
+    assert!(
+        message.contains(&format!("findery bucket rm {id} --force")),
+        "{message}"
+    );
+    assert!(message.contains("`findery init --sync`"), "{message}");
+    assert!(!message.contains("--bucket"), "{message}");
 }
 
 /// A scope narrows the same index. It is a filter applied before scoring, not a
@@ -918,7 +1146,7 @@ async fn a_scope_narrows_the_same_index_without_a_second_one() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{narrowed}");
-    let paths: Vec<&str> = narrowed
+    let paths: Vec<&str> = narrowed["hits"]
         .as_array()
         .expect("hits")
         .iter()
@@ -1062,8 +1290,10 @@ async fn a_project_local_bucket_is_created_inside_the_project() {
     let h = harness().await;
     let id = h.register().await;
 
-    let file = h.project_dir.path().join(".findery").join("bucket.db");
+    let base = h.project_dir.path().join(".findery").join("bucket.db");
+    let file = member_of(&base);
     assert!(file.is_file(), "the index lives with the code: {file:?}");
+    assert!(!base.exists(), "a member per model, never a bare bucket.db");
 
     let (_, buckets) = h.call("GET", "/v1/buckets", None).await;
     let mine = buckets
@@ -1072,7 +1302,8 @@ async fn a_project_local_bucket_is_created_inside_the_project() {
         .iter()
         .find(|b| b["name"] == id.as_str())
         .unwrap_or_else(|| panic!("`{id}` is listed: {buckets}"));
-    assert_eq!(mine["path"], file.display().to_string().replace('\\', "/"));
+    // The listing names the bucket by its base path, as manifests do.
+    assert_eq!(mine["path"], base.display().to_string().replace('\\', "/"));
 }
 
 /// An arbitrary path is honoured as written — a bucket on a shared drive is the
@@ -1093,7 +1324,10 @@ async fn a_bucket_at_an_explicit_path_is_opened_where_it_is() {
         .await;
     assert_eq!(status, StatusCode::OK, "{project}");
     assert_eq!(project["bucket"], "team", "{project}");
-    assert!(shared.is_file(), "opened where it was asked for");
+    assert!(
+        member_of(&shared).is_file(),
+        "opened where it was asked for"
+    );
 }
 
 /// A root the daemon cannot write to makes a bucket inside it impossible. The
@@ -1195,4 +1429,112 @@ async fn an_out_of_place_bucket_is_found_again_after_a_restart() {
             .any(|b| b["name"] == "team" && b["projects"] == 1),
         "the out-of-place bucket came back with its project: {buckets}"
     );
+}
+
+/// Over the wire: the profiles listed, the default switched, a search under a
+/// model the project was never synced with answering keyword hits and a
+/// warning — and a complete answer once a sync built that model's file.
+#[tokio::test]
+async fn switching_the_default_model_over_http_degrades_search_until_a_sync() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+
+    let (status, models) = h.call("GET", "/v1/models", None).await;
+    assert_eq!(status, StatusCode::OK, "{models}");
+    let aliases: Vec<&str> = models
+        .as_array()
+        .expect("models")
+        .iter()
+        .filter_map(|m| m["alias"].as_str())
+        .collect();
+    assert_eq!(aliases, vec!["embedder", "other"], "{models}");
+
+    let (status, body) = h
+        .call(
+            "POST",
+            "/v1/models/default",
+            Some(json!({ "alias": "harier" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "model_unknown", "{body}");
+    let (status, info) = h
+        .call(
+            "POST",
+            "/v1/models/default",
+            Some(json!({ "alias": "other" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{info}");
+    assert_eq!(info["is_default"], true, "{info}");
+    assert_eq!(info["recipe"], "other:128", "{info}");
+
+    let search = json!({ "project": id, "query": "retry_with_backoff" });
+    let (status, degraded) = h.call("POST", "/v1/search", Some(search.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{degraded}");
+    assert!(
+        !degraded["hits"].as_array().expect("hits").is_empty(),
+        "{degraded}"
+    );
+    assert!(
+        degraded["warnings"][0]
+            .as_str()
+            .is_some_and(|w| w.contains("`other`")),
+        "{degraded}"
+    );
+    let mut vector = search.clone();
+    vector["mode"] = json!("vector");
+    let (status, body) = h.call("POST", "/v1/search", Some(vector)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "vectors_unavailable", "{body}");
+
+    h.sync(&id, json!({})).await;
+    let (_, complete) = h.call("POST", "/v1/search", Some(search)).await;
+    assert_eq!(complete["warnings"], json!([]), "{complete}");
+}
+
+/// `detach` over the wire: the project leaves every listing, its file is
+/// released, and registering it again attaches the same index — nothing is
+/// embedded twice.
+#[tokio::test]
+async fn detaching_over_http_releases_the_file_and_a_register_attaches_it_again() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+    let file = member_of(&h.bucket_file(&id).await);
+
+    let (status, body) = h
+        .call("POST", &format!("/v1/projects/{id}/detach"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["closed"][0],
+        file.display().to_string().replace('\\', "/"),
+        "{body}"
+    );
+    let (status, _) = h.call("GET", &format!("/v1/projects/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let moved = file.with_extension("moved");
+    std::fs::rename(&file, &moved).expect("no process holds the file");
+    std::fs::rename(&moved, &file).expect("put back");
+
+    assert_eq!(h.register().await, id);
+    let again = h.sync(&id, json!({})).await;
+    assert_eq!(again["embeddings_computed"], 0, "{again}");
+}
+
+#[tokio::test]
+async fn a_sync_that_waits_answers_its_report_when_it_ends_in_time() {
+    let h = harness().await;
+    let id = h.register().await;
+    let (status, body) = h
+        .call(
+            "POST",
+            &format!("/v1/projects/{id}/sync"),
+            Some(json!({ "wait_ms": 30000 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["report"]["files_added"], 2, "{body}");
 }

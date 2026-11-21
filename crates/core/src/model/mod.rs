@@ -44,8 +44,11 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// Every language, in declaration order. The registry, the MCP schema and
-    /// the round-trip tests are checked against it.
+    /// Every language, in declaration order.
+    ///
+    /// INTENT: the MCP schema, the registry and the round-trip tests enumerate
+    /// languages; checking each of them against this list is what makes a new
+    /// variant impossible to forget in one of them.
     pub const ALL: &'static [Lang] = &[
         Lang::Rust,
         Lang::Markdown,
@@ -89,6 +92,8 @@ impl Lang {
         }
     }
 
+    /// The name this language goes by on every boundary — the serde form, a
+    /// search filter, a stored column. [`Lang::parse`] reads it back.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Rust => "rust",
@@ -106,6 +111,8 @@ impl Lang {
         }
     }
 
+    /// Reads a language name: every [`Lang::as_str`] form, plus the short
+    /// aliases a person types (`js`, `ts`). Anything else is `None`.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "rust" => Some(Self::Rust),
@@ -161,6 +168,23 @@ pub enum ChunkKind {
 }
 
 impl ChunkKind {
+    /// Every kind, in declaration order — what a refusal of an unknown one lists.
+    pub const ALL: &'static [ChunkKind] = &[
+        Self::File,
+        Self::Function,
+        Self::Method,
+        Self::Struct,
+        Self::Enum,
+        Self::Trait,
+        Self::Impl,
+        Self::Module,
+        Self::Macro,
+        Self::Test,
+        Self::Const,
+        Self::DocSection,
+        Self::Text,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::File => "file",
@@ -340,6 +364,67 @@ pub struct IndexStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A match with no wildcard: adding a variant without listing it in
+    /// [`Lang::ALL`] stops compiling here, and the count below catches the rest.
+    fn listed(lang: Lang) -> bool {
+        match lang {
+            Lang::Rust
+            | Lang::Markdown
+            | Lang::Toml
+            | Lang::JavaScript
+            | Lang::Python
+            | Lang::Php
+            | Lang::Json
+            | Lang::Axle
+            | Lang::Java
+            | Lang::Kotlin
+            | Lang::Go
+            | Lang::Other => Lang::ALL.contains(&lang),
+        }
+    }
+
+    /// The same lock as for [`Lang::ALL`]: a kind added without being listed
+    /// stops compiling here.
+    fn kind_listed(kind: ChunkKind) -> bool {
+        match kind {
+            ChunkKind::File
+            | ChunkKind::Function
+            | ChunkKind::Method
+            | ChunkKind::Struct
+            | ChunkKind::Enum
+            | ChunkKind::Trait
+            | ChunkKind::Impl
+            | ChunkKind::Module
+            | ChunkKind::Macro
+            | ChunkKind::Test
+            | ChunkKind::Const
+            | ChunkKind::DocSection
+            | ChunkKind::Text => ChunkKind::ALL.contains(&kind),
+        }
+    }
+
+    #[test]
+    fn the_kind_list_names_every_variant_once_and_round_trips() {
+        for kind in ChunkKind::ALL {
+            assert!(kind_listed(*kind));
+            assert_eq!(ChunkKind::parse(kind.as_str()), Some(*kind), "{kind:?}");
+        }
+        assert_eq!(
+            ChunkKind::ALL.len(),
+            13,
+            "a variant is missing from ChunkKind::ALL"
+        );
+        assert_eq!(ChunkKind::parse("class"), None);
+    }
+
+    #[test]
+    fn the_language_list_names_every_variant_once() {
+        assert!(Lang::ALL.iter().all(|l| listed(*l)));
+        let mut names: Vec<_> = Lang::ALL.iter().map(Lang::as_str).collect();
+        names.dedup();
+        assert_eq!(names.len(), 12, "a variant is missing from Lang::ALL");
+    }
 
     #[test]
     fn every_language_round_trips_through_its_name_and_its_serde_form() {

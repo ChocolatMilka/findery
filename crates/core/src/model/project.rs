@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ContentHash, ProjectId};
+use crate::ids::{ContentHash, ModelAlias, ProjectId};
 use crate::model::Lang;
 use crate::model::search::SearchFilter;
 use crate::{Error, Result};
@@ -118,6 +118,15 @@ pub struct ProjectSpec {
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<crate::embedding::prompt::QueryTask>,
+    /// The model profile this project is pinned to; `None` follows the
+    /// daemon's default model.
+    ///
+    /// INTENT: a pin is a property of the corpus — a team that indexed a
+    /// codebase with one model commits that choice in the manifest — so it is
+    /// carried on the spec, beside the default instruction. It decides which
+    /// member file of the project's bucket an operation reads and writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelAlias>,
 }
 
 impl ProjectSpec {
@@ -169,6 +178,7 @@ impl Default for ProjectSpec {
             scopes: BTreeMap::new(),
             instruction: None,
             task: None,
+            model: None,
         }
     }
 }
@@ -207,6 +217,15 @@ pub struct Project {
     /// could disagree with that.
     #[serde(default = "default_bucket")]
     pub bucket: String,
+    /// The model profile an operation on this project uses right now: the
+    /// spec's pin, else the daemon's default model.
+    ///
+    /// Stamped by the engine when the row is read, never stored — like
+    /// `bucket`, it is a fact about the daemon (which default it serves), and a
+    /// column would be a second record free to disagree. Absent from a daemon
+    /// that predates model profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelAlias>,
     pub spec: ProjectSpec,
     /// Host-side root, so clients can cite paths the user can actually open.
     pub host_root: String,

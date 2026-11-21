@@ -11,11 +11,9 @@
 //! place and returns the first parse failure; nothing here touches the
 //! filesystem, so the whole surface is testable with an injected lookup.
 
-use std::collections::BTreeMap;
-
+use super::env_value::EnvValue;
 use super::sections::{EmbedderBackend, StoreBackend};
 use crate::config::Config;
-use crate::support::path_map::Mount;
 use crate::{Error, Result};
 
 /// One `FINDERY_*` variable, the dotted key it overrides, and how.
@@ -28,88 +26,16 @@ pub struct EnvOverride {
     apply: fn(&mut Config, EnvValue<'_>) -> Result<()>,
 }
 
-/// A variable's raw text, carrying the variable it came from so that a parse
-/// failure can name the thing the user typed.
-pub struct EnvValue<'a> {
-    pub var: &'a str,
-    pub raw: &'a str,
-}
-
-impl EnvValue<'_> {
-    fn num<T: std::str::FromStr>(&self) -> Result<T> {
-        self.raw
-            .trim()
-            .parse::<T>()
-            .map_err(|_| Error::Config(format!("{}: `{}` is not a number", self.var, self.raw)))
-    }
-
-    fn flag(&self) -> Result<bool> {
-        match self.raw.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Ok(true),
-            "0" | "false" | "no" | "off" => Ok(false),
-            _ => Err(Error::Config(format!(
-                "{}: `{}` is not a boolean",
-                self.var, self.raw
-            ))),
-        }
-    }
-
-    /// An absent secret is an empty string; the overlay clears the field.
-    fn optional(&self) -> Option<String> {
-        (!self.raw.is_empty()).then(|| self.raw.to_string())
-    }
-
-    /// `rust,md,ts` — dots and case are tolerated, empties dropped.
-    fn extensions(&self) -> Vec<String> {
-        self.raw
-            .split(',')
-            .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
-            .filter(|e| !e.is_empty())
-            .collect()
-    }
-
-    /// `Name: value[;Name: value]*`.
-    fn headers(&self) -> Result<BTreeMap<String, String>> {
-        let mut out = BTreeMap::new();
-        for entry in self.raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            let (name, value) = entry.split_once(':').ok_or_else(|| {
-                Error::Config(format!("{}: `{entry}` is not `Name: value`", self.var))
-            })?;
-            if name.trim().is_empty() {
-                return Err(Error::Config(format!(
-                    "{}: `{entry}` has an empty name",
-                    self.var
-                )));
-            }
-            out.insert(name.trim().to_string(), value.trim().to_string());
-        }
-        Ok(out)
-    }
-
-    /// `host=container[;host=container]*`.
-    fn mounts(&self) -> Result<Vec<Mount>> {
-        let mut out = Vec::new();
-        for entry in self.raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            let (host, container) = entry.split_once('=').ok_or_else(|| {
-                Error::Config(format!("{}: `{entry}` is not `host=container`", self.var))
-            })?;
-            if host.trim().is_empty() || container.trim().is_empty() {
-                return Err(Error::Config(format!(
-                    "{}: `{entry}` has an empty side",
-                    self.var
-                )));
-            }
-            out.push(Mount {
-                host: host.trim().into(),
-                container: container.trim().into(),
-            });
-        }
-        Ok(out)
-    }
-}
-
 /// Every environment variable that overrides the configuration file.
 pub const ENV_OVERRIDES: &[EnvOverride] = &[
+    EnvOverride {
+        var: "FINDERY_MODEL",
+        key: "default_model",
+        apply: |c, v| {
+            c.default_model = v.optional().map(|m| m.trim().to_string());
+            Ok(())
+        },
+    },
     EnvOverride {
         var: "FINDERY_BIND",
         key: "server.bind",
@@ -143,6 +69,14 @@ pub const ENV_OVERRIDES: &[EnvOverride] = &[
         },
     },
     EnvOverride {
+        var: "FINDERY_DRAIN_TIMEOUT_SECS",
+        key: "server.drain_timeout_secs",
+        apply: |c, v| {
+            c.server.drain_timeout_secs = v.num()?;
+            Ok(())
+        },
+    },
+    EnvOverride {
         var: "FINDERY_EMBED_BACKEND",
         key: "embedder.backend",
         apply: |c, v| {
@@ -164,6 +98,14 @@ pub const ENV_OVERRIDES: &[EnvOverride] = &[
         key: "embedder.model",
         apply: |c, v| {
             c.embedder.model = v.raw.to_string();
+            Ok(())
+        },
+    },
+    EnvOverride {
+        var: "FINDERY_EMBED_WEIGHTS",
+        key: "embedder.weights",
+        apply: |c, v| {
+            c.embedder.weights = v.optional();
             Ok(())
         },
     },
@@ -212,6 +154,22 @@ pub const ENV_OVERRIDES: &[EnvOverride] = &[
         key: "embedder.query_instruction",
         apply: |c, v| {
             c.embedder.query_instruction = v.raw.to_string();
+            Ok(())
+        },
+    },
+    EnvOverride {
+        var: "FINDERY_EMBED_QUERY_TEMPLATE",
+        key: "embedder.query_template",
+        apply: |c, v| {
+            c.embedder.query_template = v.template();
+            Ok(())
+        },
+    },
+    EnvOverride {
+        var: "FINDERY_EMBED_DOCUMENT_TEMPLATE",
+        key: "embedder.document_template",
+        apply: |c, v| {
+            c.embedder.document_template = v.template();
             Ok(())
         },
     },
@@ -468,6 +426,75 @@ mod tests {
                 assert!(message.starts_with(entry.var), "{message}");
             }
         }
+    }
+
+    #[test]
+    fn the_model_and_its_prompt_format_are_overridable() {
+        let mut cfg = Config::from_toml_str("[models.harrier]\nmodel = \"h\"\n").expect("parse");
+        cfg.apply_env_with(|k| match k {
+            "FINDERY_MODEL" => Some(" harrier ".into()),
+            "FINDERY_EMBED_WEIGHTS" => Some("Qwen/Qwen3-Embedding-0.6B".into()),
+            // As a shell spells it: a backslash and an `n`, not a newline.
+            "FINDERY_EMBED_QUERY_TEMPLATE" => {
+                Some(r"Instruct: {instruction}\nQuery: {query}".into())
+            }
+            "FINDERY_EMBED_DOCUMENT_TEMPLATE" => Some("search_document: {text}".into()),
+            _ => None,
+        })
+        .expect("env overlay");
+        assert_eq!(cfg.default_model.as_deref(), Some("harrier"));
+        assert_eq!(
+            cfg.embedder.weights.as_deref(),
+            Some("Qwen/Qwen3-Embedding-0.6B")
+        );
+        assert_eq!(
+            cfg.embedder.query_template.as_deref(),
+            Some(crate::embedding::prompt::DEFAULT_QUERY_TEMPLATE),
+            "a literal \\n is a newline"
+        );
+        assert_eq!(
+            cfg.embedder.document_template.as_deref(),
+            Some("search_document: {text}")
+        );
+        cfg.validate().expect("valid");
+        assert_eq!(cfg.default_profile().expect("default").1.model, "h");
+    }
+
+    #[test]
+    fn an_empty_model_variable_falls_back_to_the_embedder_section() {
+        let mut cfg = Config {
+            default_model: Some("harrier".into()),
+            ..Config::default()
+        };
+        cfg.apply_env_with(|k| (k == "FINDERY_MODEL").then(String::new))
+            .expect("env overlay");
+        assert_eq!(cfg.default_model, None);
+        assert!(cfg.default_profile().expect("implicit").0.is_implicit());
+
+        let mut unknown = Config::default();
+        unknown
+            .apply_env_with(|k| (k == "FINDERY_MODEL").then(|| "harier".to_string()))
+            .expect("applied, checked by validate");
+        assert_eq!(
+            unknown.validate().expect_err("unknown").code(),
+            "model_unknown"
+        );
+    }
+
+    #[test]
+    fn the_drain_timeout_is_overridable_and_must_be_a_number() {
+        let mut cfg = Config::default();
+        cfg.apply_env_with(|k| (k == "FINDERY_DRAIN_TIMEOUT_SECS").then(|| "40".to_string()))
+            .expect("env overlay");
+        assert_eq!(cfg.server.drain_timeout_secs, 40);
+
+        let err = Config::default()
+            .apply_env_with(|k| (k == "FINDERY_DRAIN_TIMEOUT_SECS").then(|| "soon".to_string()))
+            .expect_err("not a number");
+        assert!(
+            err.to_string().contains("FINDERY_DRAIN_TIMEOUT_SECS"),
+            "{err}"
+        );
     }
 
     #[test]

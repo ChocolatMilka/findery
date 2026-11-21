@@ -12,6 +12,7 @@
 //! exclusion is explicit configuration, and the walk reports what it skipped
 //! rather than dropping it in silence.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
@@ -40,26 +41,186 @@ pub struct WalkOutcome {
     pub warnings: Vec<String>,
 }
 
+/// The path rules of a spec, compiled once: what a project admits before the
+/// disk is asked anything.
+///
+/// INTENT: the one matcher behind every way a file can enter the index — the
+/// full walk, a targeted sync, a watcher's touched paths. Three copies of
+/// "include, then exclude, then extension" would disagree the first time one
+/// of them is edited, and the one that disagrees is the one that indexes
+/// `.env`.
+pub struct Rules {
+    include: Option<globset::GlobSet>,
+    exclude: Option<globset::GlobSet>,
+    extensions: Vec<String>,
+    include_hidden: bool,
+}
+
+impl Rules {
+    /// Compiles `spec`'s globs; a malformed one is refused, never ignored.
+    pub fn new(spec: &ProjectSpec) -> Result<Self> {
+        Ok(Self {
+            include: build_globs(&spec.include)?,
+            exclude: build_globs(&spec.exclude)?,
+            extensions: spec
+                .extensions
+                .iter()
+                .map(|e| e.trim_start_matches('.').to_ascii_lowercase())
+                .collect(),
+            include_hidden: spec.include_hidden,
+        })
+    }
+
+    /// True when the project-relative `rel` passes every rule that needs no
+    /// disk: under no pruned directory, not hidden when hidden entries are off,
+    /// an extension the project walks, inside its includes, outside its
+    /// excludes. `.gitignore` and the size ceiling need the disk; the walk
+    /// applies them.
+    pub fn admits(&self, rel: &str) -> bool {
+        let hidden = |segment: &str| segment.starts_with('.');
+        if rel.split('/').any(is_pruned) {
+            return false;
+        }
+        if !self.include_hidden && rel.split('/').any(hidden) {
+            return false;
+        }
+        self.has_walked_extension(rel)
+            && self.include.as_ref().is_none_or(|set| set.is_match(rel))
+            && !self.exclude.as_ref().is_some_and(|set| set.is_match(rel))
+    }
+
+    fn has_walked_extension(&self, rel: &str) -> bool {
+        if self.extensions.is_empty() {
+            return true;
+        }
+        let ext = rel.rsplit('.').next().unwrap_or_default();
+        self.extensions.contains(&ext.to_ascii_lowercase())
+    }
+}
+
+/// True for a directory no walk enters: `.git`, and `.findery`.
+///
+/// INTENT: `.git` is pruned structurally rather than by glob, because an
+/// exclude pattern still walks the thousands of loose objects before
+/// rejecting them. `.findery` for a stronger reason: it holds the bucket that
+/// indexes this very tree, and indexing it is a write loop — every sync would
+/// see a file it had just written. A glob in the project's exclude list would
+/// do, until someone deletes the line; this survives that.
+pub fn is_pruned(segment: &str) -> bool {
+    segment == ".git" || segment == MANIFEST_DIR
+}
+
 /// Walks `root` under the rules of `spec`.
 ///
 /// Blocking: `ignore` is a synchronous crate. Callers run this inside
 /// `spawn_blocking` rather than paying for an async filesystem abstraction the
 /// operating system does not actually provide.
 pub fn walk(root: &Path, spec: &ProjectSpec) -> Result<WalkOutcome> {
+    walk_with(root, spec, |_| {})
+}
+
+/// [`walk`], telling `found` how many files it has accepted after each one.
+///
+/// INTENT: a walk over a large tree takes seconds, and a client polling the
+/// job's progress with nothing to show for them reads it as a hang. The count
+/// goes out as an argument, not through a handle this crate would have to
+/// know.
+pub fn walk_with(root: &Path, spec: &ProjectSpec, found: impl FnMut(u64)) -> Result<WalkOutcome> {
+    walk_scoped(root, spec, Scope::Everything, found)
+}
+
+/// [`walk`], limited to `paths` (project-relative, already sanitized): each
+/// one is accepted only when the full walk would have accepted it.
+///
+/// INTENT: a targeted sync is the same walk narrowed, not a second matcher —
+/// so `.gitignore`, hidden entries, the excludes, the extensions, the size
+/// ceiling and the pruned directories bind a watcher event or an
+/// `add_document` exactly as they bind `findery sync`. Only the directories on
+/// the way to a requested path are listed. A path the walk does not accept is
+/// a warning saying why, never a silent skip.
+pub fn walk_paths(root: &Path, spec: &ProjectSpec, paths: &[String]) -> Result<WalkOutcome> {
+    let mut outcome = walk_scoped(root, spec, Scope::only(paths), |_| {})?;
+    let mut answered: HashSet<&str> = outcome.files.iter().map(|f| f.rel_path.as_str()).collect();
+    let mut refusals = Vec::new();
+    for rel in paths {
+        let warned = outcome
+            .warnings
+            .iter()
+            .any(|w| w.starts_with(&format!("{rel}: ")));
+        if answered.insert(rel.as_str()) && !warned {
+            refusals.push(refusal(root, rel));
+        }
+    }
+    outcome.warnings.extend(refusals);
+    Ok(outcome)
+}
+
+/// Why the walk did not accept `rel`, as a warning.
+fn refusal(root: &Path, rel: &str) -> String {
+    match std::fs::metadata(root.join(rel)) {
+        Ok(meta) if !meta.is_file() => format!("{rel}: not a file"),
+        Ok(_) => format!(
+            "{rel}: excluded by the project's walk rules (extensions, include/exclude, \
+             .gitignore, hidden entries)"
+        ),
+        Err(e) => format!("{rel}: {e}"),
+    }
+}
+
+/// Which entries a walk descends into.
+enum Scope {
+    Everything,
+    /// The requested files, and the directories on the way to them.
+    Only {
+        files: HashSet<String>,
+        dirs: HashSet<String>,
+    },
+}
+
+impl Scope {
+    fn only(paths: &[String]) -> Self {
+        let dirs = paths
+            .iter()
+            .flat_map(|rel| {
+                rel.match_indices('/')
+                    .map(move |(at, _)| rel[..at].to_string())
+            })
+            .collect();
+        Self::Only {
+            files: paths.iter().cloned().collect(),
+            dirs,
+        }
+    }
+
+    fn keeps(&self, root: &Path, entry: &ignore::DirEntry) -> bool {
+        let Self::Only { files, dirs } = self else {
+            return true;
+        };
+        let Some(rel) = relative(root, entry.path()) else {
+            return true;
+        };
+        if entry.file_type().is_some_and(|t| t.is_dir()) {
+            dirs.contains(&rel)
+        } else {
+            files.contains(&rel)
+        }
+    }
+}
+
+fn walk_scoped(
+    root: &Path,
+    spec: &ProjectSpec,
+    scope: Scope,
+    mut found: impl FnMut(u64),
+) -> Result<WalkOutcome> {
     if !root.is_dir() {
         return Err(Error::Invalid(format!(
             "project root `{}` is not a directory",
             root.display()
         )));
     }
-    let include = build_globs(&spec.include)?;
-    let exclude = build_globs(&spec.exclude)?;
-    let extensions: Vec<String> = spec
-        .extensions
-        .iter()
-        .map(|e| e.trim_start_matches('.').to_ascii_lowercase())
-        .collect();
-
+    let rules = Rules::new(spec)?;
+    let scope_root = root.to_path_buf();
     let mut outcome = WalkOutcome::default();
     let walker = WalkBuilder::new(root)
         .standard_filters(spec.follow_gitignore)
@@ -76,17 +237,9 @@ pub fn walk(root: &Path, spec: &ProjectSpec) -> Result<WalkOutcome> {
         .hidden(!spec.include_hidden)
         .parents(spec.follow_gitignore)
         .follow_links(false)
-        // `.git` is pruned structurally rather than by glob: an exclude pattern
-        // still walks the thousands of loose objects before rejecting them.
-        //
-        // `.findery` is pruned the same way, and for a stronger reason: it holds
-        // the bucket that indexes this very tree. Indexing it would be a write
-        // loop — every sync would see a file it had just written. A glob in the
-        // project's own exclude list would do, until someone deletes the line;
-        // this survives that.
-        .filter_entry(|entry| {
-            let name = entry.file_name();
-            name != std::ffi::OsStr::new(".git") && name != std::ffi::OsStr::new(MANIFEST_DIR)
+        .filter_entry(move |entry| {
+            let pruned = entry.file_name().to_str().is_some_and(is_pruned);
+            !pruned && scope.keeps(&scope_root, entry)
         })
         .build();
 
@@ -105,24 +258,7 @@ pub fn walk(root: &Path, spec: &ProjectSpec) -> Result<WalkOutcome> {
         let Some(rel) = relative(root, &abs) else {
             continue;
         };
-        if !extensions.is_empty() {
-            let ext = rel
-                .rsplit('.')
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if !extensions.contains(&ext) {
-                continue;
-            }
-        }
-        if let Some(set) = &include
-            && !set.is_match(&rel)
-        {
-            continue;
-        }
-        if let Some(set) = &exclude
-            && set.is_match(&rel)
-        {
+        if !rules.admits(&rel) {
             continue;
         }
         let meta = match entry.metadata() {
@@ -146,6 +282,7 @@ pub fn walk(root: &Path, spec: &ProjectSpec) -> Result<WalkOutcome> {
             size: meta.len(),
             mtime_ns: mtime_ns(&meta),
         });
+        found(outcome.files.len() as u64);
     }
     outcome.files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(outcome)
@@ -280,6 +417,15 @@ mod tests {
     }
 
     #[test]
+    fn the_count_moves_once_per_accepted_file_and_ends_on_the_total() {
+        let dir = fixture();
+        let mut counts = Vec::new();
+        let out = walk_with(dir.path(), &spec(), |n| counts.push(n)).expect("walk");
+        let expected: Vec<u64> = (1..=out.files.len() as u64).collect();
+        assert_eq!(counts, expected);
+    }
+
+    #[test]
     fn a_missing_root_is_an_invalid_request_not_a_panic() {
         let err = walk(Path::new("/definitely/not/here"), &spec()).expect_err("must fail");
         assert_eq!(err.code(), "invalid");
@@ -325,6 +471,63 @@ mod tests {
             "a dotfile with secrets must stay out: {paths:?}"
         );
         assert!(paths.contains(&".github/workflows/ci.md"), "{paths:?}");
+    }
+
+    /// The bug this locks: a targeted path bypassed every rule, so a watcher
+    /// event on `.env` indexed it. Each rule binds a named path as it binds the
+    /// walk, and each refusal says so.
+    #[test]
+    fn a_targeted_path_obeys_every_rule_the_walk_obeys() {
+        let dir = fixture();
+        fs::create_dir_all(dir.path().join(".findery")).expect("mkdir");
+        fs::write(dir.path().join(".findery/bucket.db"), "x").expect("write");
+        let defaults = findery_core::config::ProjectDefaults::default();
+        let s = ProjectSpec {
+            exclude: defaults.exclude.clone(),
+            max_file_bytes: 100,
+            ..spec()
+        };
+        let asked: Vec<String> = [
+            "src/lib.rs",
+            ".env",
+            ".findery/bucket.db",
+            "target/debug/huge.rs",
+            "notes.txt",
+            "src/big.rs",
+            "src/gone.rs",
+            "src",
+        ]
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+        let out = walk_paths(dir.path(), &s, &asked).expect("walk");
+
+        let paths: Vec<_> = out.files.iter().map(|f| f.rel_path.as_str()).collect();
+        assert_eq!(paths, ["src/lib.rs"]);
+        assert_eq!(out.warnings.len(), asked.len() - 1, "{:?}", out.warnings);
+        for refused in &asked[1..] {
+            assert!(
+                out.warnings
+                    .iter()
+                    .any(|w| w.starts_with(&format!("{refused}: "))),
+                "{refused}: {:?}",
+                out.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn the_rules_refuse_pruned_and_hidden_paths_without_the_disk() {
+        let s = ProjectSpec {
+            include_hidden: false,
+            ..spec()
+        };
+        let rules = Rules::new(&s).expect("rules");
+        assert!(rules.admits("src/lib.rs"));
+        assert!(!rules.admits(".findery/bucket.db"));
+        assert!(!rules.admits("a/.git/x.rs"));
+        assert!(!rules.admits(".github/ci.md"), "hidden entries are off");
+        assert!(!rules.admits("notes.txt"), "not a walked extension");
     }
 
     #[test]

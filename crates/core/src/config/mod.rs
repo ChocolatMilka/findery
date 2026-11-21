@@ -7,17 +7,28 @@
 //! the setting it overrides.
 
 mod env;
+mod env_value;
 mod legacy;
+mod models;
 mod paths;
+mod search;
 mod sections;
+mod sync;
 
 pub use env::{ENV_OVERRIDES, EnvOverride, env_var_for};
 pub use legacy::renamed_env_warning;
-pub use paths::{bucket_path, buckets_dir, data_dir_from_env, default_data_dir, user_config_path};
+pub use paths::{
+    bucket_member_path, bucket_path, buckets_dir, data_dir_from_env, default_data_dir,
+    parse_member_name, user_config_path,
+};
+pub use search::SearchConfig;
 pub use sections::{
     ChunkConfig, DEFAULT_EXTENSIONS, DEFAULT_SERVER_URL, EmbedderBackend, EmbedderConfig,
-    ProjectDefaults, QdrantConfig, SearchConfig, ServerConfig, StoreBackend, StoreConfig,
+    ProjectDefaults, QdrantConfig, ServerConfig, StoreBackend, StoreConfig,
 };
+pub use sync::SyncConfig;
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -29,11 +40,25 @@ use crate::{Error, Result};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// The model profile the daemon embeds with: `embedder` (the
+    /// `[embedder]` section, also what `None` means) or a `[models.<alias>]`.
+    ///
+    /// First in the struct because TOML emits plain values before tables.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
     pub server: ServerConfig,
+    /// The implicit profile `embedder`, and the base every other profile is
+    /// merged over.
     pub embedder: EmbedderConfig,
+    /// `[models.<alias>]`: each a partial `[embedder]`, merged over it by
+    /// [`Config::profiles`] and checked against the same strict schema by
+    /// [`Config::validate`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, toml::Table>,
     pub store: StoreConfig,
     pub chunk: ChunkConfig,
     pub search: SearchConfig,
+    pub sync: SyncConfig,
     pub project_defaults: ProjectDefaults,
     /// Bind mounts used to translate container paths back to host paths.
     #[serde(default)]
@@ -50,15 +75,7 @@ impl Config {
     /// Rejects configurations that would fail later, at a point where the
     /// failure is expensive and confusing.
     pub fn validate(&self) -> Result<()> {
-        if self.embedder.base_url.trim().is_empty() {
-            return Err(Error::Config("embedder.base_url must not be empty".into()));
-        }
-        if self.embedder.batch_size == 0 {
-            return Err(Error::Config("embedder.batch_size must be > 0".into()));
-        }
-        if self.embedder.concurrency == 0 {
-            return Err(Error::Config("embedder.concurrency must be > 0".into()));
-        }
+        self.validate_profiles()?;
         if self.chunk.max_chars < 200 {
             return Err(Error::Config("chunk.max_chars must be >= 200".into()));
         }
@@ -77,6 +94,7 @@ impl Config {
                 "search.default_k must be <= search.max_k".into(),
             ));
         }
+        self.sync.validate()?;
         if matches!(self.store.backend, StoreBackend::Qdrant) && self.store.qdrant.url.is_empty() {
             return Err(Error::Config(
                 "store.qdrant.url is required for the qdrant backend".into(),
@@ -95,11 +113,6 @@ impl Config {
     /// Builds the host/container translator declared by `mounts`.
     pub fn path_mapper(&self) -> PathMapper {
         PathMapper::new(self.mounts.clone())
-    }
-
-    /// The cache-qualifying prefix: any change here invalidates stored vectors.
-    pub fn embedding_recipe(&self) -> String {
-        format!("{}:{}", self.embedder.model, self.embedder.dim)
     }
 }
 
@@ -207,7 +220,13 @@ mod tests {
                 .map(String::as_str),
             Some("org-1")
         );
-        assert_eq!(cfg.embedding_recipe(), "text-embedding-3-large:3072");
+        let recipe = crate::Recipe::of(
+            cfg.embedder.identity(&cfg.embedder.model),
+            cfg.embedder.dim,
+            cfg.embedder.document_template.as_deref(),
+        )
+        .expect("recipe");
+        assert_eq!(recipe.as_str(), "text-embedding-3-large:3072");
     }
 
     #[test]
@@ -245,6 +264,40 @@ mod tests {
             cfg.project_defaults.include_hidden,
             defaults.project_defaults.include_hidden
         );
+        assert_eq!(
+            cfg.embedder.query_instruction,
+            defaults.embedder.query_instruction
+        );
+
+        // The one deliberate addition: the file ships model profiles the
+        // defaults do not have. They are inert until `default_model` names one,
+        // so the file still boots exactly the default model.
+        assert_eq!(cfg.default_model, defaults.default_model);
+        assert!(defaults.models.is_empty());
+        let profiles = cfg.profiles().expect("the shipped profiles merge");
+        let harrier = cfg.profile("harrier").expect("harrier is shipped").1;
+        assert_eq!(harrier.model, "harrier-oss-v1-0.6b");
+        assert_eq!(harrier.dim, 1024);
+        assert_eq!(harrier.api_key, None, "a local profile inherits no secret");
+        let qwen = cfg.profile("qwen3").expect("qwen3 is shipped").1;
+        assert_eq!(qwen.model, "text-embedding-qwen3-embedding-0.6b");
+        assert_eq!(profiles.len(), 3, "embedder, harrier, qwen3");
+        assert_eq!(
+            cfg.default_profile().expect("default").1.model,
+            defaults.embedder.model
+        );
+    }
+
+    /// A configuration with profiles survives `finderyd --check` and back.
+    #[test]
+    fn profiles_and_the_default_model_round_trip_through_toml() {
+        let src = "default_model = \"harrier\"\n[models.harrier]\nmodel = \"h\"\ndim = 1024\n";
+        let cfg = Config::from_toml_str(src).expect("parse");
+        cfg.validate().expect("valid");
+        let text = toml::to_string_pretty(&cfg).expect("serialize");
+        let back = Config::from_toml_str(&text).expect("re-parse");
+        assert_eq!(back.default_model.as_deref(), Some("harrier"));
+        assert_eq!(back.default_profile().expect("default").1.model, "h");
     }
 
     /// A backend name must mean the same thing in TOML, in JSON and in an

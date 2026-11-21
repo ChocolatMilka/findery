@@ -11,10 +11,12 @@
 
 use std::collections::HashMap;
 
-use findery_core::api::{AddDocument, PruneRequest, PushDocuments};
+use findery_core::api::{AddDocument, Progress, ProgressPhase, PruneRequest, PushDocuments};
 use findery_core::ids::{ContentHash, ProjectId};
 use findery_core::model::{Project, SyncReport};
 use findery_core::{Error, Result};
+
+use crate::ui::board::Board;
 
 /// Documents per HTTP request.
 const BATCH_FILES: usize = 64;
@@ -22,8 +24,13 @@ const BATCH_FILES: usize = 64;
 /// 32 MiB body ceiling, with room for JSON escaping.
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
 
-/// Walks `project.host_root`, sends what changed, and prunes what vanished.
-pub async fn sync(client: &findery_client::Client, project: &Project) -> Result<SyncReport> {
+/// Walks `project.host_root`, sends what changed, and prunes what vanished,
+/// drawing on `board` when one is given.
+pub async fn sync(
+    client: &findery_client::Client,
+    project: &Project,
+    board: Option<&Board>,
+) -> Result<SyncReport> {
     let started = std::time::Instant::now();
     let root = std::path::PathBuf::from(&project.host_root);
     if !root.is_dir() {
@@ -42,9 +49,17 @@ pub async fn sync(client: &findery_client::Client, project: &Project) -> Result<
         .collect();
 
     let spec = project.spec.clone();
-    let outcome = tokio::task::spawn_blocking(move || findery_walk::walk(&root, &spec))
-        .await
-        .map_err(|e| Error::Internal(format!("walk task: {e}")))??;
+    // A clone of the board's handles, for the walk on the blocking pool.
+    let scanning = board.cloned();
+    let outcome = tokio::task::spawn_blocking(move || {
+        findery_walk::walk_with(&root, &spec, |n| {
+            if let Some(board) = &scanning {
+                board.scanning(n);
+            }
+        })
+    })
+    .await
+    .map_err(|e| Error::Internal(format!("walk task: {e}")))??;
 
     let mut total = SyncReport {
         project: project.id.to_string(),
@@ -56,6 +71,13 @@ pub async fn sync(client: &findery_client::Client, project: &Project) -> Result<
     let mut seen = Vec::with_capacity(outcome.files.len());
     let mut batch: Vec<AddDocument> = Vec::new();
     let mut batch_bytes = 0usize;
+    let mut progress = planned(outcome.files.len() as u64);
+    let draw = |progress: &mut Progress| {
+        progress.elapsed_ms = started.elapsed().as_millis() as u64;
+        if let Some(board) = board {
+            board.draw(progress);
+        }
+    };
 
     for candidate in outcome.files {
         seen.push(candidate.rel_path.clone());
@@ -65,6 +87,7 @@ pub async fn sync(client: &findery_client::Client, project: &Project) -> Result<
             Err(e) => {
                 total.warnings.push(format!("{}: {e}", candidate.rel_path));
                 total.files_skipped += 1;
+                progress.files_done += 1;
                 continue;
             }
         };
@@ -73,6 +96,7 @@ pub async fn sync(client: &findery_client::Client, project: &Project) -> Result<
                 .warnings
                 .push(format!("{}: not valid UTF-8", candidate.rel_path));
             total.files_skipped += 1;
+            progress.files_done += 1;
             continue;
         };
 
@@ -80,6 +104,8 @@ pub async fn sync(client: &findery_client::Client, project: &Project) -> Result<
         // Reading and hashing locally is far cheaper than shipping the file.
         if known.get(&candidate.rel_path) == Some(&ContentHash::of(text.as_bytes())) {
             total.files_unchanged += 1;
+            progress.files_done += 1;
+            draw(&mut progress);
             continue;
         }
 
@@ -91,12 +117,23 @@ pub async fn sync(client: &findery_client::Client, project: &Project) -> Result<
         if batch.len() >= BATCH_FILES || batch_bytes >= BATCH_BYTES {
             let sent = std::mem::take(&mut batch);
             batch_bytes = 0;
-            absorb(&mut total, push(client, &project.id, sent).await?);
+            let files = sent.len() as u64;
+            let answer = push(client, &project.id, sent).await?;
+            draw(&mut progress);
+            fold(&mut progress, files, &answer);
+            draw(&mut progress);
+            absorb(&mut total, answer);
         }
     }
     if !batch.is_empty() {
-        absorb(&mut total, push(client, &project.id, batch).await?);
+        let files = batch.len() as u64;
+        let answer = push(client, &project.id, batch).await?;
+        draw(&mut progress);
+        fold(&mut progress, files, &answer);
+        absorb(&mut total, answer);
     }
+    progress.phase = ProgressPhase::Pruning;
+    draw(&mut progress);
 
     total.files_removed = client
         .prune(&project.id, &PruneRequest { keep: seen })
@@ -113,6 +150,29 @@ async fn push(
     client
         .push_documents(project, &PushDocuments { documents })
         .await
+}
+
+/// The plan of a push: the client has no bucket row to run gate 1 against,
+/// so every walked file is pending.
+fn planned(walked: u64) -> Progress {
+    Progress {
+        phase: ProgressPhase::Indexing,
+        files_seen: walked,
+        files_total: walked,
+        files_pending: walked,
+        ..Progress::default()
+    }
+}
+
+/// Folds one acknowledged batch into the bar: its files are decided, its
+/// embeddings landed. `progress.elapsed_ms` must be current: the rate is
+/// measured against it. The client never learns the misses ahead of time, so
+/// the embedding count has no denominator and no ETA.
+fn fold(progress: &mut Progress, files: u64, batch: &SyncReport) {
+    progress.files_done += files;
+    progress.embeddings_cached += batch.embeddings_cached;
+    progress.chunks_done += batch.chunks_written;
+    progress.observe(batch.embeddings_computed);
 }
 
 /// Folds one batch's report into the running total.
@@ -183,7 +243,7 @@ pub async fn watch(
             },
             _ = tokio::time::sleep(debounce), if dirty => {
                 dirty = false;
-                match sync(client, project).await {
+                match sync(client, project, None).await {
                     Ok(report) if report.chunks_written > 0 || report.files_removed > 0 => {
                         println!(
                             "  +{} ~{} -{} · chunks +{} -{} · {} embedded",
@@ -232,6 +292,25 @@ mod tests {
         assert_eq!(total.warnings.len(), 2);
         // The walk count belongs to the caller and must survive the folds.
         assert_eq!(total.files_scanned, 10);
+    }
+
+    #[test]
+    fn a_push_bar_counts_every_walked_file_and_folds_each_answer() {
+        let mut progress = planned(10);
+        assert_eq!(progress.files_pending, 10, "no gate 1 on the client side");
+        progress.files_done = 4;
+
+        progress.elapsed_ms = 2_000;
+        fold(&mut progress, 3, &report(3, 64));
+        assert_eq!(progress.files_done, 7);
+        assert_eq!(progress.embeddings_computed, 64);
+        assert_eq!(progress.chunks_done, 9);
+        assert!((progress.rate - 32.0).abs() < 1e-9, "{}", progress.rate);
+        assert_eq!(progress.eta_ms, None, "no denominator, no ETA");
+
+        progress.elapsed_ms = 3_000;
+        fold(&mut progress, 3, &report(3, 0));
+        assert_eq!(progress.files_done, progress.files_pending);
     }
 
     #[test]

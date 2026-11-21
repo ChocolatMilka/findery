@@ -40,6 +40,7 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
             id,
             ext,
             bucket,
+            model,
             sync,
             push,
         } => {
@@ -48,38 +49,13 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
                 id,
                 ext,
                 bucket,
+                model,
                 sync,
                 push,
             };
             commands::init::run(&client, options, json).await
         }
-        Command::Search {
-            query,
-            scope,
-            k,
-            mode,
-            task,
-            instruction,
-            search_scope,
-            paths,
-            langs,
-            kinds,
-            max_chars,
-        } => {
-            let options = commands::search::Options {
-                query,
-                k,
-                mode,
-                task,
-                instruction,
-                search_scope,
-                paths,
-                langs,
-                kinds,
-                max_chars,
-            };
-            commands::search::run(&client, &scope, options, json).await
-        }
+        Command::Search(args) => commands::search::run(&client, *args, json).await,
         Command::Sync {
             scope,
             full,
@@ -96,7 +72,9 @@ pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
         Command::Status { scope } => commands::projects::status(&client, &scope, json).await,
         Command::Projects => commands::projects::list(&client, json).await,
         Command::Bucket { action } => commands::buckets::run(&client, action, json).await,
-        Command::Rm { scope } => commands::projects::rm(&client, &scope).await,
+        Command::Model { action } => commands::models::run(&client, action, json).await,
+        Command::Detach { scope } => commands::lifecycle::detach(&client, &scope, json).await,
+        Command::Rm { scope } => commands::lifecycle::rm(&client, &scope, json).await,
         Command::Doc { action } => commands::projects::doc(&client, action, json).await,
         Command::Export { scope, format, dir } => {
             commands::projects::export(&client, &scope, format, dir, json).await

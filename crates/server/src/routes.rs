@@ -1,24 +1,21 @@
 //! Route table and handlers. Each one does exactly three things: validate,
 //! call one [`findery_index::Indexer`] method, serialize.
 
-use std::time::Duration;
-
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
 use findery_core::api::{
-    BucketInfo, BucketRemoved, CreateBucket, HealthReport, Job, RegisterProject,
+    BucketInfo, BucketRemoved, CreateBucket, HealthReport, Job, ModelInfo, ProjectDetached,
+    ProjectRemoved, RegisterProject, SearchResponse, SetDefaultModel,
 };
 use findery_core::ids::ProjectId;
-use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
+use findery_core::model::{FileRecord, IndexStats, Project, SearchRequest, SyncReport};
 
 use findery_store::{ExportFormat, ExportReport};
 
-use findery_index::ProgressHandle;
-
 use crate::dto::{
-    AddDocument, Deleted, DocumentQuery, ExportRequest, PruneRequest, PushDocuments, Removed,
+    AddDocument, BucketQuery, DocumentQuery, ExportRequest, PruneRequest, PushDocuments, Removed,
     Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use crate::{ApiResult, AppState};
@@ -32,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}", get(get_project).delete(delete_project))
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/projects/{id}/sync", post(sync_project))
+        .route("/v1/projects/{id}/detach", post(detach_project))
         .route("/v1/projects/{id}/export", post(export_project))
         .route("/v1/projects/{id}/watch", post(set_watch))
         .route(
@@ -44,6 +42,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/buckets", get(list_buckets).post(create_bucket))
         .route("/v1/buckets/{name}", delete(delete_bucket))
         .route("/v1/search", post(search))
+        .route("/v1/models", get(list_models))
+        .route("/v1/models/default", post(set_default_model))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/jobs", get(list_jobs))
         .route("/v1/jobs/{id}", get(get_job))
@@ -80,15 +80,23 @@ async fn get_project(
     Ok(Json(state.indexer.get_project(&ProjectId::new(id)?).await?))
 }
 
+/// Removes a project and its index. The engine stops its watcher and its job
+/// first, and says which files went.
 async fn delete_project(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<Json<Deleted>> {
+) -> ApiResult<Json<ProjectRemoved>> {
     let id = ProjectId::new(id)?;
-    state.watches.lock().remove(id.as_str());
-    Ok(Json(Deleted {
-        deleted: state.indexer.forget_project(&id).await?,
-    }))
+    Ok(Json(state.indexer.forget_project(&id).await?))
+}
+
+/// Takes a project off the daemon and keeps its index on disk, released.
+async fn detach_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ProjectDetached>> {
+    let id = ProjectId::new(id)?;
+    Ok(Json(state.indexer.detach(&id).await?))
 }
 
 async fn project_stats(
@@ -98,49 +106,15 @@ async fn project_stats(
     Ok(Json(state.indexer.stats(&ProjectId::new(id)?).await?))
 }
 
-/// Starts a sync. Returns a job unless `wait` was requested.
+/// Starts a sync: a job, unless `wait` was requested. The engine spawns it, so
+/// a `detach` can find it.
 async fn sync_project(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<SyncRequest>,
 ) -> ApiResult<Json<SyncResponse>> {
     let id = ProjectId::new(id)?;
-    let mode = body.resolve()?;
-    // Fail here rather than inside a background task nobody is watching.
-    state.indexer.get_project(&id).await?;
-
-    if body.wait {
-        let _permit = state.indexer.jobs.acquire().await?;
-        // A buffered response cannot show anything mid-flight, so a caller who
-        // asked to wait gets the report and nothing else.
-        let report = state
-            .indexer
-            .sync(&id, mode, &ProgressHandle::detached())
-            .await?;
-        return Ok(Json(SyncResponse::Completed { report }));
-    }
-
-    if let Some(active) = state.indexer.jobs.has_active(id.as_str()) {
-        return Ok(Json(SyncResponse::Accepted { job: active }));
-    }
-    let job = state.indexer.jobs.create(id.as_str(), mode.as_str());
-    let job_id = job.id.clone();
-    // The counters the spawned task will write into are the ones the registry
-    // hands back on `GET /v1/jobs/{id}` — that is the whole channel.
-    let progress = state.indexer.jobs.handle(&job_id).unwrap_or_default();
-    let indexer = state.indexer.clone();
-    tokio::spawn(async move {
-        let Ok(_permit) = indexer.jobs.acquire().await else {
-            indexer.jobs.fail(&job_id, "job queue closed");
-            return;
-        };
-        indexer.jobs.start(&job_id);
-        match indexer.sync(&id, mode, &progress).await {
-            Ok(report) => indexer.jobs.succeed(&job_id, report),
-            Err(e) => indexer.jobs.fail(&job_id, &e.to_string()),
-        }
-    });
-    Ok(Json(SyncResponse::Accepted { job }))
+    Ok(Json(state.indexer.start_sync(&id, &body).await?))
 }
 
 async fn add_document(
@@ -206,7 +180,7 @@ async fn prune(
 async fn search(
     State(state): State<AppState>,
     Json(body): Json<SearchRequest>,
-) -> ApiResult<Json<Vec<SearchHit>>> {
+) -> ApiResult<Json<SearchResponse>> {
     Ok(Json(state.indexer.search(&body).await?))
 }
 
@@ -235,26 +209,7 @@ async fn set_watch(
     Json(body): Json<WatchRequest>,
 ) -> ApiResult<Json<Watching>> {
     let id = ProjectId::new(id)?;
-    if !body.enabled {
-        // Dropping the handle is what stops the watcher task.
-        state.watches.lock().remove(id.as_str());
-        return Ok(Json(Watching {
-            project: id.to_string(),
-            watching: false,
-        }));
-    }
-    let project = state.indexer.get_project(&id).await?;
-    let handle = findery_index::jobs::watch::spawn(
-        state.indexer.clone(),
-        project,
-        Duration::from_millis(body.debounce_ms.clamp(100, 60_000)),
-    )?;
-    // Replacing an existing handle drops it, which stops the previous task.
-    state.watches.lock().insert(id.to_string(), handle);
-    Ok(Json(Watching {
-        project: id.to_string(),
-        watching: true,
-    }))
+    Ok(Json(state.indexer.set_watch(&id, &body).await?))
 }
 
 /// Asks the daemon to stop, gracefully.
@@ -278,25 +233,33 @@ async fn create_bucket(
     Ok(Json(state.indexer.create_bucket(&body.name).await?))
 }
 
-/// Deletes a bucket, its projects and their vectors.
+/// Deletes a bucket, its projects and their vectors — or, with `?model=`, only
+/// that model's file of it.
 ///
 /// It goes through the daemon rather than the CLI's own filesystem call: the
 /// daemon is the only process that knows every handle on the file, and a
-/// bucket still open cannot be removed at all.
+/// bucket still open cannot be removed at all. The engine stops the watchers
+/// and the jobs of the projects that go with it.
 async fn delete_bucket(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    Query(query): Query<BucketQuery>,
 ) -> ApiResult<Json<BucketRemoved>> {
-    let removed = state.indexer.forget_bucket(&name).await?;
-    // The watchers of the projects that went with it would otherwise keep
-    // re-syncing an id that no longer resolves.
-    {
-        let mut watches = state.watches.lock();
-        for project in &removed.projects {
-            watches.remove(project.as_str());
-        }
-    }
-    Ok(Json(removed))
+    let model = query.model.as_deref();
+    Ok(Json(state.indexer.forget_bucket(&name, model).await?))
+}
+
+/// The model profiles, without probing any runtime.
+async fn list_models(State(state): State<AppState>) -> Json<Vec<ModelInfo>> {
+    Json(state.indexer.models())
+}
+
+/// Switches the model unpinned projects use, from the next operation on.
+async fn set_default_model(
+    State(state): State<AppState>,
+    Json(body): Json<SetDefaultModel>,
+) -> ApiResult<Json<ModelInfo>> {
+    Ok(Json(state.indexer.set_default_model(&body.alias)?))
 }
 
 async fn list_jobs(State(state): State<AppState>) -> Json<Vec<Job>> {

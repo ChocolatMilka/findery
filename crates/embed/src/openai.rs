@@ -8,6 +8,7 @@
 //! Two response shapes are accepted, because the same code must talk to both
 //! `/v1/embeddings` (OpenAI envelope) and TEI's native `/embed` (bare matrix).
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,11 +17,13 @@ use serde::Deserialize;
 use tokio::sync::Semaphore;
 
 use findery_core::config::EmbedderConfig;
-use findery_core::embedding::prompt;
+use findery_core::embedding::prompt::{self, DocumentTemplate, QueryPrompt, QueryTemplate};
 use findery_core::traits::Embedder;
 use findery_core::{Error, Result};
 
-const SERVICE: &str = "embedder";
+/// The service an [`findery_core::Error::Upstream`] from the runtime names, so
+/// a caller can tell the model's failure from a vector store's.
+pub const SERVICE: &str = "embedder";
 
 pub struct OpenAiCompatEmbedder {
     http: reqwest::Client,
@@ -28,6 +31,9 @@ pub struct OpenAiCompatEmbedder {
     endpoint: String,
     /// Width actually served by the runtime, probed at connect time.
     dim: usize,
+    /// The profile's prompt formats, parsed once.
+    query_template: QueryTemplate,
+    document_template: DocumentTemplate,
     /// Caps concurrent in-flight batches so a large sync cannot stampede a
     /// shared or rate-limited endpoint.
     permits: Arc<Semaphore>,
@@ -59,11 +65,15 @@ impl OpenAiCompatEmbedder {
 
         let endpoint = cfg.endpoint();
         let permits = Arc::new(Semaphore::new(cfg.concurrency.max(1)));
+        let query_template = cfg.query_template()?;
+        let document_template = cfg.document_template()?;
         let mut me = Self {
             http,
             cfg,
             endpoint,
             dim: 0,
+            query_template,
+            document_template,
             permits,
         };
 
@@ -232,6 +242,24 @@ impl Embedder for OpenAiCompatEmbedder {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
+        // INTENT: the document template is applied here, after the caller has
+        // hashed `Chunk::embed_input()`, so the chunk's `content_hash` does not
+        // see it. That is deliberate and safe because a non-identity template
+        // enters the RECIPE (`|doc=<fingerprint>`, built by `Recipe::of`): the
+        // cache key `(recipe, content_hash)` still names exactly the text sent.
+        // Hashing it into every chunk instead would re-chunk and re-hash a whole
+        // corpus to express one profile setting.
+        let rendered: Cow<'_, [String]> = if self.document_template.is_identity() {
+            Cow::Borrowed(inputs)
+        } else {
+            Cow::Owned(
+                inputs
+                    .iter()
+                    .map(|t| prompt::format_document(&self.document_template, t).into_owned())
+                    .collect(),
+            )
+        };
+        let inputs: &[String] = &rendered;
         // Futures are materialized eagerly rather than through a closure: the
         // higher-ranked lifetime a `map` closure would demand does not survive
         // the `async_trait` desugaring of `&self`.
@@ -261,9 +289,9 @@ impl Embedder for OpenAiCompatEmbedder {
         Ok(out)
     }
 
-    async fn embed_query(&self, query: &str, instruction: Option<&str>) -> Result<Vec<f32>> {
-        let task = instruction.unwrap_or(&self.cfg.query_instruction);
-        let input = prompt::format_query(task, query);
+    async fn embed_query(&self, query: &str, how: QueryPrompt<'_>) -> Result<Vec<f32>> {
+        let default = &self.cfg.query_instruction;
+        let input = prompt::render_query(&self.query_template, default, query, how);
         let vectors = self.post_batch(std::slice::from_ref(&input)).await?;
         let mut vectors = self.finish(vectors, 1)?;
         vectors

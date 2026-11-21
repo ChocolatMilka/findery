@@ -17,7 +17,7 @@ use findery_core::config::{EmbedderBackend, EmbedderConfig};
 use findery_core::traits::Embedder;
 
 pub use mock::MockEmbedder;
-pub use openai::OpenAiCompatEmbedder;
+pub use openai::{OpenAiCompatEmbedder, SERVICE as UPSTREAM_SERVICE};
 
 /// Builds the configured embedder, connecting and probing where applicable.
 ///
@@ -31,11 +31,43 @@ pub async fn build(cfg: &EmbedderConfig, known_dim: Option<usize>) -> Result<Arc
             let e = OpenAiCompatEmbedder::connect(cfg.clone(), known_dim).await?;
             Ok(Arc::new(e))
         }
-        EmbedderBackend::Mock => {
-            let dim = if cfg.dim == 0 { 256 } else { cfg.dim };
-            Ok(Arc::new(MockEmbedder::new(dim)))
-        }
+        EmbedderBackend::Mock => Ok(Arc::new(MockEmbedder::with_templates(
+            mock_dim(cfg),
+            cfg.query_template()?,
+            cfg.document_template()?,
+        ))),
     }
+}
+
+/// The model name an embedder built from `cfg` will report through
+/// [`Embedder::model`] — what a recipe's identity falls back on when the
+/// profile names no `weights`.
+///
+/// INTENT: a profile that has not been built yet still has a vector space, and
+/// the engine needs its name to find the bucket file holding it — a read must
+/// not have to dial a runtime to learn which file to read. The mock reports
+/// `mock` whatever `model` says, so this is the one place that knows it.
+pub fn served_model(cfg: &EmbedderConfig) -> &str {
+    match cfg.backend {
+        EmbedderBackend::OpenAiCompat => &cfg.model,
+        EmbedderBackend::Mock => mock::MOCK_MODEL,
+    }
+}
+
+/// The width an embedder built from `cfg` will serve, when the configuration
+/// alone decides it: a configured `dim`, or the mock's. `None` means only the
+/// runtime can say.
+pub fn configured_dim(cfg: &EmbedderConfig) -> Option<usize> {
+    match cfg.backend {
+        EmbedderBackend::OpenAiCompat => (cfg.dim != 0).then_some(cfg.dim),
+        EmbedderBackend::Mock => Some(mock_dim(cfg)),
+    }
+}
+
+/// The mock's width: `dim`, 256 when unset, never below its floor.
+fn mock_dim(cfg: &EmbedderConfig) -> usize {
+    let dim = if cfg.dim == 0 { 256 } else { cfg.dim };
+    dim.max(mock::MIN_DIM)
 }
 
 #[cfg(test)]
@@ -53,6 +85,42 @@ mod tests {
         assert_eq!(e.dim(), 128);
         assert_eq!(e.model(), "mock");
         e.health().await.expect("healthy");
+    }
+
+    /// A template that cannot be parsed never builds an embedder: half a corpus
+    /// rendered one way and half another is unsearchable.
+    #[tokio::test]
+    async fn a_broken_template_is_refused_at_build() {
+        let cfg = EmbedderConfig {
+            backend: EmbedderBackend::Mock,
+            document_template: Some("no slot".into()),
+            ..EmbedderConfig::default()
+        };
+        let err = match build(&cfg, None).await {
+            Ok(_) => panic!("a template without a text slot must not build"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code(), "config");
+    }
+
+    /// What the engine reads before building anything agrees with what the
+    /// built embedder reports — otherwise a profile would look for its bucket
+    /// file under one name and write it under another.
+    #[tokio::test]
+    async fn the_unbuilt_name_and_width_are_the_built_ones() {
+        for dim in [0, 4, 128] {
+            let cfg = EmbedderConfig {
+                backend: EmbedderBackend::Mock,
+                dim,
+                ..EmbedderConfig::default()
+            };
+            let e = build(&cfg, None).await.expect("built");
+            assert_eq!(served_model(&cfg), e.model());
+            assert_eq!(configured_dim(&cfg), Some(e.dim()));
+        }
+        let remote = unreachable_cfg(0);
+        assert_eq!(served_model(&remote), remote.model);
+        assert_eq!(configured_dim(&remote), None, "only the runtime can say");
     }
 
     /// The width has to come from somewhere, and a closed port cannot supply it.

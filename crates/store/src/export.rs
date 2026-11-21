@@ -241,6 +241,7 @@ mod tests {
             id: p.clone(),
             name: "demo".into(),
             bucket: cat.name().to_string(),
+            model: None,
             spec: ProjectSpec::default(),
             host_root: "C:/demo".into(),
             created_at: 1,

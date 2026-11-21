@@ -6,6 +6,20 @@
 //! — which is exactly the failure mode we want, instead of a client silently
 //! dropping a field the server started sending.
 
+mod buckets;
+mod jobs;
+mod lifecycle;
+mod models;
+mod progress;
+mod search;
+
+pub use buckets::{BucketInfo, BucketMember, BucketRemoved, CreateBucket};
+pub use jobs::{Job, JobState};
+pub use lifecycle::{ProjectDetached, ProjectRemoved};
+pub use models::{ModelHealth, ModelInfo, SetDefaultModel};
+pub use progress::{Progress, ProgressPhase, RateMeter};
+pub use search::{SearchResponse, SearchWire};
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +29,14 @@ use crate::model::{SearchFilter, SyncMode, SyncReport};
 use crate::{Error, Result};
 
 /// `POST /v1/projects` — register or update a project.
+///
+/// Re-registering an id that exists is a MERGE: a field left absent keeps what
+/// the project already has — its bucket, scopes, instruction, pin,
+/// include and exclude lists. An explicitly empty value clears it: `[]`, `{}`,
+/// or `""` for `instruction` and `model`.
+///
+/// INTENT: a client that only knows a root (the MCP bridge, a script) must not
+/// be able to wipe what a manifest declared by registering it again.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RegisterProject {
     /// Slug; derived from `name`, or from the root, when omitted.
@@ -55,9 +77,9 @@ pub struct RegisterProject {
     pub bucket: Option<BucketRef>,
     /// Named restrictions a search can ask for by name.
     ///
-    /// Sent at registration because the daemon has to resolve the name for a
-    /// client that never read the manifest — the MCP bridge is a separate
-    /// process and does not.
+    /// Sent at registration because the daemon resolves the name for every
+    /// client: a client reads a manifest only to learn which project it stands
+    /// in, never to expand a scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<BTreeMap<String, SearchFilter>>,
     /// Default retrieval intent for a query in this project.
@@ -65,6 +87,13 @@ pub struct RegisterProject {
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<crate::embedding::prompt::QueryTask>,
+    /// The model profile to pin this project to (`[models.<alias>]`, or
+    /// `embedder`); absent follows the daemon's default model.
+    ///
+    /// Text on the wire, validated by the daemon before anything is written:
+    /// an alias no profile defines is `model_unknown`, naming the ones that are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl RegisterProject {
@@ -75,48 +104,6 @@ impl RegisterProject {
             ..Self::default()
         }
     }
-}
-
-/// One bucket, as `GET /v1/buckets` reports it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BucketInfo {
-    pub name: String,
-    /// Absolute path of the database file.
-    pub path: String,
-    /// The recipe this bucket was built with; `None` while it holds no vectors.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipe: Option<String>,
-    /// Why this bucket cannot serve a vector query, when it cannot.
-    ///
-    /// INTENT: a recipe mismatch is reported here rather than raised at boot,
-    /// so the daemon that owns the bucket stays up and can still delete it —
-    /// a conflict you can read about and repair, not a conflict that locks the
-    /// door you would repair it through.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conflict: Option<String>,
-    pub projects: u64,
-    pub chunks: u64,
-    pub disk_bytes: u64,
-    /// True when a project registering without naming one lands here.
-    pub is_default: bool,
-}
-
-/// `POST /v1/buckets` — create a bucket.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CreateBucket {
-    pub name: String,
-}
-
-/// `DELETE /v1/buckets/{name}` — what the removal swept away.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BucketRemoved {
-    pub removed: bool,
-    /// Projects that were registered in it, and went with it.
-    pub projects_removed: u64,
-    /// Their ids, so a caller holding per-project state — a watch, a job — can
-    /// let go of it.
-    #[serde(default)]
-    pub projects: Vec<String>,
 }
 
 /// `GET /v1/health` — liveness of the daemon and of what it depends on.
@@ -138,113 +125,18 @@ pub struct HealthReport {
     pub embedder_ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-}
-
-/// Lifecycle of a background job.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobState {
-    Queued,
-    Running,
-    Succeeded,
-    Failed,
-}
-
-impl JobState {
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed)
-    }
-}
-
-/// What a running job is doing, in the order the phases happen.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProgressPhase {
-    /// Walking the project. The denominator does not exist yet.
-    #[default]
-    Scanning,
-    /// Reading, chunking and embedding what the walk found.
-    Indexing,
-    /// Dropping what the walk no longer sees.
-    Pruning,
-}
-
-impl ProgressPhase {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Scanning => "scanning",
-            Self::Indexing => "indexing",
-            Self::Pruning => "pruning",
-        }
-    }
-}
-
-/// Live counters of a running job. An ingestion that runs for minutes in
-/// silence is indistinguishable from one that has hung, and the fix is a
-/// denominator — which the walk supplies before the first byte is read.
-///
-/// A terminal job carries none: its numbers are its [`SyncReport`], and two
-/// records of one fact are free to disagree.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Progress {
-    pub phase: ProgressPhase,
-    pub files_done: u64,
-    /// Zero while [`ProgressPhase::Scanning`]: the walk is what establishes it.
-    pub files_total: u64,
-    pub chunks_done: u64,
-    pub embeddings_computed: u64,
-    pub embeddings_cached: u64,
-    pub elapsed_ms: u64,
-}
-
-impl Progress {
-    /// How far along the walk is, in `[0, 1]`. `0 / 0` is not a proportion, and
-    /// the total stays zero until the walk returns.
-    pub fn fraction(&self) -> f32 {
-        if self.files_total == 0 {
-            return 0.0;
-        }
-        (self.files_done as f32 / self.files_total as f32).clamp(0.0, 1.0)
-    }
-
-    /// The one-line description a terminal, a log or an agent can print.
-    pub fn summary(&self) -> String {
-        let mut out = format!(
-            "{} · {}/{} files · {} chunks",
-            self.phase.as_str(),
-            self.files_done,
-            self.files_total,
-            self.chunks_done
-        );
-        if self.embeddings_computed > 0 || self.embeddings_cached > 0 {
-            out.push_str(&format!(
-                " · {} embedded, {} cached",
-                self.embeddings_computed, self.embeddings_cached
-            ));
-        }
-        out.push_str(&format!(" · {:.1}s", self.elapsed_ms as f64 / 1000.0));
-        out
-    }
-}
-
-/// One unit of background work, as clients observe it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Job {
-    pub id: String,
-    pub project: String,
-    /// `incremental`, `full` or `paths`.
-    pub kind: String,
-    pub state: JobState,
-    pub created_at: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<i64>,
-    /// Counters of a job that is still running; absent before and after.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress: Option<Progress>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report: Option<SyncReport>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    /// Things the daemon did, or could not do, on its own that a user should
+    /// know about: a legacy bucket file adopted or kept in place, a project id
+    /// found in two buckets, a removal left unfinished.
+    ///
+    /// INTENT: reported rather than only logged, because a daemon that started
+    /// itself has no terminal anyone reads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
+    /// Every model profile, the default one included. The top-level `model`,
+    /// `dim` and `embedder_ok` describe the default, for older clients.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelHealth>,
 }
 
 /// `POST /v1/projects/{id}/sync`
@@ -261,6 +153,12 @@ pub struct SyncRequest {
     /// outlives any client timeout, so callers start a job and follow it.
     #[serde(default)]
     pub wait: bool,
+    /// Waits at most this long for the sync's job, then answers with the job
+    /// as it stands — its live progress included — or with the report when it
+    /// finished in time. Capped by `server.max_sync_wait_ms`; ignored with
+    /// `wait`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
 }
 
 impl SyncRequest {
@@ -285,11 +183,15 @@ impl SyncRequest {
 }
 
 /// Either an accepted job or a finished report, depending on `wait`.
+///
+/// The job is boxed because it is more than twice the report's size: unboxed,
+/// every `SyncResponse` — the inline report included — would carry the room
+/// for one. The wire does not see the box.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SyncResponse {
     Completed { report: SyncReport },
-    Accepted { job: Job },
+    Accepted { job: Box<Job> },
 }
 
 impl SyncResponse {
@@ -304,7 +206,7 @@ impl SyncResponse {
     /// The job, when the call was asynchronous.
     pub fn job(&self) -> Option<&Job> {
         match self {
-            Self::Accepted { job } => Some(job),
+            Self::Accepted { job } => Some(job.as_ref()),
             Self::Completed { .. } => None,
         }
     }
@@ -410,12 +312,6 @@ pub struct Removed {
     pub removed: u64,
 }
 
-/// Envelope for `DELETE /v1/projects/{id}`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Deleted {
-    pub deleted: bool,
-}
-
 /// Envelope for `POST /v1/shutdown`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stopping {
@@ -477,48 +373,5 @@ mod tests {
         .expect("parse");
         assert_eq!(accepted.job().expect("job").state, JobState::Queued);
         assert!(accepted.report().is_none());
-    }
-
-    /// A job read from an older daemon has no `progress` key at all, and that
-    /// must deserialize rather than fail: a client newer than its server is the
-    /// ordinary case during a rolling upgrade.
-    #[test]
-    fn a_job_without_progress_still_deserializes() {
-        let job: Job = serde_json::from_str(
-            r#"{"id":"1","project":"p","kind":"full","state":"running","created_at":0}"#,
-        )
-        .expect("parse");
-        assert!(job.progress.is_none());
-    }
-
-    /// The denominator arrives with the walk, so a bar drawn before it returns
-    /// has to read 0% — not a panic, and not a jump to 100%.
-    #[test]
-    fn progress_without_a_denominator_is_zero_not_a_division_by_zero() {
-        let scanning = Progress::default();
-        assert_eq!(scanning.fraction(), 0.0);
-        assert!(scanning.summary().contains("scanning"));
-    }
-
-    /// Progress never reports more than everything: a finished file is counted
-    /// before the walk length is known to have changed, and a bar that overflows
-    /// its own length reads as a bug in whatever is drawing it.
-    #[test]
-    fn progress_never_exceeds_one_and_says_what_it_is_doing() {
-        let indexing = Progress {
-            phase: ProgressPhase::Indexing,
-            files_done: 150,
-            files_total: 100,
-            chunks_done: 40,
-            embeddings_computed: 30,
-            embeddings_cached: 10,
-            elapsed_ms: 1500,
-        };
-        assert_eq!(indexing.fraction(), 1.0);
-        let text = indexing.summary();
-        assert!(text.contains("indexing"), "{text}");
-        assert!(text.contains("150/100 files"), "{text}");
-        assert!(text.contains("30 embedded"), "{text}");
-        assert!(text.contains("1.5s"), "{text}");
     }
 }

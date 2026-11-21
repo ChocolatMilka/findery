@@ -130,32 +130,40 @@ impl SqliteVectorStore {
         }
     }
 
-    /// Loads a project's matrix if it is not warm yet.
+    /// Loads a project's matrix if it is not warm yet, holding it to `dim`.
+    ///
+    /// Every exit checks the width — warm, cold, or warmed by another task
+    /// meanwhile: an off-width vector scored against rows of another length is
+    /// a silent wrong answer.
     async fn warm(&self, project: &ProjectId, dim: usize) -> Result<()> {
-        if self.shards.read().contains_key(project.as_str()) {
-            return Ok(());
+        let warm_width = self.shards.read().get(project.as_str()).map(|s| s.dim);
+        if let Some(width) = warm_width {
+            return same_width(project, width, dim);
         }
         let rows = self.bucket.load_vectors(project).await?;
         let mut shards = self.shards.write();
-        // Another task may have warmed it while this one was awaiting.
-        if shards.contains_key(project.as_str()) {
-            return Ok(());
+        if let Some(raced) = shards.get(project.as_str()) {
+            return same_width(project, raced.dim, dim);
         }
         let mut shard = Shard::new(dim);
         for (id, payload, mut vector) in rows {
-            if vector.len() != dim {
-                return Err(Error::Store(format!(
-                    "project `{project}` holds {}-dim vectors but the embedder produces {dim}; \
-                     re-sync with --full or point FINDERY_DATA_DIR elsewhere",
-                    vector.len()
-                )));
-            }
+            // Another embedding space, not a broken store: a 409 with the repair.
+            same_width(project, vector.len(), dim)?;
             normalize(&mut vector);
             shard.upsert(&id, payload, &vector);
         }
         tracing::info!(project = %project, vectors = shard.alive(), dim, "vector matrix warm");
         shards.insert(project.to_string(), shard);
         Ok(())
+    }
+}
+
+/// Refuses vectors of `found` dimensions where the project holds `stored`.
+fn same_width(project: &ProjectId, stored: usize, found: usize) -> Result<()> {
+    if stored == found {
+        Ok(())
+    } else {
+        Err(Error::width_mismatch(project, stored, found))
     }
 }
 
@@ -471,6 +479,9 @@ mod tests {
         assert_eq!(hits.len(), 1);
     }
 
+    /// A width the stored vectors do not have is another embedding space: a
+    /// conflict the user resolves, with the repair in the message — and never
+    /// `--full`, which keeps every stored vector and meets the old width again.
     #[tokio::test]
     async fn a_dimension_mismatch_is_refused_loudly() {
         let (s, p) = store().await;
@@ -481,7 +492,45 @@ mod tests {
             .search(&p, &[1.0, 0.0, 0.0], 5, &SearchFilter::default())
             .await
             .expect_err("must refuse");
-        assert_eq!(err.code(), "store");
+        assert_eq!(err.code(), "recipe_mismatch");
+        assert_eq!(err.http_status(), 409);
+        assert!(!err.to_string().contains("--full"), "{err}");
+    }
+
+    /// The same refusal from a cold matrix: the width is checked as the rows
+    /// load, not only once they are warm.
+    #[tokio::test]
+    async fn a_cold_matrix_of_another_width_is_refused_as_it_loads() {
+        let cat = Bucket::open_in_memory().expect("bucket");
+        let p = ProjectId::new("demo").expect("id");
+        SqliteVectorStore::new(cat.clone())
+            .upsert(&p, &[record(&p, "a.rs", 0, vec![1.0, 0.0])])
+            .await
+            .expect("upsert");
+
+        let restarted = SqliteVectorStore::new(cat);
+        let err = restarted
+            .ensure_project(&p, 3)
+            .await
+            .expect_err("2-dim rows under a 3-dim embedder");
+        assert_eq!(err.code(), "recipe_mismatch");
+        assert!(err.to_string().contains("findery rm -p demo"), "{err}");
+    }
+
+    /// An upsert of another width into a warm matrix is refused before it is
+    /// written, rather than stored beside rows it cannot be compared with.
+    #[tokio::test]
+    async fn an_off_width_upsert_into_a_warm_matrix_is_refused() {
+        let (s, p) = store().await;
+        s.upsert(&p, &[record(&p, "a.rs", 0, vec![1.0, 0.0])])
+            .await
+            .expect("upsert");
+        let err = s
+            .upsert(&p, &[record(&p, "b.rs", 0, vec![1.0, 0.0, 0.0])])
+            .await
+            .expect_err("must refuse");
+        assert_eq!(err.code(), "recipe_mismatch");
+        assert_eq!(s.count(&p).await.expect("count"), 1);
     }
 
     #[tokio::test]

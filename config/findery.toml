@@ -1,13 +1,21 @@
 # Reference configuration. Every value below is the default, so an empty file —
-# or no file at all — yields exactly this. Two exceptions are marked inline:
-# `store.data_dir` is platform-dependent, and Docker Compose overrides a handful
-# of values through `FINDERY_*` so one image can serve every deployment.
+# or no file at all — yields exactly this. Three exceptions are marked inline:
+# `store.data_dir` is platform-dependent, Docker Compose overrides a handful
+# of values through `FINDERY_*` so one image can serve every deployment, and the
+# `[models.*]` profiles at the end of `[embedder]` are shipped examples — inert
+# until `default_model` names one.
 #
 # Mount it at /etc/findery/config.toml, or point FINDERY_CONFIG elsewhere.
 # `FINDERY_*` environment variables always win over this file, which is what lets one
 # image serve every deployment.
 #
 # Check what the daemon actually resolved:  finderyd --check
+
+# The model profile the daemon embeds with: `embedder` (the [embedder] section
+# below, also what leaving this out means) or the alias of a [models.<alias>].
+# FINDERY_MODEL overrides it. Switching profile is free in both directions when
+# both have indexed: each model's vectors live under their own recipe.
+# default_model = "harrier"
 
 [server]
 bind = "0.0.0.0:8077"
@@ -23,6 +31,12 @@ max_body_bytes = 33554432
 # Concurrent sync jobs. More than the embedding runtime can feed just queues.
 job_concurrency = 2
 job_history = 64
+# How long `findery detach` / `findery rm` wait for a running sync of the
+# project to stop before giving up with `busy` (and changing nothing).
+drain_timeout_secs = 15
+# Longest a sync request may wait for its job (`wait_ms`, what the MCP `sync`
+# tool sends) before answering with the job as it stands.
+max_sync_wait_ms = 120000
 
 [embedder]
 # "openai_compat" talks to anything serving /v1/embeddings: TEI, llama.cpp,
@@ -54,15 +68,58 @@ max_retries = 3
 max_input_chars = 24000
 # L2-normalize on arrival, so cosine becomes a dot product downstream.
 normalize = true
-# Applied to QUERIES only — qwen3.7-text-embedding is asymmetric by design. A caller can override it per search, either with a
-# named preset (`task`: code, symbol, usage, docs, test, config, error) or with
-# free-form text. Qwen measures +1 to 5% retrieval accuracy from a tailored
-# instruction — it costs one prefix on a string that was going to be embedded.
-query_instruction = "Given a developer question about a Rust codebase, retrieve the source code or documentation passages that answer it."
+# Applied to QUERIES only — qwen3.7-text-embedding is asymmetric by design. A
+# caller can override it per search, either with a named preset (`task`: code,
+# symbol, usage, docs, test, config, error) or with free-form text. Qwen
+# measures +1 to 5% retrieval accuracy from a tailored instruction — it costs one
+# prefix on a string that was going to be embedded.
+query_instruction = "Given a developer question about a codebase, retrieve the source code or documentation passages that answer it."
+# The prompt format is a fact about the weights. Unset, a query is
+# "Instruct: {instruction}\nQuery: {query}" (Qwen3, Harrier) and a document is
+# sent as it is. A nomic-style model wants
+#   query_template    = "search_query: {query}"
+#   document_template = "search_document: {text}"
+# A non-default document_template opens its own vector space (it enters the
+# recipe as `|doc=<fingerprint>`): every stored vector depends on it.
+# query_template = "Instruct: {instruction}\nQuery: {query}"
+# document_template = "{text}"
+# Canonical name of the weights, when the runtime's name for them is not one.
+# It replaces `model` in the recipe — see the profiles below.
+# weights = "Qwen/Qwen3-Embedding-0.6B"
 
 # Extra static headers, for gateways and tenancy.
 # [embedder.extra_headers]
 # "OpenAI-Organization" = "org-123"
+
+# Model profiles: each one says only what differs from [embedder] and inherits
+# the rest — except the secrets (api_key, extra_headers, auth_header,
+# auth_prefix), which never follow a profile to another base_url, and the facts
+# about the weights (weights, query_template, document_template), which never
+# follow it to another model. Select one with `default_model` or FINDERY_MODEL.
+#
+# `weights` is the canonical identity of what a runtime serves. Set it and LM
+# Studio's `harrier-oss-v1-0.6b` and TEI's `microsoft/harrier-oss-v1-0.6b` —
+# one set of weights under two names — share their vectors. A GGUF
+# quantization (Q8_0, Q4_K_M) is NOT the same weights: give it its own name, or
+# leave `weights` unset so the runtime's name keeps it apart.
+
+# Microsoft Harrier, as LM Studio serves it: Qwen3-based, 1024 dims, MIT, the
+# same Instruct/Query query format, documents raw.
+[models.harrier]
+base_url = "http://localhost:1234"
+model = "harrier-oss-v1-0.6b"
+dim = 1024
+# weights = "microsoft/harrier-oss-v1-0.6b"
+
+# Qwen3-Embedding-0.6B, as LM Studio serves it. Its recipe is
+# `text-embedding-qwen3-embedding-0.6b:1024` — the same as an [embedder] naming
+# that model, so the two share every vector. Setting `weights` here renames the
+# recipe, and the next sync embeds again under the new name.
+[models.qwen3]
+base_url = "http://localhost:1234"
+model = "text-embedding-qwen3-embedding-0.6b"
+dim = 1024
+# weights = "Qwen/Qwen3-Embedding-0.6B"
 
 [store]
 # "sqlite": vectors beside the bucket, searched from a warm in-memory matrix.

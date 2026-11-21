@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{StoreConfig, bucket_path};
 use crate::embedding::prompt::QueryTask;
-use crate::ids::ProjectId;
+use crate::ids::{ModelAlias, ProjectId};
 use crate::model::filter::CompiledFilter;
 use crate::model::{SearchFilter, is_bucket_name};
 use crate::{Error, Result};
@@ -209,7 +209,7 @@ fn name_from_path(path: &str) -> Result<String> {
 
 /// The manifest of one project.
 ///
-/// INTENT: `deny_unknown_fields` is the same choice [`Config`] makes. A
+/// INTENT: `deny_unknown_fields` is the same choice [`crate::config::Config`] makes. A
 /// misspelled key in a committed file is a setting that silently does nothing,
 /// and the moment to say so is when it is written, not a month later when
 /// someone wonders why their scope never applied.
@@ -228,6 +228,11 @@ pub struct ProjectConfig {
     pub instruction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<QueryTask>,
+    /// The model profile this project is pinned to; absent follows the
+    /// daemon's default model. Text here, validated by [`ProjectConfig::validate`]
+    /// and again by the daemon, which alone knows which profiles exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl ProjectConfig {
@@ -252,6 +257,10 @@ impl ProjectConfig {
         if !self.project.is_empty() {
             ProjectId::new(self.project.clone())?;
         }
+        if let Some(model) = &self.model {
+            ModelAlias::new(model.clone())
+                .map_err(|e| Error::Config(format!("model: {}", e.detail())))?;
+        }
         self.bucket.validate()?;
         for (name, filter) in &self.scopes {
             if !is_bucket_name(name) {
@@ -269,17 +278,6 @@ impl ProjectConfig {
     /// The project id, when the manifest names one.
     pub fn project_id(&self) -> Option<ProjectId> {
         ProjectId::new(self.project.clone()).ok()
-    }
-
-    /// The retrieval intent this project asks for by default. Mirrors
-    /// [`crate::model::SearchRequest::resolved_instruction`] so the two levels of
-    /// precedence cannot be read two ways.
-    pub fn resolved_instruction(&self) -> Option<&str> {
-        match (&self.instruction, self.task) {
-            (Some(free), _) if !free.trim().is_empty() => Some(free),
-            (_, Some(task)) => Some(task.instruction()),
-            _ => None,
-        }
     }
 }
 
@@ -331,7 +329,7 @@ paths = ["docs/**"]
         );
         assert_eq!(parsed.scopes["api"].paths, vec!["crates/server/**"]);
         assert_eq!(parsed.scopes.len(), 2);
-        assert!(parsed.resolved_instruction().is_some());
+        assert!(parsed.instruction.is_some());
 
         let rendered = parsed.to_toml_string().expect("render");
         let again = ProjectConfig::from_toml_str(&rendered).expect("reparse");
@@ -377,6 +375,25 @@ paths = ["docs/**"]
         };
         let err = manifest.validate().expect_err("must be refused");
         assert!(err.to_string().contains("not a name"), "{err}");
+    }
+
+    /// A model pin is a name a command line and an error message repeat, so it
+    /// takes the alias charset; whether a profile defines it is the daemon's to
+    /// say.
+    #[test]
+    fn a_model_pin_round_trips_and_one_that_could_be_a_path_is_refused() {
+        let manifest = ProjectConfig::from_toml_str("project = \"axle\"\nmodel = \"harrier\"\n")
+            .expect("parse");
+        manifest.validate().expect("valid");
+        let again = ProjectConfig::from_toml_str(&manifest.to_toml_string().expect("render"))
+            .expect("reparse");
+        assert_eq!(again.model.as_deref(), Some("harrier"));
+
+        let bad = ProjectConfig {
+            model: Some("../x".into()),
+            ..ProjectConfig::default()
+        };
+        assert_eq!(bad.validate().map_err(|e| e.code()), Err("config"));
     }
 
     /// A bucket name becomes a directory, so the same rule as everywhere else.
@@ -544,36 +561,9 @@ paths = ["docs/**"]
         let starter = starter_manifest(&id, &BucketRef::local());
         assert_eq!(starter.project, "axle");
         assert!(starter.scopes.is_empty());
-        assert!(starter.resolved_instruction().is_none());
+        assert!(starter.instruction.is_none() && starter.task.is_none());
         let rendered = starter.to_toml_string().expect("render");
         let parsed = ProjectConfig::from_toml_str(&rendered).expect("parse");
         assert_eq!(parsed.bucket, starter.bucket);
-    }
-
-    /// The instruction precedence is resolved in one place, so a transport
-    /// cannot invent its own ordering.
-    #[test]
-    fn the_project_instruction_beats_its_preset_and_a_blank_one_is_ignored() {
-        let explicit = ProjectConfig {
-            instruction: Some("Given a question, retrieve the answer.".into()),
-            task: Some(QueryTask::Symbol),
-            ..ProjectConfig::default()
-        };
-        assert_eq!(
-            explicit.resolved_instruction(),
-            Some("Given a question, retrieve the answer.")
-        );
-
-        let blank = ProjectConfig {
-            instruction: Some("   ".into()),
-            task: Some(QueryTask::Symbol),
-            ..ProjectConfig::default()
-        };
-        assert_eq!(
-            blank.resolved_instruction(),
-            Some(QueryTask::Symbol.instruction())
-        );
-
-        assert_eq!(ProjectConfig::default().resolved_instruction(), None);
     }
 }

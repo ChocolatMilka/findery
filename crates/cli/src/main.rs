@@ -18,7 +18,7 @@
 //! | `commands` | one module per command or family of commands |
 //! | `settings` | the settings file the CLI shares with the server, and the address resolved from it |
 //! | `workspace` | where the CLI stands: the project around the current directory, its manifest |
-//! | `ui` | everything a terminal shows |
+//! | `ui` | everything a terminal shows: palette, renderers, the live sync board |
 
 mod args;
 mod commands;
@@ -31,9 +31,19 @@ use clap::Parser;
 
 use args::Cli;
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("findery: cannot start the async runtime: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> std::process::ExitCode {
     let endpoint = match settings::endpoint::Endpoint::resolve(&cli) {
         Ok(endpoint) => endpoint,
         Err(e) => {

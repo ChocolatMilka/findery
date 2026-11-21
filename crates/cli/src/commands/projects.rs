@@ -1,6 +1,6 @@
-//! `findery status`, `findery projects`, `findery rm`, `findery doc` and
-//! `findery export` — what the server knows about a project, its removal, and
-//! the single documents and exports that go in and out of its index.
+//! `findery status`, `findery projects`, `findery doc` and `findery export` —
+//! what the server knows about a project, and the single documents and exports
+//! that go in and out of its index.
 
 use std::io::Read;
 
@@ -31,17 +31,6 @@ pub(crate) async fn list(client: &Client, json: bool) -> Result<()> {
     }
     let here = current_project(&list).map(|id| id.to_string());
     render::projects(&list, here.as_deref());
-    Ok(())
-}
-
-/// `findery rm`: the project, off the server.
-pub(crate) async fn rm(client: &Client, scope: &Scope) -> Result<()> {
-    let id = resolve(client, scope).await?;
-    if client.delete_project(&id).await? {
-        println!("removed {id}");
-    } else {
-        println!("nothing to remove");
-    }
     Ok(())
 }
 

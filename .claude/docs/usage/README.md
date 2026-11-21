@@ -43,6 +43,13 @@ mount to declare, no path translation. `FINDERY_WORKSPACES` is irrelevant here.
 | `findery health` | whether the index answers, and what it serves |
 | `FINDERY_NO_SPAWN=1` | forbid the automatic start (service manager, container) |
 
+`findery doctor` covers:
+
+- every model profile
+- what the server did on its own at boot (a bucket file renamed, or kept in
+  place and why)
+- every project with no vectors under its model yet
+
 `findery daemon start` / `stop` / `status` still exist for a service manager and
 for debugging — they are hidden from `--help`, because a tool that starts itself
 should not invite you to start it.
@@ -102,7 +109,7 @@ from one to the other costs a walk and no embedding at all.
 | What | Native | All-Docker |
 |------|--------|------------|
 | Model weights | volume `findery_hf-cache` | same |
-| Bucket + vectors | `$FINDERY_DATA_DIR/bucket.db`, default `%LOCALAPPDATA%/findery` (or `~/.local/share/findery`) | volume `findery_findery-data` |
+| Bucket + vectors | the default bucket's files, `$FINDERY_DATA_DIR/bucket.<model>-<tag>.db`, default `%LOCALAPPDATA%/findery` (or `~/.local/share/findery`); a project's own under its `.findery/` | volume `findery_findery-data` |
 | Exports | `$FINDERY_DATA_DIR/exports` | `/data/exports` in that volume |
 
 `finderyd --check` prints the configuration as actually resolved.
@@ -113,6 +120,20 @@ from one to the other costs a walk and no embedding at all.
 anyone anything. That is what makes a project a thing you can read, commit, and
 carry: a cloned repository arrives knowing which index it belongs to, and a
 command run three directories down finds it by walking up.
+
+The MCP bridge finds its project the same way, by the same code
+(`findery_client::resolve`):
+
+1. `-p` / `project`;
+2. this file, walked up;
+3. the deepest registered root holding the directory.
+
+Running `findery init` again re-sends everything the manifest declares — an
+emptied `[scopes]` or a removed `instruction` included — and the daemon applies
+it.
+
+Any other registration (the MCP `projects {action: "register"}`, a script
+posting a root) is a **merge**: what it leaves out is kept, bucket included.
 
 ```toml
 project = "axle"
@@ -133,6 +154,7 @@ langs = ["rust"]
 | `bucket.path` | where that index's file is. Relative paths resolve against the project root, so a committed manifest travels |
 | `scopes` | named restrictions a search can ask for by name — see below |
 | `instruction` / `task` | the retrieval intent this project's queries get by default |
+| `model` | the model profile this project is pinned to (`findery init --model <alias>`); absent, it follows the default model (§5) |
 
 `init` also writes `.findery/.gitignore` holding `*`, so the index is never
 committed by accident. An existing one is left alone — that file is yours.
@@ -144,26 +166,53 @@ share. `findery init` writes that back explicitly, so the file says what is
 true.
 
 **`init` re-reads before it writes.** Everything except the bucket survives a
-second `findery init`: your scopes and your instruction were written by hand,
-and re-registering must not be a way to lose them.
+second `findery init`: your scopes, your instruction and your model pin were
+written by hand, and re-registering must not be a way to lose them. `--model`
+replaces the pin; nothing else does.
 
-### Buckets — one index, one file
+### Buckets — one index, one file per model
 
-A **bucket** is one SQLite file holding projects, chunks, the vector cache and
-the full-text index. A daemon serves as many as it is pointed at, and they are
-completely independent.
+A **bucket** is an index: projects, chunks, the vector cache and the full-text
+index. A daemon serves as many as it is pointed at, and they are completely
+independent. On disk a bucket is **one SQLite file per model** that indexed
+it, named after its base path:
 
-| Where | Path |
-|-------|------|
-| inside the project *(the default)* | `<project>/.findery/bucket.db` |
-| a named, shared one | `<data_dir>/buckets/<name>/bucket.db` |
-| anywhere you say | whatever `bucket.path` holds |
+| Where | Base path | Files |
+|-------|-----------|-------|
+| inside the project *(the default)* | `<project>/.findery/bucket.db` | `.findery/bucket.<model>-<tag>.db` |
+| a named, shared one | `<data_dir>/buckets/<name>/bucket.db` | `buckets/<name>/bucket.<model>-<tag>.db` |
+| anywhere you say | whatever `bucket.path` holds | beside it, same pattern |
+
+`<model>` is readable (`harrier-oss-v1-0-6b`), `<tag>` is 8 characters that
+tell two vector spaces apart.
+
+A bucket file from before per-model files — `bucket.db` itself — is renamed to
+its model's name at the next start. When it cannot be (another process holds
+it), it keeps serving where it is and `findery doctor` says so.
 
 ```bash
-findery bucket ls                    # what each holds, its recipe, its path
-findery bucket create work           # a named one, ready to take projects
-findery bucket rm work --force       # projects and vectors go with it
+findery bucket ls                         # each bucket, and one line per file in it
+findery bucket create work                # a named one, ready to take projects
+findery bucket rm work --force            # projects and vectors go with it
+findery bucket rm axle --model qwen3      # only that model's file; the projects stay
 ```
+
+```text
+* default  C:/Users/u/AppData/Local/findery/bucket.db
+    no file yet — the first sync under a model creates its file
+  axle     D:/work/axle/.findery/bucket.db
+    harrier-oss-v1-0-6b-zvpmtsdf  harrier-oss-v1-0.6b:1024                  1 project  812 chunks   3.1 MB  serving
+    bucket.db                     text-embedding-qwen3-embedding-0.6b:1024  1 project  790 chunks   2.9 MB  legacy
+
+* default bucket · serving = the file of the default model (`findery model ls`)
+```
+
+The status column marks:
+
+- `serving` — the file the default model reads and writes
+- `legacy` — a `bucket.db` that could not be renamed yet
+- `conflict` — a file holding another model's vectors than its name says, with
+  the repair on the next line
 
 **A bucket is global when you point two projects at the same one** — that is
 all "shared" means here. A team index on a shared drive is one file and one
@@ -186,19 +235,23 @@ that file costs only the out-of-place ones.
 The choice is made **once**, at registration, and never named again.
 
 `findery bucket rm` refuses while the bucket still holds projects unless
-`--force` is passed, and it goes through the server because the server holds the
+`--force` is passed. It goes through the server because the server holds the
 file open — on Windows a SQLite file a live process has open cannot be removed
 at all.
 
-**When to reach for a shared bucket.**
+`--model <alias>` needs no `--force`:
 
-- **Two repositories that should not share a file** — a work index and a
-  personal one, a client's code and your own.
-- **A model change** — a new recipe can go in a new bucket, leaving the old
-  index intact and readable until you are ready to move.
+- it deletes that model's file only;
+- the projects stay on their other models;
+- the bucket's last file is refused (that is the bucket — remove it without
+  `--model`).
 
-What it is *not* for is search scoping — projects in one bucket still search
-together, and `-p <id>` narrows that.
+**When to reach for a separate bucket.** Two repositories that should not share
+a file: a work index and a personal one, a client's code and your own.
+
+A model change is *not* a reason: every bucket already keeps one file per model
+(§5). Nor is search scoping — projects in one bucket still search together, and
+`-p <id>` narrows that.
 
 ### Scopes — a named restriction on the same index
 
@@ -242,13 +295,14 @@ is restarted so it takes effect.
 `extensions` are short names for the common keys; everything else takes its
 dotted path.
 
-The precedence has three levels, narrowest last:
+Three sources, the last one winning. The two files never stack: the daemon
+reads one or the other.
 
-| | Read | Wins over |
-|---|---|---|
-| `/etc/findery/config.toml` | if it exists | nothing |
-| `<data_dir>/config.toml` | when the first does not | the packaged file |
-| `FINDERY_*` | always | both |
+| Source                     | Read                          | Wins over             |
+|----------------------------|-------------------------------|-----------------------|
+| `/etc/findery/config.toml` | if it exists                  | the built-in defaults |
+| `<data_dir>/config.toml`   | only when the first does not  | the built-in defaults |
+| `FINDERY_*`                | always                        | whichever file was read |
 
 The environment staying on top is deliberate: one container image has to serve
 every deployment. It is also why `findery config set` warns when a variable is
@@ -274,7 +328,7 @@ findery config set token  <the bearer token it asks for>
 confuse and mean different things, which is why each has its own short name
 rather than sharing one.
 
-A client resolves its address in this order, narrowest last:
+A client takes its address from the first layer that names one:
 
 | Layer | How |
 |---|---|
@@ -318,30 +372,94 @@ findery projects                   # all of them, current one marked *
 
 | Command | What it does |
 |---------|--------------|
-| `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,js,py` to choose extensions, `--bucket <name>` to choose its index, `--sync` to index it immediately |
+| `findery init [PATH]` | registers a directory. `--id` to name it, `--ext rs,md,js,py` to choose extensions, `--bucket <name>` to choose its index, `--model <alias>` to pin its model, `--sync` to index it immediately |
 | `findery sync` | incremental. `--full` ignores the metadata and hash gates (never the vector cache). `--path src/a.rs` targets files. `--background` returns a job id instead of waiting |
+| `findery search "…"` | hybrid search of the current project. `--task <name>` picks a retrieval intent, `--instruct` writes your own — §3 |
 | `findery jobs [id]` | what each background job is doing, and where a running one has got to |
-| `findery bucket ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves. `rm` needs `--force` while one holds projects |
+| `findery bucket ls` / `create <name>` / `rm <name>` | the independent indexes this daemon serves, one line per model file. `rm` needs `--force` while one holds projects; `rm <name> --model <alias>` deletes one model's file |
+| `findery model ls` / `show [alias]` / `use <alias>` | the model profiles, which one is the default, which projects use each — and the switch (§5) |
 | `findery watch` | re-syncs on file changes, debounced. `--off` stops it |
 | `findery doc add <path> --stdin` | indexes text with no file behind it — notes, decisions, generated docs |
 | `findery doc rm <path>` | drops one document |
 | `findery export --format binary` | vectors + metadata out of the index |
-| `findery rm` | removes a project, its chunks and its vectors |
+| `findery detach` | takes a project off the server and **keeps** its index: the files are closed, unlocked, and not reopened at the next start. `findery init` in the project attaches it again, instantly |
+| `findery rm` | **deletes** a project, its chunks and its vectors — and its bucket's files when no other project shares them. The manifest stays |
 | `findery health` | whether the index answers, and what it serves |
+
+### `detach` or `rm`
+
+Both stop the project's running sync and its watcher first, and both say which
+files they touched.
+
+```text
+$ findery detach
+detached axle — its index stays on disk
+  closed   D:/work/axle/.findery/
+             bucket.harrier-oss-v1-0-6b-zvpmtsdf.db
+             bucket.text-embedding-qwen3-embedding-0-6b-47m32eui.db
+  back     `findery init` in D:/work/axle re-attaches it; nothing is re-indexed
+
+$ findery rm
+removed axle — its chunks, vectors and bucket files
+  deleted  D:/work/axle/.findery/
+             bucket.harrier-oss-v1-0-6b-zvpmtsdf.db
+             bucket.text-embedding-qwen3-embedding-0-6b-47m32eui.db
+  kept     .findery/config.toml — `findery init` registers the project again
+```
+
+- **`detach`** — reach for it to move, back up or delete the files yourself:
+  after it, no findery process holds them.
+- **`rm`** — reach for it to be done with the index.
+
+A bucket another project still uses stays open on `detach` and keeps its files
+on `rm`; the answer names who shares it.
+
+Neither asks for confirmation, as `rm` never did; `bucket rm` is the one that
+wants `--force`.
+
+Either verb can answer `busy`:
+
+- **A sync that does not stop in time** — within `server.drain_timeout_secs`
+  (`FINDERY_DRAIN_TIMEOUT_SECS`, 15 s), either verb answers `busy`, naming the
+  job, with nothing changed.
+- **A file another process holds** — `rm` answers `busy` naming the file; the
+  next start finishes the removal before anything opens it.
 
 ### Watching a first index
 
-A first pass over a large repository takes minutes, so `findery sync` draws a
-bar on **stderr** while it runs:
+A first pass over a large repository takes minutes, so `findery sync` draws on
+**stderr** while it runs. While the walk runs, a count:
 
 ```text
-⠹ =>=============-------------- 612/2048 files · indexing · 4180 chunks · 1204 embedded / 2976 cached
+⠹ scanning… 4 120 files
 ```
 
-It is a bar and not a spinner because the denominator is real: the walk happens
-first, so `2048` is a count of files, not an estimate.
+then, once the plan is known, up to two bars — each drawn once it means
+something:
 
-The bar only exists when someone is watching — a terminal on stderr and no
+```text
+files =========>                   96/312 · 6 888 unchanged
+embed ===============>             1 541/2 300 · 5 937 cached · 38/s · ETA 0:20
+```
+
+- **`files`** — counts the files this pass reads. Gate 1 has already set aside
+  the unchanged ones, before the first read, so `312` is a count and not an
+  estimate, and a bar over an unchanged tree does not start at 96 %.
+- **`embed`** — counts the chunks the vector cache did not have, and moves with
+  every batch the runtime answers, not once per flush. Its ETA covers the
+  misses found so far.
+
+Three cases draw differently:
+
+- **A sync already running on the project** — `sync` follows **that** one and
+  says so — `attached to the running sync (started 12s ago)` — instead of
+  appearing to jump.
+- **A sync waiting behind others** — reads `queued — waiting for a slot`.
+- **A project in push mode** — draws the same board from its own walk: every
+  walked file is pending (the client has no gate 1), and the embedding count
+  has no denominator, since only the daemon knows the misses.
+
+The board only exists when someone is watching — a terminal on stderr and no
 `--json`. Piped or redirected, the run prints the same one-line summary it
 always did, which is what a script or a CI log can grep for.
 
@@ -362,12 +480,12 @@ reachable. `--sync` collapses the two.
 
 ### Retrieval intent — the cheapest accuracy you will get
 
-qwen3.7-text-embedding is instruction-aware: a task-tailored instruction buys 1-5%
-retrieval accuracy for the cost of one prefix on a string that was going to be
-embedded anyway.
+`qwen3.7-text-embedding` is instruction-aware: a task-tailored instruction buys
+1-5% retrieval accuracy for the cost of one prefix on a string that was going to
+be embedded anyway.
 
 ```bash
-findery search "QueryTask" --task symbol      # you have a name, you want its definition
+findery search "QueryTask" --task symbol            # you have a name, you want its definition
 findery search "retry_with_backoff" --task usage    # you want the call sites
 findery search "why rank fusion" --task docs        # rationale, not implementation
 ```
@@ -382,15 +500,17 @@ findery search "why rank fusion" --task docs        # rationale, not implementat
 | `config` | a setting, a flag, an environment variable |
 | `error` | a message, a panic, a diagnostic code |
 
-`--instruction "…"` (`--instruct` still works) overrides the preset with
-free-form text. Describe the TASK, not the query — restating the query
-duplicates signal the query already carries and performs worse than the
-default.
+`--task` also takes their aliases (`--task callers`). An unknown task,
+`--lang` or `--kind` is refused with the list of valid ones — never dropped.
 
-**The model reads a pair.** Qwen is handed `Instruct: <the task>\nQuery: <your
-question>`, and the two halves are separate all the way from the CLI or the MCP
-tool to the embedding request. Both are sent on every search: the instruction is
-the task, the query is the question, and neither is derived from the other.
+`--instruction "…"` (`--instruct`) overrides the preset with free-form text.
+Describe the TASK, not the query — restating the query duplicates signal the
+query already carries and performs worse than the default.
+
+**The model reads a pair.** Qwen and Harrier are handed `Instruct: <the
+task>\nQuery: <your question>` — the default `query_template`; a model with
+another format gets its own (§5). The two halves are separate all the way from
+the CLI or the MCP tool to the embedding request.
 
 The whole precedence, resolved once in L0 so no transport can invent its own
 ordering:
@@ -417,19 +537,27 @@ findery search "how do we avoid re-embedding" --mode vector
 Reach for `keyword` when you know the exact string, `vector` when the wording in
 the code is nothing like the wording in your head.
 
+When the vector half cannot run — the project was never synced under the model
+it now uses, or that model's runtime is down — `hybrid` still answers, from the
+keyword half, and prints one `findery: keyword results only: …` line on
+**stderr** naming the model and the fix. stdout (and `--json`) carries the hits
+as always. `--mode vector` fails instead.
+
 ### Filters — applied before scoring, not after
 
 ```bash
-findery search "cache" --path 'crates/store/**' --lang rust --kind method
+findery search "cache" --path 'crates/store/**' --lang rust --kind method --symbol cache
 ```
 
-| Flag     | Takes |
-|----------|-------|
+| Filter | Takes |
+|--------|-------|
 | `--path` | globs |
-| `--lang` | one of `rust markdown toml other` |
+| `--lang` | one of `rust markdown toml javascript python php json axle java kotlin go other` |
 | `--kind` | one of `file function method struct enum trait impl module macro test const doc_section text` |
+| `--symbol` | a substring the symbol must contain |
 
-A malformed glob is rejected, never silently matched against nothing.
+A malformed glob or an unknown value is rejected, never silently matched
+against nothing.
 
 ### Token budget
 
@@ -440,8 +568,14 @@ findery search "…" --max-chars 600    # per-excerpt ceiling — the strongest 
 findery search "…" -k 3               # fewer excerpts
 ```
 
-`k=8` at 1200 characters is roughly 2,500-3,500 tokens for a full answer.
-Truncation happens on a line boundary and is marked `… [truncated]`.
+`-k` defaults to the daemon's `search.default_k` (10).
+
+`k=8` at 1200 characters is roughly 2,500-3,500 tokens for a full answer
+(measured: `.claude/docs/mcp/README.md`). Truncation happens on a line boundary
+and is marked `… [truncated]`.
+
+The wait a sync request may ask for (`wait_ms`) is capped by
+`server.max_sync_wait_ms` (120000).
 
 ---
 
@@ -476,25 +610,27 @@ and **reported** in `warnings` — never dropped in silence.
 
 **Chunking quality differs by language.**
 
-| Files | What they get |
-|-------|---------------|
-| `.rs`, `.js`/`.ts`, `.py`, `.php`, `.axle`, `.java`, `.kt`/`.kts`, `.go` | a syntactic chunker (one chunk per item, with symbol and breadcrumb) |
+| Files | Chunker |
+|-------|---------|
+| `.rs`, `.js`/`.ts`, `.py`, `.php`, `.axle`, `.java`, `.kt`/`.kts` and `.go` | a syntactic chunker (one chunk per item, with symbol and breadcrumb) |
 | `.md` | a heading-based one |
 | `.json` | answers as one chunk while it fits `max_chars`, then splits per top-level member, each carrying its key |
 | `.toml` and everything else | fall back to line windows: usable, but with no symbol |
 
-Adding a real chunker for a language is a `Profile` in `findery-chunk` — its
-lexicon, its keyword table — one line in `Registry`, one entry in the default
-`extensions`, and one arm in `Lang`: see
-[`../chunk/README.md`](../chunk/README.md).
+Adding a real chunker for a language is:
+
+- a `Profile` in `findery-chunk` — its lexicon, its keyword table;
+- one line in `Registry`;
+- one entry in the default `extensions`;
+- one arm in `Lang`.
+
+See [`../chunk/README.md`](../chunk/README.md).
 
 **Line endings do not matter.** A `\r\n` is read as `\n` before chunking, so a
 Windows checkout and a Linux one of the same commit give the same chunks and
 the same content hashes: cloning a repository on the other OS costs no
-embedding.
-
-A file indexed before this rule re-embeds its chunks once, the next time it is
-chunked again (an edit, or `findery sync --full`).
+embedding. A file indexed before this rule re-embeds its chunks once, the next
+time it is chunked again (an edit, or `findery sync --full`).
 
 Global defaults for every project: `FINDERY_EXTENSIONS=rs,md,js,py` and
 `FINDERY_INCLUDE_HIDDEN=false`.
@@ -512,23 +648,102 @@ FINDERY_EMBED_MODEL=qwen3.7-text-embedding   FINDERY_EMBED_DIM=2560   # same mod
 FINDERY_EMBED_BASE_URL=https://api.openai.com   FINDERY_EMBED_API_KEY=sk-…
 ```
 
+### Model profiles — several models, one picked
+
+The configuration file can name several models. `[embedder]` is the implicit
+profile `embedder`; each `[models.<alias>]` states only what differs from it:
+
+```toml
+default_model = "harrier"             # which profile the daemon embeds with
+
+[embedder]
+base_url = "http://localhost:1234"    # LM Studio
+model = "text-embedding-qwen3-embedding-0.6b"
+dim = 1024
+
+[models.harrier]
+model = "harrier-oss-v1-0.6b"
+```
+
+| Setting | Variable | What it does |
+|---|---|---|
+| `default_model` | `FINDERY_MODEL` | the profile the daemon embeds with; absent or empty = `[embedder]`; an unknown alias refuses the boot and lists the known ones |
+| `[models.<alias>]` | — | a profile merged over `[embedder]`; a typo in it is refused like one in `[embedder]` |
+| `embedder.weights` | `FINDERY_EMBED_WEIGHTS` | the canonical name of the weights, replacing `model` in the recipe — two runtimes serving the same weights under two names then share vectors. A GGUF quantization is not the same weights |
+| `embedder.query_template` | `FINDERY_EMBED_QUERY_TEMPLATE` | how the model wants a query; must contain `{query}`, `{instruction}` optional. Default `Instruct: {instruction}\nQuery: {query}` |
+| `embedder.document_template` | `FINDERY_EMBED_DOCUMENT_TEMPLATE` | how it wants a document; must contain `{text}`. Default `{text}` |
+
+In a variable, a literal `\n` stands for a newline.
+
+A profile pointing at another `base_url` does **not** inherit `api_key` or the
+auth headers, and one naming another `model` does not inherit `weights` or the
+templates.
+
+A nomic-style model is pure configuration:
+
+```toml
+[models.nomic]
+base_url = "http://localhost:11434"
+model = "nomic-embed-text:latest"
+dim = 768
+query_template = "search_query: {query}"
+document_template = "search_document: {text}"
+```
+
+`config/findery.toml` ships `harrier` and `qwen3` for LM Studio, inert until
+selected. An alias is letters, digits, `-` and `_` — no `.`, because it is one
+segment of a dotted setting: `findery config set models.qwen3.dim 1024`.
+
+### Switching model — `findery model`
+
+```text
+$ findery model ls
+   ALIAS     MODEL                                 DIM  TAG       STATUS  USED BY
+   embedder  text-embedding-qwen3-embedding-0.6b  1024  47m32eui  idle    -
+*  harrier   harrier-oss-v1-0.6b                  1024  zvpmtsdf  ready   axle, smalt
+   qwen3     text-embedding-qwen3-embedding-0.6b  1024  47m32eui  idle    docs (pinned)
+
+* default — `findery model use <alias>` switches it now, re-embedding nothing
+```
+
+| Command | What it does |
+|---|---|
+| `findery model ls` | every profile: its model, width, recipe tag, `ready` / `idle` (not used yet) / `down`, and the projects using it now, pinned ones marked |
+| `findery model show [alias]` | one profile — the default when omitted: recipe, the file name its vectors live in, and why it is `down` |
+| `findery model use <alias>` | makes it the default **at once** — the next command uses it, no restart — and saves `default_model` in `<data_dir>/config.toml` so the next start keeps it |
+| `findery init --model <alias>` | pins one project to a profile, whatever the default; written to its manifest as `model = "…"` |
+
+An alias nobody defined is refused before anything changes, naming the known
+ones and the file to add `[models.<alias>]` to.
+
+Each model's vectors live in their own file of every bucket, so a switch moves
+nothing:
+
+- under a model a project was never synced with, a search answers keyword hits
+  with a `keyword results only` line until `findery sync` builds that model's
+  file;
+- switching back to a model already synced costs nothing at all.
+
+`FINDERY_MODEL` still wins over the saved `default_model` at the next start,
+and `model use` warns when it is set.
+
 Changing model or dimension opens a **new** cache namespace
-(`recipe = "<model>:<dim>"`). A bucket refuses to mix two recipes, and the
-refusal lands on the operation that would mix them — the sync, never the daemon
-boot.
+(`recipe = "<model>:<dim>"`, with `weights` standing in for the model when set,
+and `|doc=<fingerprint>` added by a non-default `document_template`). With no
+`weights` and no `document_template`, the recipe is exactly what it always
+was, so nothing already embedded is lost.
+
+A bucket refuses to mix two recipes, and the refusal lands on the operation
+that would mix them — the sync, never the daemon boot.
 
 That matters: a bucket built by another model still serves keyword search and
 can still be deleted, and a daemon that refused to start would take both of
 those down, including the `findery bucket rm` the message recommends.
 
-The remedies, in order of how much they cost you:
-
-1. Index the project into a **new bucket** (`findery init --bucket <name>`,
-   leaving the old index intact and readable).
-2. Point `FINDERY_DATA_DIR` at a fresh directory.
-3. Delete the bucket and re-index.
-
-`findery bucket ls` names the conflict on the bucket that carries it.
+A model switch never meets that refusal: each recipe has its own file. What
+does is a file whose content contradicts its name — renamed by hand, or a tag
+collision — and `findery bucket ls` names the conflict on the file that carries
+it, with its repair: rename the file back, or `findery bucket rm` and re-index.
 
 At boot the daemon sends one throwaway input and compares the returned width to
 `FINDERY_EMBED_DIM`. A mismatch is fatal — half a corpus at the wrong width is
@@ -610,7 +825,9 @@ the embedding runtime between them.
 | daemon does not answer | `make up-model` then `findery`; the error prints both lines |
 | every search returns 502 | the embedding runtime is down — `findery health` |
 | sync re-embeds everything | the recipe changed, or mtime is 0 on a mounted volume |
-| a sync is refused, naming two recipes | that bucket was built by another model — `findery bucket ls` names it; index into a new bucket, or `findery bucket rm` it |
+| a sync is refused, naming two recipes | a bucket file holds another model's vectors than its name says — `findery bucket ls` names it and its repair |
+| `keyword results only: …` after `findery model use` | that project was never synced under the new model — `findery sync`; `findery doctor` lists every such project |
+| `busy: …` on `detach` / `rm` | a sync did not stop in time, or another process holds the file — the message names which; nothing was changed |
 | search finds nothing that exists | not synced, or a filter is too strict — check `findery status` |
 | search returns another project's code | it is in the same bucket — buckets split indexes, `-p <id>` narrows within one |
 | hits cite unopenable paths | all-Docker mode without the matching `FINDERY_MOUNTS` entry |
