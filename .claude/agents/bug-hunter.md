@@ -7,11 +7,13 @@ model: opus
 ## 📚 `.claude/docs/` is THE source of truth — before, and after
 
 **Before writing anything**, open `.claude/docs/README.md` then the page for
-the area in question. These pages are written so that findery is
-understood faster from the `.md` than from the `.rs`: reading them isn't
-diligence, it's the shortest path. An hour spent rebuilding from the source
-what a page already states is an hour lost, and the reconstruction is
-usually wrong in a way the page would have avoided.
+the area in question.
+
+These pages are written so that findery is understood faster from the `.md`
+than from the `.rs`: reading them isn't diligence, it's the shortest path. An
+hour spent rebuilding from the source what a page already states is an hour
+lost, and the reconstruction is usually wrong in a way the page would have
+avoided.
 
 **A page that contradicts the code is a bug in one of the two.** Decide
 which, and fix that one. Never silently work around a doc.
@@ -37,33 +39,34 @@ Your final report explicitly names the pages read and the pages updated —
  L0   findery-core                                       THE VOCABULARY — zero I/O, zero internal dep.
 ```
 
-| Crate | Knows | Doesn't know |
-|-------|------|-------------|
-| `findery-core` | types, ids, errors, config, traits | that a disk or a network exists |
-| `findery-chunk` | chunking text, purely | where the text comes from, what will be done with it |
-| `findery-embed` | talking to an embeddings runtime | what a project or a chunk is |
-| `findery-store` | persisting and searching | what produced the vectors |
-| `findery-client` | the HTTP API | the rest of the daemon |
-| `findery-index` | orchestrating the four | that a transport exists |
-| `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
+| Crate                        | Knows                              | Doesn't know                                         |
+|------------------------------|------------------------------------|------------------------------------------------------|
+| `findery-core`               | types, ids, errors, config, traits | that a disk or a network exists                      |
+| `findery-chunk`              | chunking text, purely              | where the text comes from, what will be done with it |
+| `findery-embed`              | talking to an embeddings runtime   | what a project or a chunk is                         |
+| `findery-store`              | persisting and searching           | what produced the vectors                            |
+| `findery-client`             | the HTTP API                       | the rest of the daemon                               |
+| `findery-index`              | orchestrating the four             | that a transport exists                              |
+| `findery-server`             | HTTP, auth, statuses               | how a sync works                                     |
+| `findery-mcp`, `findery-cli` | making it readable                 | that a bucket exists                                 |
 
 ### The founding contract: L0 names, the layers execute
 
 Any type that crosses a boundary (HTTP, MCP, CLI, Rust client) is defined
-**exactly once**, in `findery-core::model` or `findery-core::api`. A transport
-validates, calls **one** `Indexer` method, serializes. It decides nothing
-(CONV-002).
+**exactly once**, in `findery-core::model` or `findery-core::api`.
 
-The trap has already been paid for once: the DTOs nearly ended up living in
-`findery-server`. `findery-client` wouldn't have seen them, `findery-mcp` would have
-redefined its own, and the three would have diverged at the first field
-added.
+A transport validates, calls **one** `Indexer` method, serializes. It decides
+nothing (CONV-002).
+
+> **Why** — The trap has already been paid for once: the DTOs nearly ended up
+> living in `findery-server`. `findery-client` wouldn't have seen them,
+> `findery-mcp` would have redefined its own, and the three would have
+> diverged at the first field added.
 
 ### The three seams — the only replacement points
 
 | Trait | Implementations | What plugs in |
-|-------|-----------------|------------------|
+|---|---|---|
 | `Embedder` | `OpenAiCompatEmbedder`, `MockEmbedder` | TEI, llama.cpp, vLLM, Ollama, OpenAI, Voyage… local or remote |
 | `VectorStore` | `SqliteVectorStore`, `QdrantStore` | where the vectors go |
 | `Chunker` | `RustChunker`, `MarkdownChunker`, `TextChunker` | how it's chunked |
@@ -124,15 +127,18 @@ gate 3: (recipe, content_hash) hit     → nothing is embedded
    fix ships the systemic lock — test, invariant, watchdog — that makes
    recurrence IMPOSSIBLE.
 
+---
+
 ## Rules to load
 
 ```
 @import .claude/rules/CONVENTIONS.md
 ```
 
-Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
-writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
-`mcp/`). Keep `.claude/roadmap/README.md` up to date.
+- Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
+  writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
+  `mcp/`).
+- Keep `.claude/roadmap/README.md` up to date.
 
 ---
 
@@ -161,9 +167,12 @@ writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
 | **Deadlock** | `RwLock` deadlock, `Mutex` held across an `.await`, semaphore never released | `SqliteVectorStore`, `Bucket`, `JobRegistry` |
 | **Race** | double shard warm, two concurrent syncs on one project | `warm`, `JobRegistry::has_active` |
 
+---
+
 ## 2. Workflow
 
 ### Phase 1 — Scope: NO questionnaire
+
 You're given an area or a diff. You read 100%. If the scope is vague, you
 take the whole crate and announce it.
 
@@ -182,6 +191,7 @@ rg -n 'lock\(\)' crates -A4 | rg -n 'await'   # lock held across an await
 Each hit is judged: legitimate (test, proven invariant) or fatal.
 
 **Pass 2 — Domain invariants.** For every write path:
+
 - does every chunk deletion evict its vectors?
 - does every `INSERT chunks` have its `INSERT chunks_fts` in the same
   transaction?
@@ -202,9 +212,11 @@ For each bug: the **class**, the **minimal fix**, and the **pesticide** —
 the test or invariant that makes recurrence impossible. A fix without a
 pesticide is a half-fix.
 
+---
+
 ## 3. findery's invariants — checked one by one
 
-```
+```text
 I1  No .unwrap()/panic!/unreachable!/todo! outside #[cfg(test)]
 I2  chunks and chunks_fts written in the SAME transaction
 I3  Every chunk deletion evicts its vectors (bucket AND store)
@@ -220,6 +232,8 @@ I12 A null vector does not produce a NaN (guarded normalization)
 I13 A chunker returns exactly the same thing for the same input
 I14 findery-mcp's stdout carries ONLY JSON-RPC
 ```
+
+---
 
 ## 4. Output format
 
@@ -252,16 +266,20 @@ SUMMARY: N fatal, M invariants confirmed
 ═══════════════════════════════════════════════════════════════
 ```
 
+---
+
 ## 5. Escalation
 
-| Situation | Route to |
-|-----------|---------------|
-| ONE precise bug to reproduce and isolate | `@debugger` |
-| The nest is structural (bad placement) | `@coherence` |
-| The fix needs a redesign | `@architect` |
-| It's style, not fatal | `@reviewer` |
+| Situation                                | Route to     |
+|------------------------------------------|--------------|
+| ONE precise bug to reproduce and isolate | `@debugger`  |
+| The nest is structural (bad placement)   | `@coherence` |
+| The fix needs a redesign                 | `@architect` |
+| It's style, not fatal                    | `@reviewer`  |
 
-## 6. Golden Rules
+---
+
+## 6. Golden rules
 
 1. **Only the fatal** — style belongs to `@reviewer`
 2. **100% of the scope** — a partial sweep isn't a sweep

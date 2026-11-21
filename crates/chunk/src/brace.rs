@@ -1,22 +1,27 @@
 //! The pipeline every brace-delimited language shares.
 //!
-//! INTENT: Rust, JavaScript, PHP and JSON differ in their keywords and their
-//! trivia, not in the shape of an item. Writing that pipeline once — split,
-//! classify, recurse into an oversized container, window what is still too big
-//! — is what keeps a fix to item boundaries a fix for every language at once
-//! (CONV-024: the chunker splits, and nothing else).
+//! INTENT: Rust, JavaScript, PHP, Axle, Java, Kotlin and Go differ in
+//! their keywords and their trivia, not in the shape of an item. Writing that
+//! pipeline once — split, classify, recurse into an oversized container, window
+//! what is still too big — is what keeps a fix to item boundaries a fix for
+//! every language at once (CONV-024: the chunker splits, and nothing else).
+//! Reading one item's header is [`crate::header`]'s job.
 
+use crate::header::split_trivia;
 use crate::items::{LineIndex, Span, body_span, split_items};
-use crate::scanner::Lexicon;
-use crate::sizing::{drop_empty, merge_small, split_windows};
+use crate::scanner::{Lexicon, is_comment_at, skip_opaque};
+use crate::sizing::{MAX_NESTING, drop_empty, merge_small, split_windows, within_budget};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, RawChunk};
 
 /// What the header of an item says about it.
 pub(crate) struct ItemMeta {
+    /// What the item declares.
     pub kind: ChunkKind,
+    /// The name it declares, when it names one.
     pub symbol: Option<String>,
+    /// It is a test, or holds only tests.
     pub is_test: bool,
 }
 
@@ -25,9 +30,11 @@ pub(crate) trait Profile {
     /// The language's lexical trivia.
     fn lexicon(&self) -> &'static Lexicon;
 
-    /// Reads the kind and the symbol out of one item's text. `nested` says the
-    /// item sits inside a container, which is what makes a `Method` a method.
-    fn classify(&self, item: &str, nested: bool) -> ItemMeta;
+    /// Reads the kind and the symbol out of one item's text. `parent` is the
+    /// kind of the container the item sits in, which is what makes a
+    /// `Method` a method — and a Java `URL(String s) {}` a constructor in a
+    /// class but a constant in an enum.
+    fn classify(&self, item: &str, parent: Option<ChunkKind>) -> ItemMeta;
 
     /// The file preamble — module docs, a shebang, `<?php` — and the chunk it
     /// becomes. Returns where the items start, and the chunk, if any.
@@ -43,6 +50,20 @@ pub(crate) trait Profile {
         )
     }
 
+    /// Whether a member of this kind is split whenever its parent is, however
+    /// small it is: a group that only gathers members under a condition — an
+    /// Axle `when T : Bound { … }` — must not hide them inside one chunk, where
+    /// they would lose their `Method` kind and their symbols.
+    fn splits_with_parent(&self, _kind: ChunkKind) -> bool {
+        false
+    }
+
+    /// The members of a declaration group that is split at any size — Go's
+    /// `type ( … )` — or `None` when `item` is no such group.
+    fn group_body(&self, _src: &str, _item: Span) -> Option<Span> {
+        None
+    }
+
     /// The kind a member takes once it sits inside a parent.
     fn nested_kind(&self, kind: ChunkKind) -> ChunkKind {
         if kind == ChunkKind::Function {
@@ -51,6 +72,25 @@ pub(crate) trait Profile {
             kind
         }
     }
+}
+
+/// The container a member is emitted from.
+struct Parent {
+    /// Its breadcrumb, which prefixes its members'. A group adds none: the
+    /// types of a `type ( … )` are named as if declared one by one.
+    label: Option<String>,
+    kind: ChunkKind,
+    is_test: bool,
+    /// How many containers enclose its members: 1 for a top-level parent.
+    depth: usize,
+}
+
+/// One item, classified: what its chunks will carry.
+struct Classified {
+    kind: ChunkKind,
+    symbol: Option<String>,
+    breadcrumb: Option<String>,
+    is_test: bool,
 }
 
 /// The fixed inputs of one chunking pass, carried together so a recursive call
@@ -77,7 +117,9 @@ pub(crate) fn chunk_with(
     let lex = profile.lexicon();
     let mut out = Vec::new();
     let (start, head) = profile.preamble(src, path, &index);
-    out.extend(head);
+    if let Some(head) = head {
+        out.extend(within_budget(head, cfg));
+    }
     let emitter = Emitter {
         src,
         index: &index,
@@ -85,243 +127,186 @@ pub(crate) fn chunk_with(
         profile,
         lex,
     };
-    for item in split_items(
-        src,
-        Span {
-            start,
-            end: src.len(),
-        },
-        lex,
-    ) {
-        emitter.emit_item(item, None, false, &mut out);
+    let file = Span {
+        start,
+        end: src.len(),
+    };
+    for item in split_items(src, file, lex) {
+        emitter.emit_item(item, None, &mut out);
     }
     Ok(merge_small(drop_empty(out), cfg))
 }
 
 impl Emitter<'_> {
     /// Emits one item, recursing into a container body that exceeds the budget.
-    fn emit_item(
-        &self,
-        item: Span,
-        parent: Option<&str>,
-        parent_is_test: bool,
-        out: &mut Vec<RawChunk>,
-    ) {
-        let body_text = item.slice(self.src);
-        if body_text.trim().is_empty() {
+    fn emit_item(&self, item: Span, parent: Option<&Parent>, out: &mut Vec<RawChunk>) {
+        let item_text = item.slice(self.src);
+        if item_text.trim().is_empty() {
             return;
         }
-        let meta = self.profile.classify(body_text, parent.is_some());
-        let is_test = parent_is_test || meta.is_test;
-        if is_test && !self.cfg.include_tests {
+        let meta = self.profile.classify(item_text, parent.map(|p| p.kind));
+        let item_kind = meta.kind;
+        let this = self.classified(meta, parent);
+        if this.is_test && !self.cfg.include_tests {
             return;
         }
-
-        let kind = if is_test {
-            ChunkKind::Test
-        } else if parent.is_some() {
-            self.profile.nested_kind(meta.kind)
-        } else {
-            meta.kind
-        };
-        let breadcrumb = match (parent, &meta.symbol) {
-            (Some(p), Some(s)) => Some(format!("{p} > {s}")),
-            (Some(p), None) => Some(p.to_string()),
-            (None, Some(s)) => Some(s.clone()),
-            (None, None) => None,
-        };
-        let start_line = self.index.line_of(item.start);
-
-        if self.profile.recursable(meta.kind)
-            && body_text.len() > self.cfg.max_chars
-            && let Some(body) = body_span(self.src, item, self.lex)
-        {
+        if let Some((body, is_group)) = self.body_to_split(item, item_kind, parent) {
             let children = split_items(self.src, body, self.lex);
             if !children.is_empty() {
-                let label = breadcrumb.clone().unwrap_or_else(|| "?".into());
-                for child in children {
-                    self.emit_item(child, Some(&label), is_test, out);
-                }
+                let label = match is_group {
+                    true => parent.and_then(|p| p.label.clone()),
+                    false => Some(this.breadcrumb.clone().unwrap_or_else(|| "?".into())),
+                };
+                let container = Parent {
+                    label,
+                    kind: item_kind,
+                    is_test: this.is_test,
+                    depth: parent.map_or(1, |p| p.depth + 1),
+                };
+                // The header — doc comment, annotations, supertypes, up to the
+                // `{` — is content no member carries: it gets its chunk.
+                let header = Span {
+                    start: item.start,
+                    end: body.start,
+                };
+                self.emit_container(header, &children, this, &container, out);
                 return;
             }
         }
+        self.emit_leaf(item, this, out);
+    }
 
-        if body_text.len() <= self.cfg.max_chars {
-            out.push(RawChunk {
-                kind,
-                symbol: meta.symbol,
-                breadcrumb,
+    /// Stamps the item's kind and breadcrumb from what its parent is.
+    fn classified(&self, meta: ItemMeta, parent: Option<&Parent>) -> Classified {
+        let is_test = parent.is_some_and(|p| p.is_test) || meta.is_test;
+        let kind = match (is_test, parent) {
+            (true, _) => ChunkKind::Test,
+            (false, Some(_)) => self.profile.nested_kind(meta.kind),
+            (false, None) => meta.kind,
+        };
+        let label = parent.and_then(|p| p.label.as_deref());
+        let breadcrumb = match (label, &meta.symbol) {
+            (Some(label), Some(s)) => Some(format!("{label} > {s}")),
+            (Some(label), None) => Some(label.to_string()),
+            (None, Some(s)) => Some(s.clone()),
+            (None, None) => None,
+        };
+        Classified {
+            kind,
+            symbol: meta.symbol,
+            breadcrumb,
+            is_test,
+        }
+    }
+
+    /// The body to split `item` into, and whether it is a group: a group is
+    /// split at any size, any other container once it is too big — and none
+    /// past [`MAX_NESTING`], where what is left is windowed as one leaf.
+    fn body_to_split(
+        &self,
+        item: Span,
+        kind: ChunkKind,
+        parent: Option<&Parent>,
+    ) -> Option<(Span, bool)> {
+        if parent.is_some_and(|p| p.depth >= MAX_NESTING) {
+            return None;
+        }
+        if let Some(group) = self.profile.group_body(self.src, item) {
+            return Some((group, true));
+        }
+        let oversized = item.slice(self.src).len() > self.cfg.max_chars;
+        let with_parent = parent.is_some() && self.profile.splits_with_parent(kind);
+        let wanted = self.profile.recursable(kind) && (oversized || with_parent);
+        let body = wanted
+            .then(|| body_span(self.src, item, self.lex))
+            .flatten()?;
+        Some((body, false))
+    }
+
+    /// Emits a split container: its header, then each member below it.
+    fn emit_container(
+        &self,
+        header: Span,
+        children: &[Span],
+        this: Classified,
+        container: &Parent,
+        out: &mut Vec<RawChunk>,
+    ) {
+        let bare_test = this.is_test && !self.documents(header);
+        let first = out.len();
+        self.emit_leaf(header, this, out);
+        let header_is_one_chunk = out.len() == first + 1;
+        for child in children {
+            self.emit_item(*child, Some(container), out);
+        }
+        if bare_test && header_is_one_chunk {
+            fold_next_into_header(out, first, self.cfg);
+        }
+    }
+
+    /// Whether the trivia of `span` holds a comment — a doc worth a chunk.
+    fn documents(&self, span: Span) -> bool {
+        let (trivia, _) = split_trivia(span.slice(self.src), self.lex);
+        let bytes = trivia.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if is_comment_at(bytes, i, self.lex) {
+                return true;
+            }
+            i = skip_opaque(bytes, i, self.lex).map_or(i + 1, |next| next.max(i + 1));
+        }
+        false
+    }
+
+    /// Emits `span` as one chunk, or as line windows when it is too big.
+    fn emit_leaf(&self, span: Span, this: Classified, out: &mut Vec<RawChunk>) {
+        let text = span.slice(self.src);
+        let start_line = self.index.line_of(span.start);
+        match text.len() <= self.cfg.max_chars {
+            true => out.push(RawChunk {
+                kind: this.kind,
+                symbol: this.symbol,
+                breadcrumb: this.breadcrumb,
                 start_line,
-                end_line: self.index.line_of(item.end.saturating_sub(1)),
-                text: body_text.trim_end().to_string(),
-            });
-        } else {
-            out.extend(split_windows(
-                body_text,
+                end_line: self.index.line_of(span.end.saturating_sub(1)),
+                text: text.trim_end().to_string(),
+            }),
+            false => out.extend(split_windows(
+                text,
                 start_line,
-                kind,
-                meta.symbol,
-                breadcrumb,
+                this.kind,
+                this.symbol,
+                this.breadcrumb,
                 self.cfg,
-            ));
+            )),
         }
     }
 }
 
-/// Returns `(trivia, code)`: everything up to the first byte that is not a
-/// comment, an attribute, a decorator or whitespace, and the rest.
+/// Folds the anonymous member chunk after the header at `at` into it — the
+/// `use super::*;` a test module opens on.
 ///
-/// INTENT: a scanner, not a line loop. Several attributes may share a line with
-/// each other and with the item they document — `#[ignore] #[test] fn t() {}` is
-/// one item, tested, named `t` — and only a byte-wise walk gets that right. The
-/// trivia is read for the item's `kind`, its symbol and its `test` flag; the
-/// item's TEXT is its whole span either way.
-pub(crate) fn split_trivia<'a>(item: &'a str, lex: &Lexicon) -> (&'a str, &'a str) {
-    let bytes = item.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b.is_ascii_whitespace() {
-            i += 1;
-            continue;
+/// INTENT: the header of an undocumented test module — `#[cfg(test)]` over
+/// `mod tests {` — carries nothing a search wants on its own, and as a chunk
+/// of its own it is a 25-byte hit that answers nothing. Joined to its first
+/// member it keeps every word and costs no chunk. A member that names
+/// something is left alone: folding would drop one of the two names, and a
+/// name is never merged away.
+fn fold_next_into_header(out: &mut Vec<RawChunk>, at: usize, cfg: &ChunkConfig) {
+    let foldable = match (out.get(at), out.get(at + 1)) {
+        (Some(header), Some(next)) => {
+            next.symbol.is_none() && header.text.len() + 1 + next.text.len() <= cfg.max_chars
         }
-        if lex.attributes && starts_with(bytes, i, b"#[") {
-            match balanced_at(bytes, i + 1, lex, ATTRIBUTE_BRACKETS) {
-                Some(end) => i = end,
-                // An attribute that never closes swallows the rest of the item.
-                None => return (item, &item[item.len()..]),
-            }
-            continue;
-        }
-        if lex.attributes && starts_with(bytes, i, b"#![") {
-            match balanced_at(bytes, i + 2, lex, ATTRIBUTE_BRACKETS) {
-                Some(end) => i = end,
-                None => return (item, &item[item.len()..]),
-            }
-            continue;
-        }
-        if lex.decorators && b == b'@' {
-            i = decorator_end(bytes, i, lex);
-            continue;
-        }
-        // Before the line comments is impossible here: `#[…]` was handled
-        // above, and every other `#` really is a comment.
-        let is_comment = lex
-            .line_comments
-            .iter()
-            .any(|open| starts_with(bytes, i, open.as_bytes()))
-            || lex
-                .block_comment
-                .as_ref()
-                .is_some_and(|bc| starts_with(bytes, i, bc.open.as_bytes()));
-        if is_comment && let Some(next) = crate::scanner::skip_opaque(bytes, i, lex) {
-            i = next.min(bytes.len());
-            continue;
-        }
-        break;
+        _ => false,
+    };
+    if !foldable {
+        return;
     }
-    (&item[..i], &item[i..])
-}
-
-/// Whether `needle` sits at `i`.
-fn starts_with(bytes: &[u8], i: usize, needle: &[u8]) -> bool {
-    bytes[i..].starts_with(needle)
-}
-
-/// The pairs an attribute's argument list is written with.
-const ATTRIBUTE_BRACKETS: &[(u8, u8)] = &[(b'[', b']')];
-
-/// The pairs a decorator's argument list is written with.
-const DECORATOR_BRACKETS: &[(u8, u8)] = &[(b'(', b')'), (b'[', b']'), (b'{', b'}')];
-
-/// The offset just past the construct opened at `start`, or `None` when it
-/// never closes before the end of the input.
-///
-/// INTENT: the count runs through [`crate::scanner::skip_opaque`], so a bracket
-/// inside a string — `@Route('/', methods: ['GET'])`, `#[doc = "a ] b"]` — is
-/// not a bracket at all, and a list may span several lines.
-fn balanced_at(bytes: &[u8], start: usize, lex: &Lexicon, pairs: &[(u8, u8)]) -> Option<usize> {
-    let mut i = start;
-    let mut depth = 0isize;
-    while i < bytes.len() {
-        if let Some(next) = crate::scanner::skip_opaque(bytes, i, lex) {
-            i = next.min(bytes.len());
-            continue;
-        }
-        if pairs.iter().any(|(open, _)| *open == bytes[i]) {
-            depth += 1;
-        } else if pairs.iter().any(|(_, close)| *close == bytes[i]) {
-            depth -= 1;
-            if depth <= 0 {
-                return Some(i + 1);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// The offset just past a decorator starting at `@`: its name, then its
-/// argument list when it has one. `@sealed class X` is a decorator followed by
-/// code, not two lines of trivia.
-fn decorator_end(bytes: &[u8], i: usize, lex: &Lexicon) -> usize {
-    let mut name = i + 1;
-    while bytes
-        .get(name)
-        .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$' | b'.'))
-    {
-        name += 1;
-    }
-    if name == i + 1 {
-        return name; // a lone `@`: not a decorator, let the caller decide
-    }
-    let mut args = name;
-    while bytes
-        .get(args)
-        .is_some_and(|c| c.is_ascii_whitespace() && *c != b'\n')
-    {
-        args += 1;
-    }
-    match bytes.get(args) {
-        Some(b'(') | Some(b'[') | Some(b'{') => {
-            balanced_at(bytes, args, lex, DECORATOR_BRACKETS).unwrap_or(bytes.len())
-        }
-        _ => name,
-    }
-}
-
-/// Reads a kind and a symbol out of a header using a keyword table.
-///
-/// INTENT: the token AFTER the keyword names the item. Scanning the header for
-/// the first keyword — rather than parsing it — is what makes `export default
-/// async function`, `public static function` and `abstract class` one rule.
-pub(crate) fn keyword_header(
-    header: &str,
-    table: &[(&str, ChunkKind)],
-) -> (ChunkKind, Option<String>) {
-    // Generic parameter lists are blown apart so that `impl<'a>` tokenizes as
-    // `impl`, and `struct Foo<T>` as `struct` + `Foo`.
-    let cleaned = header.replace(['(', ')', ',', '<', '>'], " ");
-    let mut toks = cleaned.split_whitespace();
-    while let Some(tok) = toks.next() {
-        if let Some((_, kind)) = table.iter().find(|(kw, _)| *kw == tok) {
-            return (*kind, next_ident(toks.next()));
-        }
-    }
-    (ChunkKind::Text, None)
-}
-
-/// Keeps the identifier part of a token: `Foo<T>` -> `Foo`, `X:` -> `X`.
-///
-/// A backslash belongs to it and to nothing else: `namespace App\Http` is one
-/// name, and no other language puts a `\` in an identifier.
-pub(crate) fn next_ident(tok: Option<&str>) -> Option<String> {
-    let raw = tok?;
-    let ident: String = raw
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '\\')
-        .collect();
-    if ident.is_empty() { None } else { Some(ident) }
+    let next = out.remove(at + 1);
+    let header = &mut out[at];
+    header.text.push('\n');
+    header.text.push_str(&next.text);
+    header.end_line = next.end_line;
 }
 
 /// The line offset where a leading `//!` / `#![…]` preamble ends.
@@ -363,100 +348,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trivia_stops_at_the_first_line_of_code() {
-        let item = "/// Doc.\n// plain\n#[derive(Debug)]\nstruct S {\n    a: u8,\n}\n";
-        let (trivia, code) = split_trivia(item, &Lexicon::RUST);
-        assert!(trivia.ends_with("#[derive(Debug)]\n"));
-        assert!(code.starts_with("struct S"));
-    }
-
-    #[test]
-    fn a_php_hash_comment_is_trivia_but_an_attribute_is_too() {
-        let item = "# a comment\n#[Attr]\nclass C {}\n";
-        let (trivia, code) = split_trivia(item, &Lexicon::PHP);
-        assert!(trivia.contains("# a comment"));
-        assert!(trivia.contains("#[Attr]"));
-        assert!(code.starts_with("class C"));
-    }
-
-    #[test]
     fn a_multi_line_attribute_stays_in_the_preamble() {
         let src =
             "//! Module docs.\n#![cfg_attr(\n    test,\n    allow(dead_code)\n)]\n\nfn a() {}\n";
         let end = inner_doc_preamble_end(src);
         assert!(src[..end].contains("allow(dead_code)"));
         assert!(!src[..end].contains("fn a"));
-    }
-
-    #[test]
-    fn a_decorator_with_braced_arguments_stays_trivia() {
-        let item = "@Component({\n    selector: 'app-widget',\n    template: 'a ] b'\n})\nexport class Widget {\n    render() {}\n}\n";
-        let (trivia, code) = split_trivia(item, &Lexicon::JAVASCRIPT);
-        assert!(trivia.contains("selector"), "got {trivia:?}");
-        assert!(trivia.contains(')'), "got {trivia:?}");
-        assert!(code.starts_with("export class Widget"), "got {code:?}");
-    }
-
-    #[test]
-    fn an_attribute_sharing_its_line_with_the_item_does_not_eat_it() {
-        // `#[inline] fn f() {}`: the attribute is trivia, the declaration that
-        // follows it is not — reading the whole line as trivia loses the item.
-        let item = "#[inline]\nfn a() {}\n";
-        let (trivia, code) = split_trivia(item, &Lexicon::RUST);
-        assert_eq!(trivia, "#[inline]\n");
-        assert!(code.starts_with("fn a"), "got {code:?}");
-
-        let item = "#[inline] pub fn a() { 1 }\n";
-        let (trivia, code) = split_trivia(item, &Lexicon::RUST);
-        assert_eq!(trivia.trim_end(), "#[inline]");
-        assert!(code.trim_start().starts_with("pub fn a"), "got {code:?}");
-
-        let item = "@Component() class Widget {}\n";
-        let (trivia, code) = split_trivia(item, &Lexicon::JAVASCRIPT);
-        assert_eq!(trivia.trim_end(), "@Component()");
-        assert!(
-            code.trim_start().starts_with("class Widget"),
-            "got {code:?}"
-        );
-    }
-
-    #[test]
-    fn every_trivia_of_a_shared_line_is_read() {
-        // The test flag is read from the trivia, so a second attribute sharing
-        // the line must be trivia too — otherwise `include_tests = false` keeps
-        // a test it promised to drop.
-        let (trivia, code) = split_trivia("#[ignore] #[test] fn t() {}\n", &Lexicon::RUST);
-        assert!(trivia.contains("#[ignore]"), "got {trivia:?}");
-        assert!(trivia.contains("#[test]"), "got {trivia:?}");
-        assert!(code.trim_start().starts_with("fn t"), "got {code:?}");
-
-        // A decorator with no argument list ends at its name.
-        let (trivia, code) = split_trivia("@sealed class Foo {}\n", &Lexicon::JAVASCRIPT);
-        assert_eq!(trivia.trim_end(), "@sealed");
-        assert!(code.trim_start().starts_with("class Foo"), "got {code:?}");
-    }
-
-    #[test]
-    fn a_multi_line_attribute_counts_no_bracket_inside_a_string() {
-        let item = "#[doc = \"a ] b\"]\nfn a() {}\n";
-        let (trivia, code) = split_trivia(item, &Lexicon::RUST);
-        assert!(trivia.contains("doc"), "got {trivia:?}");
-        assert!(code.starts_with("fn a"), "got {code:?}");
-    }
-
-    #[test]
-    fn the_keyword_after_the_modifiers_names_the_item() {
-        let table = &[
-            ("function", ChunkKind::Function),
-            ("class", ChunkKind::Struct),
-        ];
-        assert_eq!(
-            keyword_header("export default async function boot ", table),
-            (ChunkKind::Function, Some("boot".into()))
-        );
-        assert_eq!(
-            keyword_header("public static function render ", table),
-            (ChunkKind::Function, Some("render".into()))
-        );
     }
 }

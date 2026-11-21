@@ -3,16 +3,18 @@
 ## The principle
 
 No model is compiled into the binary. The backend, the URL, the route, the
-auth header, the model name, and the vector width are **all** data. The
-defaults describe the bundled Qwen3 container — pointing `base_url` at
+auth header, the model name, and the vector width are **all** data.
+
+The defaults describe the bundled Qwen3 container — pointing `base_url` at
 `api.openai.com`, at a remote TEI behind TLS, or at the Ollama on the
 machine next door is a config change, not code.
 
 A single HTTP client (`OpenAiCompatEmbedder`) covers everything that serves
 `/v1/embeddings`: TEI, llama.cpp, vLLM, Ollama, LM Studio, Infinity, OpenAI,
-Voyage, Jina, Azure. It accepts **two** response shapes — the OpenAI
-envelope and TEI's bare `/embed` matrix — because the same code has to talk
-to both.
+Voyage, Jina, Azure.
+
+It accepts **two** response shapes — the OpenAI envelope and TEI's bare
+`/embed` matrix — because the same code has to talk to both.
 
 ## Typical configurations
 
@@ -37,9 +39,10 @@ Instruct: {task}
 Query: {question}
 ```
 
-on the **query** side, and raw text on the **document** side. Prefixing the
-documents too costs a few MTEB points and, worse, doubles the blast radius
-of a prompt change: every stored vector would need recomputing.
+on the **query** side, and raw text on the **document** side.
+
+Prefixing the documents too costs a few MTEB points and, worse, doubles the
+blast radius of a prompt change: every stored vector would need recomputing.
 
 The formatting lives in `findery_core::prompt` (CONV-012). Nobody concatenates
 `"Instruct: "` anywhere else.
@@ -48,38 +51,45 @@ The formatting lives in `findery_core::prompt` (CONV-012). Nobody concatenates
 
 Asking a model to invent a good instruction on every call produces a
 paraphrase of the query, which is **worse** than the default: it duplicates
-the signal the query already carries instead of describing the TASK. Hence
-named intents, defined in `QueryTask` (L0, CONV-012):
+the signal the query already carries instead of describing the TASK.
 
-| `task` | For | The instruction describes |
-|--------|------|----------------------|
-| `code` *(default)* | "where is X handled" | code or docs that answer it |
-| `symbol` | a name in hand | the declaration, the type, the docs |
-| `usage` | an API | the call sites |
-| `docs` | an intent | the rationale, not the implementation |
-| `test` | a behavior | the tests that assert it |
-| `config` | a setting | declaration, default, where it's read |
-| `error` | a message, a panic | what produces it and what handles it |
+Hence named intents, defined in `QueryTask` (L0, CONV-012):
 
-Precedence, resolved in `SearchRequest::resolve()` in L0 so the three transports
-can't diverge — the instruction and the filter are resolved by the same call, so
-there is one ladder to learn rather than two:
+| `task`             | For                  | The instruction describes             |
+|--------------------|----------------------|---------------------------------------|
+| `code` *(default)* | "where is X handled" | code or docs that answer it           |
+| `symbol`           | a name in hand       | the declaration, the type, the docs   |
+| `usage`            | an API               | the call sites                        |
+| `docs`             | an intent            | the rationale, not the implementation |
+| `test`             | a behavior           | the tests that assert it              |
+| `config`           | a setting            | declaration, default, where it's read |
+| `error`            | a message, a panic   | what produces it and what handles it  |
+
+Precedence is resolved in `SearchRequest::resolve()` in L0 so the three
+transports can't diverge — the instruction and the filter are resolved by the
+same call, so there is one ladder to learn rather than two:
 
 ```
 request.instruction  >  request.task  >  the project's manifest  >  query_instruction
 ```
 
 The project's own entry is the manifest's `instruction` / `task`, carried on
-`ProjectSpec` at registration. It exists because "how should this corpus be
-asked about" is a property of the corpus, and a team should be able to commit
-that opinion rather than pass it on every call.
+`ProjectSpec` at registration.
+
+It exists because "how should this corpus be asked about" is a property of the
+corpus, and a team should be able to commit that opinion rather than pass it on
+every call.
 
 The other half of the pair, `query`, is never defaulted and never derived: the
 model is handed the two as `Instruct: {…}` and `Query: {…}`, and a client that
 can send one and not the other cannot express the format the model documents.
 
-Exposed everywhere: HTTP body (`task`, `instruction`), `findery-client`, the MCP
-tool `search_code`, and `findery search --task symbol` / `--instruct "…"`.
+Exposed everywhere:
+
+- HTTP body (`task`, `instruction`)
+- `findery-client`
+- the MCP tool `search_code`
+- `findery search --task symbol` / `--instruct "…"`
 
 ## The dimension probe
 
@@ -88,8 +98,10 @@ width it gets back to `dim`. If they diverge, the daemon refuses to start.
 
 This isn't ceremony: a corpus half embedded at 1024 dims and half at 2560
 is silently unsearchable, and the only cheap moment to catch that is before
-the first byte is written. `dim = 0` means "ask the runtime". `verify_dim =
-false` disables the probe if startup needs to be offline.
+the first byte is written.
+
+- `dim = 0` means "ask the runtime".
+- `verify_dim = false` disables the probe if startup needs to be offline.
 
 ### When the runtime does not answer
 
@@ -97,22 +109,28 @@ An **unreachable** runtime is a different case from a **disagreeing** one, and
 they get different answers.
 
 A width that disagrees is a contradiction the daemon cannot resolve, so it
-refuses to start. A runtime that is merely down tells us nothing about the
-width — so if the width is known from somewhere else, the daemon starts
-*degraded*:
+refuses to start.
 
-| Width known from | Result |
-|---|---|
-| `dim` in the configuration | starts degraded |
-| the bucket's recorded recipe, when the model name still matches | starts degraded |
-| nowhere | refuses, naming `FINDERY_EMBED_DIM` |
+A runtime that is merely down tells us nothing about the width — so if the
+width is known from somewhere else, the daemon starts *degraded*:
 
-Degraded means: the daemon is up, `/healthz` answers, `/v1/health` reports
-`embedder_ok: false` with the transport error, searches and syncs fail with that
-same error, and everything else works. `findery doctor` reads exactly this and
-tells the user to start their model.
+| Width known from                                                | Result                              |
+|-----------------------------------------------------------------|-------------------------------------|
+| `dim` in the configuration                                      | starts degraded                     |
+| the bucket's recorded recipe, when the model name still matches | starts degraded                     |
+| nowhere                                                         | refuses, naming `FINDERY_EMBED_DIM` |
 
-INTENT: the daemon starts itself now, on the user's first command. A daemon that
+Degraded means:
+
+- the daemon is up
+- `/healthz` answers
+- `/v1/health` reports `embedder_ok: false` with the transport error
+- searches and syncs fail with that same error
+- everything else works
+
+`findery doctor` reads exactly this and tells the user to start their model.
+
+INTENT: the daemon starts itself, on the user's first command. A daemon that
 refused to boot because the model was down would take the diagnostic down with it
 at precisely the moment it is needed, and the user would see "did not answer
 within 30s" instead of "your model is not running".
@@ -135,11 +153,21 @@ embedder settings it was built with
 
 **The refusal lands on the operation, never on the boot.** A bucket whose
 recipe disagrees is opened anyway; `BucketHandle::conflicted` records the
-disagreement and `ensure_vectors_usable` raises it at every operation that would
-mix two vector spaces — the vector leg of a search, and each of the three write
-entry points: `sync::run`, `index_inline` and `push_documents`. Everything that
-touches no vector keeps working: keyword search, project listing, `findery
-bucket ls` (which prints the conflict), and `findery bucket rm`.
+disagreement.
+
+`ensure_vectors_usable` raises it at every operation that would mix two vector
+spaces:
+
+- the vector leg of a search
+- each of the three write entry points: `sync::run`, `index_inline` and
+  `push_documents`
+
+Everything that touches no vector keeps working:
+
+- keyword search
+- project listing
+- `findery bucket ls` (which prints the conflict)
+- `findery bucket rm`
 
 INTENT: refusing at boot removed the very door the message recommends. The
 daemon never came up, so the `rm` the user was told to run could not run, and
@@ -149,9 +177,11 @@ perfectly good — down with it.
 The write half matters as much as the read half, and the store's own width check
 cannot cover it: `SqliteVectorStore::warm` compares dimensions, so it sees a
 `1024`-dim corpus meeting a `2560`-dim embedder, but it is blind to two models
-that happen to share a width. Only the recipe comparison catches that one, and
-it has to be asked before the first write — a sync that reaches `flush` has
-already put the new space's vectors beside the old ones.
+that happen to share a width.
+
+Only the recipe comparison catches that one, and it has to be asked before the
+first write — a sync that reaches `flush` has already put the new space's
+vectors beside the old ones.
 
 ## Throughput, batching, retries
 
@@ -167,17 +197,21 @@ already put the new space's vectors beside the old ones.
 ## The `mock` backend
 
 Deterministic vectors derived from blake3, normalized. It's used for tests
-and an offline diagnostic. It's **never** a silent fallback: it's only
-reached with an explicit `backend = "mock"` (CONV-036).
+and an offline diagnostic.
+
+It's **never** a silent fallback: it's only reached with an explicit
+`backend = "mock"` (CONV-036).
 
 ## Choosing a size
 
-| Model | Dim | Weight | Where |
-|--------|-----|-------|-----|
+| Model                    | Dim                      | Weight             | Where                                          |
+|--------------------------|--------------------------|--------------------|------------------------------------------------|
 | `qwen3.7-text-embedding` | 256 → 2560, default 1024 | none, it is an API | **the default.** 131K context, $0.07/1M tokens |
-| Qwen3-Embedding-0.6B | 1024 | ~1.2 GB | a local fallback when an API is not an option |
-| Qwen3-Embedding-8B | 4096 | ~16 GB | a local fallback, GPU |
+| Qwen3-Embedding-0.6B     | 1024                     | ~1.2 GB            | a local fallback when an API is not an option  |
+| Qwen3-Embedding-8B       | 4096                     | ~16 GB             | a local fallback, GPU                          |
 
 The dimension multiplies everything downstream: matrix RAM, cache size,
-scan duration. 1024 is the right starting point; go up when a measurement
-demands it, not before.
+scan duration.
+
+1024 is the right starting point; go up when a measurement demands it, not
+before.

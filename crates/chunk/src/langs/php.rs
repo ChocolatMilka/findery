@@ -4,7 +4,8 @@
 //! INTENT: heredocs and nowdocs are opaque to the scanner, so a SQL string or a
 //! template holding `{`, `}` and `,` never counts as structure.
 
-use crate::brace::{ItemMeta, Profile, chunk_with, keyword_header, split_trivia};
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::{keyword_header, split_trivia};
 use crate::items::LineIndex;
 use crate::scanner::Lexicon;
 use findery_core::Result;
@@ -46,7 +47,7 @@ impl Profile for PhpProfile {
         &Lexicon::PHP
     }
 
-    fn classify(&self, item: &str, _nested: bool) -> ItemMeta {
+    fn classify(&self, item: &str, _parent: Option<ChunkKind>) -> ItemMeta {
         let (_, code) = split_trivia(item, self.lexicon());
         let header_end = code.find(['{', ';', '=']).unwrap_or(code.len());
         let (kind, symbol) = keyword_header(&code[..header_end], PHP_KEYWORDS);

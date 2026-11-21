@@ -33,10 +33,33 @@ pub enum Lang {
     Json,
     /// The Axle language (`.axle`).
     Axle,
+    /// Java (`.java`).
+    Java,
+    /// Kotlin sources and scripts (`.kt`, `.kts`).
+    Kotlin,
+    /// Go (`.go`).
+    Go,
     Other,
 }
 
 impl Lang {
+    /// Every language, in declaration order. The registry, the MCP schema and
+    /// the round-trip tests are checked against it.
+    pub const ALL: &'static [Lang] = &[
+        Lang::Rust,
+        Lang::Markdown,
+        Lang::Toml,
+        Lang::JavaScript,
+        Lang::Python,
+        Lang::Php,
+        Lang::Json,
+        Lang::Axle,
+        Lang::Java,
+        Lang::Kotlin,
+        Lang::Go,
+        Lang::Other,
+    ];
+
     /// Infers the language from the extension. Everything else is `Other` and
     /// goes through the generic chunker.
     ///
@@ -58,6 +81,9 @@ impl Lang {
             "php" => Self::Php,
             "json" | "jsonc" => Self::Json,
             "axle" => Self::Axle,
+            "java" => Self::Java,
+            "kt" | "kts" => Self::Kotlin,
+            "go" => Self::Go,
             _ => Self::Other,
         }
     }
@@ -72,6 +98,9 @@ impl Lang {
             Self::Php => "php",
             Self::Json => "json",
             Self::Axle => "axle",
+            Self::Java => "java",
+            Self::Kotlin => "kotlin",
+            Self::Go => "go",
             Self::Other => "other",
         }
     }
@@ -86,6 +115,9 @@ impl Lang {
             "php" => Some(Self::Php),
             "json" => Some(Self::Json),
             "axle" => Some(Self::Axle),
+            "java" => Some(Self::Java),
+            "kotlin" | "kt" => Some(Self::Kotlin),
+            "go" | "golang" => Some(Self::Go),
             "other" => Some(Self::Other),
             _ => None,
         }
@@ -302,4 +334,35 @@ pub struct IndexStats {
     pub store_backend: String,
     pub last_sync_at: Option<i64>,
     pub disk_bytes: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_language_round_trips_through_its_name_and_its_serde_form() {
+        for lang in Lang::ALL {
+            assert_eq!(Lang::parse(lang.as_str()), Some(*lang), "{lang:?}");
+            let json = serde_json::to_string(lang).expect("a unit variant serializes");
+            assert_eq!(json, format!("\"{}\"", lang.as_str()), "{lang:?}");
+            let back: Lang = serde_json::from_str(&json).expect("its own form parses");
+            assert_eq!(back, *lang);
+        }
+    }
+
+    #[test]
+    fn java_kotlin_and_go_are_read_from_their_extensions() {
+        assert_eq!(Lang::from_path("src/App.java"), Lang::Java);
+        assert_eq!(Lang::from_path("src/App.kt"), Lang::Kotlin);
+        assert_eq!(Lang::from_path("build.gradle.kts"), Lang::Kotlin);
+        assert_eq!(Lang::from_path("cmd/main.go"), Lang::Go);
+        assert_eq!(Lang::from_path("cmd/main_test.GO"), Lang::Go);
+    }
+
+    #[test]
+    fn an_unknown_language_name_is_refused() {
+        assert_eq!(Lang::parse("golang-ish"), None);
+        assert_eq!(Lang::parse("Java"), None);
+    }
 }

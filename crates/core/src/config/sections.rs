@@ -323,7 +323,8 @@ impl Default for SearchConfig {
 /// chunker registry knows. A file whose extension is absent is never walked, so
 /// a language supported but not listed here is a language nobody sees.
 pub const DEFAULT_EXTENSIONS: &[&str] = &[
-    "rs", "md", "toml", "js", "mjs", "cjs", "ts", "py", "php", "json", "axle",
+    "rs", "md", "toml", "js", "mjs", "cjs", "ts", "py", "php", "json", "axle", "java", "kt", "kts",
+    "go",
 ];
 
 /// Defaults applied to a project that does not override them.

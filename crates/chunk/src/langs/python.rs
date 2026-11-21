@@ -6,11 +6,13 @@
 //! is the principle: boundaries come from a lexical pass, never from a guess,
 //! and a `def` inside a triple-quoted string is not a definition.
 
-use crate::sizing::{drop_empty, merge_small, split_windows};
+use super::module_name;
+use crate::sizing::{MAX_NESTING, drop_empty, merge_small, split_windows};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
+use std::ops::Range;
 
 /// Splits Python source into items.
 pub struct PythonChunker;
@@ -25,12 +27,34 @@ impl Chunker for PythonChunker {
             return Ok(Vec::new());
         }
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let file = File {
+            lines: &lines,
+            path,
+            cfg,
+        };
         let mut out = Vec::new();
         for range in python_items(&lines, 0..lines.len(), "") {
-            emit(&lines, range, path, None, cfg, &mut out);
+            file.emit(range, None, &mut out);
         }
         Ok(merge_small(drop_empty(out), cfg))
     }
+}
+
+/// The files a package stands for: `app/__init__.py` is `app`.
+const DIRECTORY_FILES: &[&str] = &["__init__", "__main__"];
+
+/// The fixed inputs of one chunking pass.
+struct File<'a> {
+    lines: &'a [&'a str],
+    path: &'a str,
+    cfg: &'a ChunkConfig,
+}
+
+/// The class a member is emitted from.
+struct Parent<'a> {
+    label: &'a str,
+    /// How many classes enclose its members: 1 for a top-level class.
+    depth: usize,
 }
 
 /// What a line-by-line pass must remember: a bracket left open, a triple-quoted
@@ -93,165 +117,230 @@ fn scan_line(line: &str, state: &mut LexState) {
     }
 }
 
+/// What one pass over a block finds: the lines that open a statement, and the
+/// lines that document the statement below them.
+struct Block {
+    anchors: Vec<usize>,
+    /// Per line of the block: a comment, a decorator, or a line a decorator's
+    /// argument list runs over — `@dataclass(` / `frozen=True,` / `)`.
+    documents: Vec<bool>,
+}
+
 /// Splits a range of lines into items at `indent`, the exact indentation of the
 /// block those items belong to (empty at the top level).
 ///
 /// An item runs from its first line, leading comments and decorators included,
-/// to the line before the next one starts.
-fn python_items(
-    lines: &[&str],
-    range: std::ops::Range<usize>,
-    indent: &str,
-) -> Vec<std::ops::Range<usize>> {
-    let mut state = LexState::default();
-    let mut anchors: Vec<usize> = Vec::new();
-    for i in range.clone() {
-        let opens_item = state.depth == 0
-            && state.triple.is_none()
-            && !state.continued
-            && opens_a_statement(lines[i], indent);
-        if opens_item {
-            anchors.push(i);
-        }
-        scan_line(lines[i], &mut state);
+/// to the line before the next one starts. What comes before the first item —
+/// a licence header, a file of comments only — is an item of its own: no line
+/// is dropped.
+fn python_items(lines: &[&str], range: Range<usize>, indent: &str) -> Vec<Item> {
+    let block = scan_block(lines, range.clone(), indent);
+    let heads = item_heads(&block, range.start);
+    let first = heads.first().copied().unwrap_or(range.end);
+    let mut items = Vec::with_capacity(heads.len() + 1);
+    if first > range.start {
+        items.push(Item {
+            lines: range.start..first,
+            anchor: None,
+        });
     }
-
-    let mut heads: Vec<usize> = Vec::with_capacity(anchors.len());
-    for (k, &anchor) in anchors.iter().enumerate() {
-        // Walk back over the comments and decorators that document it, but
-        // never past the previous item's last line of code.
-        let floor = if k == 0 {
-            range.start
-        } else {
-            anchors[k - 1] + 1
-        };
-        let mut head = anchor;
-        while head > floor && documents_next(lines[head - 1]) {
-            head -= 1;
-        }
-        heads.push(head);
-    }
-
-    let mut items = Vec::new();
-    for (k, &head) in heads.iter().enumerate() {
+    for (k, (&head, &anchor)) in heads.iter().zip(&block.anchors).enumerate() {
         let end = heads.get(k + 1).copied().unwrap_or(range.end);
-        if end > head {
-            items.push(head..end);
-        }
+        items.push(Item {
+            lines: head..end,
+            anchor: Some(anchor),
+        });
     }
     items
 }
 
-/// Whether this line starts a statement of the block at `indent`: at that exact
-/// indentation, and not a comment, a decorator or a blank line.
-fn opens_a_statement(line: &str, indent: &str) -> bool {
+/// One item of a block.
+struct Item {
+    lines: Range<usize>,
+    /// The line its statement opens on, past its comments and decorators —
+    /// `None` for the lines before a block's first statement.
+    anchor: Option<usize>,
+}
+
+/// One lexical pass over a block: where its statements open, and which lines
+/// document the next one.
+fn scan_block(lines: &[&str], range: Range<usize>, indent: &str) -> Block {
+    let mut state = LexState::default();
+    let mut block = Block {
+        anchors: Vec::new(),
+        documents: Vec::with_capacity(range.len()),
+    };
+    let mut in_decorator = false;
+    for i in range {
+        let at_statement = state.depth == 0 && state.triple.is_none() && !state.continued;
+        match (at_statement, statement_at(lines[i], indent)) {
+            (true, Statement::Code) => {
+                block.anchors.push(i);
+                in_decorator = false;
+            }
+            (true, Statement::Decorator) => in_decorator = true,
+            (true, Statement::None) => in_decorator = false,
+            (false, _) => {}
+        }
+        block.documents.push(in_decorator || is_comment(lines[i]));
+        scan_line(lines[i], &mut state);
+    }
+    block
+}
+
+/// Where each item starts: its anchor, walked back over the comments and
+/// decorators that document it — never past the previous item's code.
+fn item_heads(block: &Block, start: usize) -> Vec<usize> {
+    let documents = |line: usize| block.documents[line - start];
+    let mut heads = Vec::with_capacity(block.anchors.len());
+    for (k, &anchor) in block.anchors.iter().enumerate() {
+        let floor = match k {
+            0 => start,
+            _ => block.anchors[k - 1] + 1,
+        };
+        let mut head = anchor;
+        while head > floor && documents(head - 1) {
+            head -= 1;
+        }
+        heads.push(head);
+    }
+    heads
+}
+
+/// What a line opens in the block at `indent`.
+enum Statement {
+    /// A statement of code at that exact indentation.
+    Code,
+    /// A decorator, which documents the statement below it.
+    Decorator,
+    /// Nothing: a blank line, a comment, a deeper line.
+    None,
+}
+
+/// What this line opens in the block at `indent`.
+fn statement_at(line: &str, indent: &str) -> Statement {
     let Some(rest) = line.strip_prefix(indent) else {
-        return false;
+        return Statement::None;
     };
-    if rest.is_empty() || rest.starts_with([' ', '\t', '\r', '\n']) {
-        return false;
-    }
     let code = rest.trim_end_matches(['\r', '\n']);
-    !code.is_empty() && !code.starts_with('#') && !code.starts_with('@')
-}
-
-/// A line that documents the item below it rather than standing on its own:
-/// a comment or a decorator. A blank line is NOT one — kept with the item
-/// above, it lands where the reader expects it and costs nothing, since a
-/// chunk's trailing whitespace is trimmed.
-fn documents_next(line: &str) -> bool {
-    let t = line.trim();
-    t.starts_with('#') || t.starts_with('@')
-}
-
-/// Whether a line carries nothing at all.
-fn is_trivia(line: &str) -> bool {
-    let t = line.trim();
-    t.is_empty() || t.starts_with('#') || t.starts_with('@')
-}
-
-/// Emits one item, recursing into a class body that exceeds the budget.
-fn emit(
-    lines: &[&str],
-    range: std::ops::Range<usize>,
-    path: &str,
-    parent: Option<&str>,
-    cfg: &ChunkConfig,
-    out: &mut Vec<RawChunk>,
-) {
-    let text = item_text(lines, &range);
-    if text.trim().is_empty() {
-        return;
+    match code.chars().next() {
+        None | Some(' ' | '\t' | '#') => Statement::None,
+        Some('@') => Statement::Decorator,
+        Some(_) => Statement::Code,
     }
-    let header = header_line(lines, &range);
-    let meta = classify(header, range.start == 0);
-    let kind = match parent {
-        Some(_) if meta.kind == ChunkKind::Function => ChunkKind::Method,
-        _ => meta.kind,
-    };
-    let breadcrumb = match (parent, &meta.symbol) {
-        (Some(p), Some(s)) => Some(format!("{p} > {s}")),
-        (Some(p), None) => Some(p.to_string()),
-        (None, Some(s)) => Some(s.clone()),
-        (None, None) => None,
-    };
-    let start_line = (range.start + 1) as u32;
-    let end_line = end_line_of(lines, &range);
+}
 
-    if meta.kind == ChunkKind::Struct && text.len() > cfg.max_chars {
-        let body_start = range.start + 1;
-        if let Some(indent) = body_indent(lines, body_start..range.end) {
-            let children = python_items(lines, body_start..range.end, indent);
-            if !children.is_empty() {
+/// A comment line. A blank line is NOT one that documents — kept with the
+/// item above, it lands where the reader expects it and costs nothing, since a
+/// chunk's trailing whitespace is trimmed.
+fn is_comment(line: &str) -> bool {
+    line.trim().starts_with('#')
+}
+
+impl File<'_> {
+    /// Emits one item, recursing into a class body that exceeds the budget.
+    fn emit(&self, item: Item, parent: Option<&Parent<'_>>, out: &mut Vec<RawChunk>) {
+        let text = self.text(&item.lines);
+        if text.trim().is_empty() {
+            return;
+        }
+        let header = item.anchor.map_or("", |anchor| self.lines[anchor]);
+        let meta = classify(header, item.lines.start == 0);
+        let kind = match parent {
+            Some(_) if meta.kind == ChunkKind::Function => ChunkKind::Method,
+            _ => meta.kind,
+        };
+        let breadcrumb = match (parent, &meta.symbol) {
+            (Some(p), Some(s)) => Some(format!("{} > {s}", p.label)),
+            (Some(p), None) => Some(p.label.to_string()),
+            (None, Some(s)) => Some(s.clone()),
+            (None, None) => None,
+        };
+        let depth = parent.map_or(0, |p| p.depth);
+        let oversized_class = meta.kind == ChunkKind::Struct && text.len() > self.cfg.max_chars;
+        // Past MAX_NESTING classes deep, what is left is windowed as one leaf.
+        if oversized_class
+            && depth < MAX_NESTING
+            && let Some(anchor) = item.anchor
+        {
+            let body_start = self.header_end(anchor, item.lines.end);
+            let body = body_start..item.lines.end;
+            if let Some(indent) = body_indent(self.lines, body.clone()) {
+                let children = python_items(self.lines, body, indent);
                 let label = breadcrumb.clone().unwrap_or_else(|| "?".into());
+                // The header — comments, decorators, bases — is content no
+                // method carries: it gets its chunk.
+                let header = item.lines.start..body_start;
+                out.extend(self.leaf(&header, kind, meta.symbol, breadcrumb));
+                let class = Parent {
+                    label: &label,
+                    depth: depth + 1,
+                };
                 for child in children {
-                    emit(lines, child, path, Some(&label), cfg, out);
+                    self.emit(child, Some(&class), out);
                 }
                 return;
             }
         }
-    }
-
-    if text.len() <= cfg.max_chars {
         // A module docstring documents the file, so it takes the file's name —
         // the same answer the Rust chunker gives its `//!` preamble.
-        let named = (meta.kind == ChunkKind::Module).then(|| module_name(path));
-        out.push(RawChunk {
-            kind,
-            symbol: named.clone().or(meta.symbol),
-            breadcrumb: named.map(|n| format!("module {n}")).or(breadcrumb),
-            start_line,
-            end_line,
-            text: text.trim_end().to_string(),
-        });
-    } else {
-        out.extend(split_windows(
-            &text,
-            start_line,
-            kind,
-            meta.symbol,
-            breadcrumb,
-            cfg,
-        ));
+        let names_the_file = meta.kind == ChunkKind::Module && text.len() <= self.cfg.max_chars;
+        let (symbol, breadcrumb) = match names_the_file {
+            true => {
+                let name = module_name(self.path, ".py", DIRECTORY_FILES);
+                (Some(name.clone()), Some(format!("module {name}")))
+            }
+            false => (meta.symbol, breadcrumb),
+        };
+        out.extend(self.leaf(&item.lines, kind, symbol, breadcrumb));
     }
-}
 
-/// The text of a line range.
-fn item_text(lines: &[&str], range: &std::ops::Range<usize>) -> String {
-    lines[range.clone()].concat()
-}
+    /// `range` as one chunk, or as line windows when it is too big.
+    fn leaf(
+        &self,
+        range: &Range<usize>,
+        kind: ChunkKind,
+        symbol: Option<String>,
+        breadcrumb: Option<String>,
+    ) -> Vec<RawChunk> {
+        let text = self.text(range);
+        let start_line = (range.start + 1) as u32;
+        match text.len() > self.cfg.max_chars {
+            true => split_windows(&text, start_line, kind, symbol, breadcrumb, self.cfg),
+            false => vec![RawChunk {
+                kind,
+                symbol,
+                breadcrumb,
+                start_line,
+                end_line: end_line_of(self.lines, range),
+                text: text.trim_end().to_string(),
+            }],
+        }
+    }
 
-/// The first line of the item that is real code, not a comment or a decorator.
-fn header_line<'a>(lines: &[&'a str], range: &std::ops::Range<usize>) -> &'a str {
-    lines[range.clone()]
-        .iter()
-        .find(|l| !is_trivia(l))
-        .copied()
-        .unwrap_or("")
+    /// The line just past the `class …:` statement opening at `anchor`, over
+    /// however many lines it spans.
+    fn header_end(&self, anchor: usize, end: usize) -> usize {
+        let mut state = LexState::default();
+        let mut i = anchor;
+        while i < end {
+            scan_line(self.lines[i], &mut state);
+            i += 1;
+            if state.depth == 0 && state.triple.is_none() && !state.continued {
+                break;
+            }
+        }
+        i
+    }
+
+    /// The text of a line range.
+    fn text(&self, range: &Range<usize>) -> String {
+        self.lines[range.clone()].concat()
+    }
 }
 
 /// 1-indexed number of the last line carrying something.
-fn end_line_of(lines: &[&str], range: &std::ops::Range<usize>) -> u32 {
+fn end_line_of(lines: &[&str], range: &Range<usize>) -> u32 {
     let last = lines[range.clone()]
         .iter()
         .rposition(|l| !l.trim().is_empty())
@@ -261,7 +350,7 @@ fn end_line_of(lines: &[&str], range: &std::ops::Range<usize>) -> u32 {
 
 /// The indentation of the first non-blank line of a block, which is the
 /// indentation every statement of that block shares.
-fn body_indent<'a>(lines: &[&'a str], range: std::ops::Range<usize>) -> Option<&'a str> {
+fn body_indent<'a>(lines: &[&'a str], range: Range<usize>) -> Option<&'a str> {
     let line = lines[range].iter().find(|l| !l.trim().is_empty())?;
     let width = line.len() - line.trim_start().len();
     Some(&line[..width])
@@ -324,15 +413,6 @@ fn identifier(s: &str) -> Option<String> {
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
     if name.is_empty() { None } else { Some(name) }
-}
-
-/// `app/rate_limit.py` -> `rate_limit`.
-fn module_name(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .trim_end_matches(".py")
-        .to_string()
 }
 
 #[cfg(test)]
@@ -428,6 +508,31 @@ mod tests {
     }
 
     #[test]
+    fn a_split_class_keeps_its_header_in_a_chunk_of_its_own() {
+        let body = "        value = 1\n".repeat(20);
+        let src = format!(
+            "# The widget.\n@dataclass\nclass Widget(\n    Base,\n):\n    def render(self):\n{body}"
+        );
+        let out = chunk_under(&src, 200);
+        let header = out
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("Widget"))
+            .expect("the class keeps a chunk");
+        assert_eq!(header.kind, ChunkKind::Struct);
+        assert_eq!(
+            header.text,
+            "# The widget.\n@dataclass\nclass Widget(\n    Base,\n):"
+        );
+        assert_eq!((header.start_line, header.end_line), (1, 5));
+        let render = out
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("render"))
+            .expect("render");
+        assert_eq!(render.breadcrumb.as_deref(), Some("Widget > render"));
+        assert_eq!(render.start_line, 6);
+    }
+
+    #[test]
     fn a_statement_continued_over_lines_stays_one_item() {
         let src = "SETTINGS = {\n    'a': 1,\n    'b': 2,\n}\n\ndef after():\n    return 1\n";
         let out = chunk(src);
@@ -445,6 +550,45 @@ mod tests {
         let out = chunk("\"\"\"Module docs.\"\"\"\n\ndef a():\n    return 1\n");
         assert_eq!(out[0].kind, ChunkKind::Module);
         assert_eq!(out[0].symbol.as_deref(), Some("rate_limit"));
+    }
+
+    #[test]
+    fn a_file_of_comments_or_a_lone_shebang_still_yields_a_chunk() {
+        for src in [
+            "# Licence: MIT\n# Nothing else.\n",
+            "#!/usr/bin/env python3",
+        ] {
+            let out = chunk(src);
+            assert_eq!(out.len(), 1, "{src:?} gave {out:?}");
+            assert_eq!(out[0].text, src.trim_end());
+        }
+    }
+
+    #[test]
+    fn the_lines_before_the_first_item_are_kept() {
+        let out = chunk("# Licence: MIT\n\nimport os\n");
+        assert!(out[0].text.starts_with("# Licence"), "got {out:?}");
+        assert!(out.iter().any(|c| c.text.contains("import os")));
+    }
+
+    #[test]
+    fn a_decorator_spanning_lines_stays_with_its_class() {
+        let out = chunk("@dataclass(\n    frozen=True,\n)\nclass Widget:\n    x = 1\n");
+        assert_eq!(out.len(), 1, "got {out:?}");
+        assert_eq!(out[0].symbol.as_deref(), Some("Widget"));
+        assert_eq!(out[0].start_line, 1);
+    }
+
+    #[test]
+    fn a_package_init_takes_the_package_name() {
+        let out = PythonChunker
+            .chunk(
+                "app/limits/__init__.py",
+                "\"\"\"Limits.\"\"\"\n",
+                &ChunkConfig::default(),
+            )
+            .expect("chunking succeeds");
+        assert_eq!(out[0].symbol.as_deref(), Some("limits"));
     }
 
     #[test]

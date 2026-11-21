@@ -4,7 +4,7 @@
 # INTENT: the rule exists so that one file holds one responsibility and stays
 # readable. Test modules do not work against that — they sit next to the code
 # they pin down, which is a Rust strength, not a smell. So the budget applies to
-# what a reader has to hold in their head: the lines OUTSIDE `#[cfg(test)]`.
+# what a reader has to hold in their head: the lines above `#[cfg(test)]`.
 #
 # Exit codes: 0 every file is within budget, 1 at least one is not.
 
@@ -17,14 +17,11 @@ checked=0
 
 while IFS= read -r file; do
   checked=$((checked + 1))
+  # The test module closes the file (CONV-029), so the code is every line
+  # before the first `#[cfg(test)]`. Counting braces to find the module's end
+  # read the braces inside test strings too, and forced escapes on them.
   code=$(awk '
-    /^[[:space:]]*#\[cfg\(test\)\]/ { intest = 1; next }
-    intest {
-      n = gsub(/{/, "{"); m = gsub(/}/, "}")
-      depth += n - m
-      if (depth <= 0) { intest = 0; depth = 0 }
-      next
-    }
+    /^[[:space:]]*#\[cfg\(test\)\]/ { exit }
     { count++ }
     END { print count + 0 }
   ' "$file")

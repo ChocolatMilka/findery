@@ -12,7 +12,7 @@ Nothing here assumes where it lives — any directory, on any disk, works.
 
 Two processes with two different jobs, and a set of thin clients.
 
-```
+```text
  ┌─ a container ────────────────┐
  │  the embedding model         │  text in, vector out. STATELESS.
  │  (HuggingFace TEI, Qwen3)    │  It does not know what a project,
@@ -37,9 +37,11 @@ happened. Everything that knows about your code lives in `finderyd`.
 of its own (`make up`). Same binary, same behaviour.
 
 A containerized daemon cannot read your disk, so the CLI reads the files and
-pushes them instead. That choice is made once, at registration, by testing the
-path; you never have to think about it. It also means the daemon can live on
-another machine entirely.
+pushes them instead.
+
+That choice is made once, at registration, by testing the path; you never have
+to think about it. It also means the daemon can live on another machine
+entirely.
 
 ### Why a daemon at all?
 
@@ -48,9 +50,11 @@ A fair question — the CLI could open the SQLite bucket directly and skip it.
 It exists for **one** reason that matters: the warm matrix. Searching means
 comparing your query against every chunk, from a matrix of normalized vectors
 held contiguously in RAM. For a 500k-line codebase that is a few hundred
-megabytes. A daemon builds it once and answers in ~15 ms; a process starting
-fresh on every command would spend one to three **seconds** loading it back from
-SQLite before it could compare anything.
+megabytes.
+
+A daemon builds it once and answers in ~15 ms; a process starting fresh on every
+command would spend one to three **seconds** loading it back from SQLite before
+it could compare anything.
 
 Note what that is *not*: it is not the vector cache. Two different things are
 easy to conflate.
@@ -63,19 +67,23 @@ easy to conflate.
 The cache means you never re-embed. The daemon means you never wait. The cache
 would still be there with no daemon at all; you would just pay seconds per query.
 
-Two smaller reasons follow: `findery watch` needs a process that outlives your
-shell, and SQLite has a single writer — a daemon serializes concurrent clients
-instead of letting them fight.
+Two smaller reasons follow:
+
+- `findery watch` needs a process that outlives your shell.
+- SQLite has a single writer — a daemon serializes concurrent clients instead of
+  letting them fight.
 
 ---
 
 ## 1. Prerequisites
 
-- **Rust** (stable). `rustc --version` should answer.
-- **Docker**, running. Only to host the model — see step 2 for the alternative.
-- **Windows only**: Git for Windows. It is what supplies the `bash` the two
+- **Rust** — stable. `rustc --version` should answer.
+- **Docker** — running. Only to host the model — see step 2 for the alternative.
+- **Windows only** — Git for Windows. It is what supplies the `bash` the two
   repository watchdogs are written for; `.\tools\tasks.ps1` looks for it there
   and not in WSL.
+
+---
 
 ## 2. Install the binaries
 
@@ -86,10 +94,10 @@ make install
 
 That puts three commands in `~/.cargo/bin`:
 
-| Command | Role |
-|---------|------|
-| `findery` | the CLI you type every day |
-| `finderyd` | the daemon |
+| Command       | Role                            |
+|---------------|---------------------------------|
+| `findery`     | the CLI you type every day      |
+| `finderyd`    | the daemon                      |
 | `findery-mcp` | the bridge Claude Code launches |
 
 No `make` — Windows, for instance? The same task list ships as PowerShell:
@@ -112,10 +120,14 @@ findery --version                     # on PATH, from a new terminal
 It puts the three binaries in `C:\Program Files\findery` and that directory on
 the system `PATH` — all three together, because `findery` looks for `finderyd`
 beside itself rather than on `PATH`, so the pair can never come from two
-builds. The index itself keeps living wherever your projects do; the installer
-places the *tools*, not your data.
+builds.
+
+The index itself keeps living wherever your projects do; the installer places
+the *tools*, not your data.
 
 The build behind it is [`packaging/windows/`](../packaging/windows/README.md).
+
+---
 
 ## 3. Start the model
 
@@ -143,6 +155,8 @@ These are written to a file the daemon reads, not to your shell: they survive
 the terminal, the reboot, and the next person who opens a different one. See
 [step 4bis](#4bis-settings) for the whole surface.
 
+---
+
 ## 4. The background index — there is nothing to do
 
 There is no command here, and no output either. The first `findery` you type in a
@@ -162,12 +176,16 @@ findery doctor        # what is up, what is not, and the command for each
 ```
 
 `findery daemon start` / `stop` / `status` still exist, hidden from `--help`, for
-a service manager or for debugging. `FINDERY_NO_SPAWN=1` forbids the automatic
-start, for a container that owns the process itself.
+a service manager or for debugging.
+
+`FINDERY_NO_SPAWN=1` forbids the automatic start, for a container that owns the
+process itself.
 
 An index whose model is down still starts, and says so: `findery doctor` reports
 `FAIL model` with the fix, and only the commands that need a vector fail. The
 diagnostic is the last thing that should go down with the model.
+
+---
 
 ## 4bis. Settings
 
@@ -198,21 +216,28 @@ findery config set token  <the bearer token it asks for>
 ```
 
 That is how a client on this machine finds its daemon with nothing in the
-shell. The order is `--server` / `--token`, then `FINDERY_SERVER_URL` /
-`FINDERY_API_TOKEN`, then this file, then loopback — so a machine configured
-once stays configured across terminals and reboots.
+shell. The order is:
+
+1. `--server` / `--token`
+2. `FINDERY_SERVER_URL` / `FINDERY_API_TOKEN`
+3. this file
+4. loopback
+
+So a machine configured once stays configured across terminals and reboots.
 
 Three things it does that a text editor does not:
 
-* **It refuses a value the daemon would reject**, before writing. A typo is
+- **It refuses a value the daemon would reject**, before writing. A typo is
   answered with the list of real field names; `batch_size 0` is answered with
   the rule it breaks. You cannot write a file that stops the daemon booting.
-* **It restarts the daemon**, because the daemon read its settings at boot and
+- **It restarts the daemon**, because the daemon read its settings at boot and
   would otherwise keep serving the old ones.
-* **It warns when an environment variable masks what you just wrote.** The
+- **It warns when an environment variable masks what you just wrote.** The
   `FINDERY_*` overlay still wins — that is what lets one container image serve
   every deployment — so it names the variable instead of letting the write look
   like it did nothing.
+
+---
 
 ## 5. Index a project
 
@@ -222,9 +247,11 @@ findery init          # registers the directory, writes .findery/config.toml
 findery sync          # indexes it
 ```
 
-`init` leaves a manifest at `.findery/config.toml` and the index beside it. The
-manifest is yours to edit and to commit; the index is gitignored for you, in a
-`.findery/.gitignore` that `init` writes once.
+`init` leaves a manifest at `.findery/config.toml` and the index beside it:
+
+- **The manifest** — yours to edit and to commit.
+- **The index** — gitignored for you, in a `.findery/.gitignore` that `init`
+  writes once.
 
 The project id is derived from the directory name, and the daemon reads your
 real filesystem — no mount to declare, no path to type.
@@ -232,18 +259,20 @@ real filesystem — no mount to declare, no path to type.
 The first pass takes minutes on a large repository, so `sync` draws a bar while
 it runs:
 
-```
+```text
 ⠸ =>===============------------- 892/3104 files · indexing · 6104 chunks · 1430 embedded / 4674 cached
 ```
 
 The `3104` is a count of files, not a guess: the walk completes before anything
-is read, which is what lets the bar track real progress. Piped or redirected,
-there is no bar — just the summary line a script can read.
+is read, which is what lets the bar track real progress.
 
-**Registration and indexing are two steps on purpose.** A repository can be
-claimed, and its bucket chosen, before any model is reachable — so the setup
-does not fail because the embedding runtime is not up yet. `findery init --sync`
-does both in one go when you know the model is there.
+Piped or redirected, there is no bar — just the summary line a script can read.
+
+> **Registration and indexing are two steps on purpose.** A repository can be
+> claimed, and its bucket chosen, before any model is reachable — so the setup
+> does not fail because the embedding runtime is not up yet.
+
+`findery init --sync` does both in one go when you know the model is there.
 
 By default it indexes `.rs` and `.md`. To widen:
 
@@ -273,6 +302,7 @@ findery bucket create work           # a named one, for `findery init --bucket w
 
 The choice is made once, at registration. Every later command follows the
 project, so nobody has to remember which index a directory belongs to.
+
 `findery bucket rm <name>` removes one along with its projects and vectors; it
 refuses while the bucket still holds projects unless you add `--force`.
 
@@ -291,6 +321,8 @@ langs = ["rust"]
 ```bash
 findery search --scope api "where is the retry policy"
 ```
+
+---
 
 ## 6. Search
 
@@ -315,6 +347,8 @@ findery watch       # or let it resync by itself
 findery status      # files, chunks, vectors
 findery projects    # all of them, current one marked *
 ```
+
+---
 
 ## 7. Plug it into Claude Code
 
@@ -351,21 +385,24 @@ If `findery-mcp` is not on the PATH Claude Code sees, use its absolute path.
 Sizing from real measurements. Times are for CPU; a GPU is five to ten times
 faster.
 
-| Codebase | Files | Chunks | First index (CPU) | Disk | Search |
-|----------|-------|--------|-------------------|------|--------|
-| Small (~10k lines) | ~70 | ~1,000 | 20-40 s | ~11 MB | ~3 ms |
-| Medium (~100k lines) | ~500 | ~12,000 | 4-8 min | ~130 MB | ~5 ms |
-| Large (~500k lines) | ~3,000 | ~60,000 | 20-40 min | ~640 MB | ~15 ms |
+| Codebase             | Files  | Chunks  | First index (CPU) | Disk    | Search |
+|----------------------|--------|---------|-------------------|---------|--------|
+| Small (~10k lines)   | ~70    | ~1,000  | 20-40 s           | ~11 MB  | ~3 ms  |
+| Medium (~100k lines) | ~500   | ~12,000 | 4-8 min           | ~130 MB | ~5 ms  |
+| Large (~500k lines)  | ~3,000 | ~60,000 | 20-40 min         | ~640 MB | ~15 ms |
 
 The first index is the only slow moment. Everything after is incremental, and
 re-indexing an unchanged repository costs **zero** embeddings — vectors are keyed
-by content, so re-cloning the repo or running a `--full` is free. Moving a
-function to another file is the exception: the path is part of the text that was
-embedded, deliberately, so the fragments that moved are embedded again.
+by content, so re-cloning the repo or running a `--full` is free.
 
-Two numbers worth reading in the sync report: `warnings` (files skipped for
-being too large or not UTF-8) and `embeddings_computed` versus
-`embeddings_cached` — the second run should compute nothing.
+Moving a function to another file is the exception: the path is part of the text
+that was embedded, deliberately, so the fragments that moved are embedded again.
+
+Two numbers worth reading in the sync report:
+
+- `warnings` — files skipped for being too large or not UTF-8
+- `embeddings_computed` versus `embeddings_cached` — the second run should
+  compute nothing
 
 ---
 
@@ -403,8 +440,8 @@ binding anything.
 
 ## Going further
 
-- **Every flag and knob**: [`.claude/docs/usage/README.md`](../.claude/docs/usage/README.md)
-- **Choosing a model**, local or remote: [`.claude/docs/embed/README.md`](../.claude/docs/embed/README.md)
-- **Choosing a vector store**, with the measurements: [`.claude/docs/store/README.md`](../.claude/docs/store/README.md)
-- **HTTP API reference**: [`.claude/docs/server/README.md`](../.claude/docs/server/README.md)
-- **How it works inside**: [`.claude/docs/overview/pipeline.md`](../.claude/docs/overview/pipeline.md)
+- **Every flag and knob** — [`.claude/docs/usage/README.md`](../.claude/docs/usage/README.md)
+- **Choosing a model**, local or remote — [`.claude/docs/embed/README.md`](../.claude/docs/embed/README.md)
+- **Choosing a vector store**, with the measurements — [`.claude/docs/store/README.md`](../.claude/docs/store/README.md)
+- **HTTP API reference** — [`.claude/docs/server/README.md`](../.claude/docs/server/README.md)
+- **How it works inside** — [`.claude/docs/overview/pipeline.md`](../.claude/docs/overview/pipeline.md)

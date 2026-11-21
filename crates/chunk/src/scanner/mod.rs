@@ -7,14 +7,47 @@
 //! structural brace — that is exactly what this scanner guarantees.
 
 mod lexicon;
+mod templates;
 
-pub use lexicon::{BlockComment, Lexicon};
+pub use lexicon::{BlockComment, Lexicon, Statements, TextBlocks};
+
+use templates::{End, Templates, Unclosed, literal_end};
 
 /// Skips a lexical construct whose contents must not be read structurally.
 ///
 /// Returns the offset just past the construct, or `None` when the byte at `i`
 /// starts no such construct and the caller should interpret it.
 pub fn skip_opaque(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
+    match construct_end(src, i, lex, 0)? {
+        Ok(end) => Some(end),
+        Err(Unclosed) => literal_end(src, i, lex, Templates::Flat)?.ok(),
+    }
+}
+
+/// Whether the construct at `i` is a comment — trivia — rather than a literal,
+/// which is code.
+pub fn is_comment_at(src: &[u8], i: usize, lex: &Lexicon) -> bool {
+    let rest = &src[i.min(src.len())..];
+    let line = lex.line_comments.iter().any(|open| {
+        rest.starts_with(open.as_bytes()) && !(*open == "#" && rest.get(1) == Some(&b'['))
+    });
+    line || lex
+        .block_comment
+        .as_ref()
+        .is_some_and(|bc| rest.starts_with(bc.open.as_bytes()))
+}
+
+/// [`skip_opaque`], `depth` templates deep.
+fn construct_end(src: &[u8], i: usize, lex: &Lexicon, depth: usize) -> Option<End> {
+    match plain_construct_end(src, i, lex) {
+        Some(end) => Some(Ok(end)),
+        None => literal_end(src, i, lex, Templates::Followed(depth)),
+    }
+}
+
+/// The constructs no template hides in: comments, raw, char and verbatim
+/// literals, heredocs, regexes, and the strings of a C-like language.
+fn plain_construct_end(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
     let b = *src.get(i)?;
     for open in lex.line_comments {
         if src[i..].starts_with(open.as_bytes()) {
@@ -37,7 +70,7 @@ pub fn skip_opaque(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
         return Some(end);
     }
     if lex.char_literals && b == b'\'' {
-        return skip_char_literal(src, i);
+        return skip_char_literal(src, i, lex.single_line_strings);
     }
     if lex.heredocs && src[i..].starts_with(b"<<<") {
         return skip_heredoc(src, i);
@@ -45,10 +78,24 @@ pub fn skip_opaque(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
     if lex.regex_literals && b == b'/' && regex_allowed(src, i) {
         return Some(skip_regex(src, i + 1));
     }
-    if lex.strings.contains(&b) {
+    if lex.verbatim_strings.contains(&b) {
+        return Some(skip_verbatim(src, i + 1, b));
+    }
+    // A string that may end at its line or hold a template is a literal of
+    // its own: [`literal_end`].
+    let plain_string = !lex.single_line_strings && !lex.templates;
+    if lex.strings.contains(&b) && plain_string {
         return Some(skip_string(src, i + 1, b));
     }
     None
+}
+
+/// Skips a verbatim string: no escape, any byte up to the closing quote.
+fn skip_verbatim(src: &[u8], mut i: usize, quote: u8) -> usize {
+    while i < src.len() && src[i] != quote {
+        i += 1;
+    }
+    (i + 1).min(src.len())
 }
 
 fn skip_line_comment(src: &[u8], mut i: usize) -> usize {
@@ -152,15 +199,21 @@ fn skip_raw_or_byte_literal(src: &[u8], i: usize) -> Option<usize> {
 /// reading the closing quote as the OPENING quote of the next literal swallows
 /// it — which turns the brace of the following item into a structural brace and
 /// silently fuses two items into one.
-fn skip_char_literal(src: &[u8], i: usize) -> Option<usize> {
+///
+/// `single_line` stops an unterminated escape at the newline, as the languages
+/// whose strings cannot span a line would.
+fn skip_char_literal(src: &[u8], i: usize, single_line: bool) -> Option<usize> {
     let first = *src.get(i + 1)?;
     if first == b'\\' {
         // An escape runs to the next `'`: `'\''`, `'\\'`, `'\u{1F600}'`.
         let mut j = i + 3;
         while j < src.len() && src[j] != b'\'' {
+            if single_line && src[j] == b'\n' {
+                return Some(j);
+            }
             j += 1;
         }
-        return Some(j + 1);
+        return Some((j + 1).min(src.len()));
     }
     let width = match first {
         0x00..=0x7F => 1,
@@ -362,6 +415,86 @@ mod tests {
         let src = "$a = <<<EOT\n{ not a brace }\nEOT;\n$x = 1;";
         let end = opaque(src, 5, PHP).expect("heredoc");
         assert_eq!(&src[end..end + 1], ";");
+    }
+
+    const JAVA: &Lexicon = &Lexicon::JAVA;
+    const KOTLIN: &Lexicon = &Lexicon::KOTLIN;
+    const GO: &Lexicon = &Lexicon::GO;
+
+    #[test]
+    fn a_text_block_is_one_literal_and_an_escape_does_not_close_it() {
+        let src = "\"\"\"\n  { \\\"\"\" }\n  \"\"\";";
+        assert_eq!(opaque(src, 0, JAVA), Some(src.len() - 1));
+    }
+
+    #[test]
+    fn a_kotlin_raw_string_ends_on_its_longest_quote_run() {
+        let src = "\"\"\"a \\\"\"\"\"; x";
+        // No escape in a raw string: the backslash is a byte, the run of four
+        // quotes closes it with a quote inside.
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.find(';').expect("semi")));
+    }
+
+    #[test]
+    fn a_template_holding_a_string_holding_a_brace_stays_inside_its_string() {
+        let src = "\"a ${m[\"}\"]} b\" + c";
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.find(" +").expect("plus")));
+        let src = "\"\"\"x ${ f(\"{\") } y\"\"\";";
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.len() - 1));
+    }
+
+    #[test]
+    fn a_template_that_does_not_close_on_its_line_is_text_of_its_string() {
+        // `println("${x")`: the string ends at its quote, and the `)` after it
+        // still closes the call.
+        let src = "\"${x\")\n}";
+        assert_eq!(opaque(src, 0, KOTLIN), Some(5));
+        let src = "\"\"\"a ${b\n\"\"\" + c";
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.find(" +").expect("plus")));
+    }
+
+    #[test]
+    fn a_template_runs_over_lines_inside_a_bracket_it_opened() {
+        let src = "\"limit=${minOf(\n  size,\n  limit,\n)} done\" + c";
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.find(" +").expect("plus")));
+    }
+
+    #[test]
+    fn a_template_nested_past_the_cap_still_terminates() {
+        let src = "\"${".repeat(10_000);
+        let end = opaque(&src, 0, KOTLIN).expect("a string");
+        assert!(end <= src.len());
+    }
+
+    #[test]
+    fn an_unterminated_one_line_string_stops_at_the_newline() {
+        let src = "\"open { \nnext";
+        assert_eq!(opaque(src, 0, JAVA), Some(src.find('\n').expect("nl")));
+        assert_eq!(opaque(src, 0, GO), Some(src.find('\n').expect("nl")));
+        let src = "'\\x\nnext";
+        assert_eq!(opaque(src, 0, GO), Some(src.find('\n').expect("nl")));
+    }
+
+    #[test]
+    fn a_go_raw_string_spans_lines_and_knows_no_escape() {
+        let src = "`C:\\` + `\n{\n`";
+        assert_eq!(opaque(src, 0, GO), Some(5));
+        assert_eq!(opaque(src, 8, GO), Some(src.len()));
+    }
+
+    #[test]
+    fn a_rune_or_a_char_is_one_literal() {
+        assert_eq!(opaque("'{'", 0, GO), Some(3));
+        assert_eq!(opaque("'\\u0041'", 0, JAVA), Some(8));
+        assert_eq!(opaque("'}'", 0, KOTLIN), Some(3));
+    }
+
+    #[test]
+    fn a_comment_is_trivia_and_a_string_is_not() {
+        assert!(is_comment_at(b"// x", 0, GO));
+        assert!(is_comment_at(b"/* x */", 0, JAVA));
+        assert!(!is_comment_at(b"\"x\"", 0, GO));
+        assert!(!is_comment_at(b"#[a]", 0, PHP));
     }
 
     #[test]

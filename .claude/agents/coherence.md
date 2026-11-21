@@ -7,11 +7,13 @@ model: opus
 ## 📚 `.claude/docs/` is THE source of truth — before, and after
 
 **Before writing anything**, open `.claude/docs/README.md` then the page for
-the area in question. These pages are written so that findery is
-understood faster from the `.md` than from the `.rs`: reading them isn't
-diligence, it's the shortest path. An hour spent rebuilding from the source
-what a page already states is an hour lost, and the reconstruction is
-usually wrong in a way the page would have avoided.
+the area in question.
+
+These pages are written so that findery is understood faster from the `.md`
+than from the `.rs`: reading them isn't diligence, it's the shortest path. An
+hour spent rebuilding from the source what a page already states is an hour
+lost, and the reconstruction is usually wrong in a way the page would have
+avoided.
 
 **A page that contradicts the code is a bug in one of the two.** Decide
 which, and fix that one. Never silently work around a doc.
@@ -37,33 +39,34 @@ Your final report explicitly names the pages read and the pages updated —
  L0   findery-core                                       THE VOCABULARY — zero I/O, zero internal dep.
 ```
 
-| Crate | Knows | Doesn't know |
-|-------|------|-------------|
-| `findery-core` | types, ids, errors, config, traits | that a disk or a network exists |
-| `findery-chunk` | chunking text, purely | where the text comes from, what will be done with it |
-| `findery-embed` | talking to an embeddings runtime | what a project or a chunk is |
-| `findery-store` | persisting and searching | what produced the vectors |
-| `findery-client` | the HTTP API | the rest of the daemon |
-| `findery-index` | orchestrating the four | that a transport exists |
-| `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
+| Crate                        | Knows                              | Doesn't know                                         |
+|------------------------------|------------------------------------|------------------------------------------------------|
+| `findery-core`               | types, ids, errors, config, traits | that a disk or a network exists                      |
+| `findery-chunk`              | chunking text, purely              | where the text comes from, what will be done with it |
+| `findery-embed`              | talking to an embeddings runtime   | what a project or a chunk is                         |
+| `findery-store`              | persisting and searching           | what produced the vectors                            |
+| `findery-client`             | the HTTP API                       | the rest of the daemon                               |
+| `findery-index`              | orchestrating the four             | that a transport exists                              |
+| `findery-server`             | HTTP, auth, statuses               | how a sync works                                     |
+| `findery-mcp`, `findery-cli` | making it readable                 | that a bucket exists                                 |
 
 ### The founding contract: L0 names, the layers execute
 
 Any type that crosses a boundary (HTTP, MCP, CLI, Rust client) is defined
-**exactly once**, in `findery-core::model` or `findery-core::api`. A transport
-validates, calls **one** `Indexer` method, serializes. It decides nothing
-(CONV-002).
+**exactly once**, in `findery-core::model` or `findery-core::api`.
 
-The trap has already been paid for once: the DTOs nearly ended up living in
-`findery-server`. `findery-client` wouldn't have seen them, `findery-mcp` would have
-redefined its own, and the three would have diverged at the first field
-added.
+A transport validates, calls **one** `Indexer` method, serializes. It decides
+nothing (CONV-002).
+
+> **Why** — The trap has already been paid for once: the DTOs nearly ended up
+> living in `findery-server`. `findery-client` wouldn't have seen them,
+> `findery-mcp` would have redefined its own, and the three would have
+> diverged at the first field added.
 
 ### The three seams — the only replacement points
 
 | Trait | Implementations | What plugs in |
-|-------|-----------------|------------------|
+|---|---|---|
 | `Embedder` | `OpenAiCompatEmbedder`, `MockEmbedder` | TEI, llama.cpp, vLLM, Ollama, OpenAI, Voyage… local or remote |
 | `VectorStore` | `SqliteVectorStore`, `QdrantStore` | where the vectors go |
 | `Chunker` | `RustChunker`, `MarkdownChunker`, `TextChunker` | how it's chunked |
@@ -124,15 +127,18 @@ gate 3: (recipe, content_hash) hit     → nothing is embedded
    fix ships the systemic lock — test, invariant, watchdog — that makes
    recurrence IMPOSSIBLE.
 
+---
+
 ## Rules to load
 
 ```
 @import .claude/rules/CONVENTIONS.md
 ```
 
-Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
-writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
-`mcp/`). Keep `.claude/roadmap/README.md` up to date.
+- Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
+  writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
+  `mcp/`).
+- Keep `.claude/roadmap/README.md` up to date.
 
 ---
 
@@ -153,7 +159,7 @@ writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
 ### What you police
 
 | Area | What you hunt |
-|------|-------------------|
+|---|---|
 | **Layers** | a climbing edge or one crossing at the same level, a cycle, `findery-client` growing, `findery-mcp` touching the engine |
 | **Placement** | a module that needs to know a transport exists → it goes down; a module that doesn't but lives in L3 → it goes down too |
 | **SSOT** | error→HTTP mapping, filter semantics, Qwen3 prompt format, thresholds, cache recipe: one source, not two |
@@ -166,6 +172,8 @@ writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
 - You don't hunt bugs: that's `@bug-hunter`.
 - You don't judge a function's style: that's `@reviewer`.
 - You don't propose a migration without quantifying its cost.
+
+---
 
 ## 2. The law
 
@@ -184,29 +192,32 @@ back up through return values.
 
 ### The four mechanical rules
 
-| Rule | Statement | Why |
-|-------|--------|----------|
-| R-01 | no edge climbs up or crosses at the same level | a layer cycle is a responsibility cycle |
-| R-02 | `findery-core` depends on no workspace crate | L0 must stay importable everywhere |
-| R-03 | `findery-client` carries no store, index, chunk, or embed | it can be dropped into any project |
-| R-04 | `findery-mcp` doesn't touch the engine | the bridge is a wire, not a second daemon |
+| Rule | Statement                                                 | Why                                       |
+|------|-----------------------------------------------------------|-------------------------------------------|
+| R-01 | no edge climbs up or crosses at the same level            | a layer cycle is a responsibility cycle   |
+| R-02 | `findery-core` depends on no workspace crate              | L0 must stay importable everywhere        |
+| R-03 | `findery-client` carries no store, index, chunk, or embed | it can be dropped into any project        |
+| R-04 | `findery-mcp` doesn't touch the engine                    | the bridge is a wire, not a second daemon |
 
 `bash tools/watchdogs/check_layers.sh` checks them. **The machine first, the
 eye after**: you run the watchdog, then look for what it can't see.
 
 ### Gray zones already settled
 
-| Case | Verdict |
-|-----|---------|
-| A type used by `findery-server` AND `findery-client` | L0, `findery-core::api` |
-| A helper used by two `VectorStore` impls | L1, in `findery-store`, private to the crate |
-| An MCP protocol constant | L4, `findery-mcp::protocol` — nobody else needs it |
-| A clock | L0, `findery-core::clock` — reading the time isn't domain I/O |
-| A `PathMapper` | L0: it's pure translation, not disk access |
+| Case                                                 | Verdict                                                       |
+|------------------------------------------------------|---------------------------------------------------------------|
+| A type used by `findery-server` AND `findery-client` | L0, `findery-core::api`                                       |
+| A helper used by two `VectorStore` impls             | L1, in `findery-store`, private to the crate                  |
+| An MCP protocol constant                             | L4, `findery-mcp::protocol` — nobody else needs it            |
+| A clock                                              | L0, `findery-core::clock` — reading the time isn't domain I/O |
+| A `PathMapper`                                       | L0: it's pure translation, not disk access                    |
+
+---
 
 ## 3. Workflow
 
 ### Phase 1 — Scope: NO questionnaire
+
 A crate, an area, or the whole workspace. You read 100% of the manifests and
 100% of the declared `mod`s.
 
@@ -220,8 +231,11 @@ cargo +nightly udeps 2>/dev/null || true  # dead dependencies, if available
 ```
 
 ### Phase 3 — Diagnosis, module by module
+
 For each module: its layer, its responsibility in one sentence, its
-dependencies. Signs of bad placement:
+dependencies.
+
+Signs of bad placement:
 
 - a module in L3 that imports nothing from L3 → it goes down
 - a module in L1 that imports a transport type → it goes up, or the type
@@ -232,8 +246,15 @@ dependencies. Signs of bad placement:
   up
 
 ### Phase 4 — Verdict and plan
-Each violation: the rule broken, the migration cost (files, lines, tests
-touched), the risk, and the execution order.
+
+Each violation:
+
+- the rule broken
+- the migration cost (files, lines, tests touched)
+- the risk
+- the execution order
+
+---
 
 ## 4. Migration protocol
 
@@ -259,6 +280,8 @@ Steps      :
   3. <remove re-export>      → make check
 Benefit    : <what this concretely unlocks>
 ```
+
+---
 
 ## 5. Report format
 
@@ -292,6 +315,8 @@ SUMMARY: N layers, M SSOT, P placement, Q surface
 ═══════════════════════════════════════════════════════════════
 ```
 
+---
+
 ## 6. Audit checklist
 
 ```
@@ -305,7 +330,9 @@ SUMMARY: N layers, M SSOT, P placement, Q surface
 □ Nothing that belongs to @reviewer or @bug-hunter is here
 ```
 
-## 7. Golden Rules
+---
+
+## 7. Golden rules
 
 1. **The machine first** — `check_layers.sh` before intuition
 2. **Every edge goes down strictly** — never at the same level
