@@ -111,7 +111,7 @@ Readiness: probes the embeddings runtimes already connected.
 ```jsonc
 { "ok": true, "model": "qwen3.7-text-embedding", "dim": 1024,
   "store_backend": "sqlite", "projects": 3, "embedder_ok": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "notices": ["bucket `axle`: …/.findery/bucket.db is now …/.findery/bucket.text-embedding-qwen3-embedding-0-6b-47m32eui.db (`…:1024`)"],
   "models": [
     { "alias": "embedder", "model": "qwen3.7-text-embedding", "dim": 1024,

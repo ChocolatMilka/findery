@@ -508,18 +508,18 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "findery-bench"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "findery-chunk"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "findery-core",
 ]
 
 [[package]]
 name = "findery-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "findery-client"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "findery-core",
  "reqwest",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "findery-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "findery-embed"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "findery-index"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "findery-mcp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "findery-client",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "findery-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "clap",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "findery-store"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "findery-core",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "findery-walk"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "findery-core",
  "globset",
