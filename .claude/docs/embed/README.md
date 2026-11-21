@@ -425,6 +425,15 @@ width — so if the width is known from somewhere else, the daemon starts
 | the bucket's recorded recipe, when its identity (`weights`, else the model name) still matches | starts degraded |
 | nowhere | refuses, naming `FINDERY_EMBED_DIM` |
 
+A probe — the boot probe when the width is known, and every liveness check
+behind `findery health`, `doctor` and `model ls` — asks **once**, within
+`probe_timeout_secs` (10 s, `FINDERY_EMBED_PROBE_TIMEOUT_SECS`). The retries
+and `timeout_secs` (120 s) are for embedding work: a runtime that accepts the
+connection and never answers reads as down within seconds, not after four
+two-minute attempts. The profiles are probed concurrently, so two runtimes down
+cost one timeout, not two. When the width is unknown, the boot probe keeps the
+retries: boot depends on its answer.
+
 Degraded means:
 
 - the daemon is up, `/healthz` answers

@@ -37,8 +37,9 @@ fn model_check(h: &ModelHealth) -> Check {
                 h.detail.as_deref().unwrap_or("not answering")
             ),
             format!(
-                "start the runtime serving `{}` (LM Studio, Ollama, `make up-model`),\n\
-                 or switch: findery model use <alias>",
+                "start the runtime serving `{}` at that address (`runtime/models.ps1 start`\n\
+                 or `.sh`, LM Studio, Ollama, `make up-model`), or point at the one that\n\
+                 runs: findery config set url <its address> — or switch: findery model use <alias>",
                 p.model
             ),
         ),
@@ -56,7 +57,8 @@ fn legacy_model_check(health: &HealthReport) -> Check {
             "{summary} — {}",
             health.detail.as_deref().unwrap_or("not answering")
         ),
-        "start your embedding runtime (LM Studio, Ollama, `make up-model`),\n\
+        "start your embedding runtime (`runtime/models.ps1 start` or `.sh`, LM Studio,\n\
+         Ollama, `make up-model`),\n\
          then check FINDERY_EMBED_BASE_URL and FINDERY_EMBED_MODEL",
     )
 }
@@ -71,10 +73,13 @@ pub(super) fn notice_checks(notices: &[String]) -> Vec<Check> {
 /// shows, with the log as the fix.
 fn notice_check(notice: &str) -> Check {
     let has = |phrase: &str| notice.contains(phrase);
-    let fix = if has(" is now ") || has("records no recipe yet") {
+    // Information, not a problem: a file moved, one not claimed yet, or an old
+    // copy kept beside the file that serves — the sentence itself says what to
+    // delete, and nothing is wrong until then.
+    let informational =
+        has(" is now ") || has("records no recipe yet") || has("was left as it is because");
+    let fix = if informational {
         return Check::good("notice", notice);
-    } else if has("was left as it is because") {
-        "the newer file serves; delete the old one once you no longer need it"
     } else if has("stays where it is because") {
         "close whatever holds the file (another findery, an editor, a backup tool), then\n\
          restart the server — `findery daemon stop`; the next command retries the move"
@@ -215,7 +220,7 @@ mod tests {
             (
                 "bucket `a`: /a/bucket.db was left as it is because /a/bucket.m-x.db already \
                  holds `m:8`; delete /a/bucket.db once you no longer need it",
-                Some("delete the old one"),
+                None,
             ),
             (
                 "bucket `a`: /a/bucket.db stays where it is because it is held by another \

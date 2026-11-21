@@ -65,6 +65,10 @@ batch_size = 32
 concurrency = 2
 timeout_secs = 120
 max_retries = 3
+# One attempt, this long, for a liveness probe (`findery health`, `doctor`,
+# `model ls`) and for the boot probe when the width is known: a hung runtime
+# reads as down within seconds instead of after every retry above.
+probe_timeout_secs = 10
 max_input_chars = 24000
 # L2-normalize on arrival, so cosine becomes a dot product downstream.
 normalize = true
