@@ -82,8 +82,14 @@ async fn search_code(client: &Client, args: &Value) -> Result<String> {
             .and_then(Value::as_str)
             .map(str::to_string),
     };
-    let hits = client.search(&request).await?;
-    Ok(render_hits(&project, &query, &hits))
+    let response = client.search(&request).await?;
+    // A degraded answer says so first, so the agent weighs the hits that follow.
+    let mut out = String::new();
+    for warning in &response.warnings {
+        out.push_str(&format!("warning: {warning}\n"));
+    }
+    out.push_str(&render_hits(&project, &query, &response.hits));
+    Ok(out)
 }
 
 /// The layout the agent actually reads.
@@ -164,6 +170,7 @@ async fn sync_project(client: &Client, args: &Value) -> Result<String> {
         mode: args.get("mode").and_then(Value::as_str).map(str::to_string),
         paths: if paths.is_empty() { None } else { Some(paths) },
         wait: args.get("wait").and_then(Value::as_bool).unwrap_or(false),
+        wait_ms: None,
     };
     match client.sync(&project, &request).await? {
         findery_core::api::SyncResponse::Completed { report } => Ok(format!(

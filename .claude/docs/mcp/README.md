@@ -144,6 +144,11 @@ An empty search doesn't just say "nothing": it says what to try next
 (`mode: "keyword"` for an exact identifier, `sync_project` if the code is
 newer than the index).
 
+A degraded search says so before its hits: when the project has no vectors
+under its model yet, or the model's runtime is down, a hybrid search answers
+from the keyword list alone, and each `warning:` line above the excerpts
+names what is missing and the command that brings it back.
+
 ## Token budget
 
 | Lever                     | Effect |
