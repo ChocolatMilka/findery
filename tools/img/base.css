@@ -1,9 +1,0 @@
-* { box-sizing: border-box; margin: 0; }
-body { width: 1600px; background: #12121c; color: #e8e6f2; font-family: "Inter", "Segoe UI", "DejaVu Sans", system-ui, sans-serif; padding: 56px 64px; }
-.mono { font-family: "JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", monospace; }
-h1 { font-size: 20px; letter-spacing: .14em; text-transform: uppercase; color: #9a96c4; font-weight: 600; margin-bottom: 8px; }
-h2 { font-size: 38px; font-weight: 700; letter-spacing: -.01em; margin-bottom: 36px; }
-h2 em { font-style: normal; color: #8f84ff; }
-.card { background: #1b1b2b; border: 1px solid #2c2c44; border-radius: 18px; }
-.foot { margin-top: 28px; font-size: 16px; color: #8683a8; }
-.foot b { color: #e8e6f2; }

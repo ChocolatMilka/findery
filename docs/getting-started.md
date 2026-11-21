@@ -13,9 +13,9 @@ Nothing here assumes where it lives — any directory, on any disk, works.
 Two processes with two different jobs, and a set of thin clients.
 
 ```text
- ┌─ a container ────────────────┐
+ ┌─ a model runtime ────────────┐
  │  the embedding model         │  text in, vector out. STATELESS.
- │  (HuggingFace TEI, Qwen3)    │  It does not know what a project,
+ │  (llama.cpp, TEI, LM Studio) │  It does not know what a project,
  └──────────────┬───────────────┘  a chunk or your index is.
                 │ HTTP — "embed these 32 texts"
  ┌──────────────▼───────────────┐
@@ -29,8 +29,8 @@ Two processes with two different jobs, and a set of thin clients.
    (the CLI)        (Claude Code)      (findery-client)   ← no state
 ```
 
-**There is only one server, and the container is not it.** The container runs a
-third-party inference runtime that turns text into vectors and forgets it ever
+**There is only one server, and the model runtime is not it.** The runtime is
+third-party inference software that turns text into vectors and forgets it ever
 happened. Everything that knows about your code lives in `finderyd`.
 
 `finderyd` itself can run either way — natively (the default) or in a container
@@ -78,7 +78,8 @@ Two smaller reasons follow:
 ## 1. Prerequisites
 
 - **Rust** — stable. `rustc --version` should answer.
-- **Docker** — running. Only to host the model — see step 2 for the alternative.
+- **A model runtime** — none to install by hand: step 3 sets one up natively,
+  or in Docker if you prefer.
 - **Windows only** — Git for Windows. It is what supplies the `bash` the two
   repository watchdogs are written for; `.\tools\tasks.ps1` looks for it there
   and not in WSL.
@@ -113,7 +114,7 @@ for `crates/server` and `crates/mcp`.
 **Windows without a Rust toolchain**: every release publishes an installer.
 
 ```powershell
-msiexec /i findery-0.1.0-x64.msi      # the .msi from the latest release
+msiexec /i findery-0.5.0-x64.msi      # the .msi from the latest release
 findery --version                     # on PATH, from a new terminal
 ```
 
@@ -129,30 +130,91 @@ The build behind it is [`packaging/windows/`](../packaging/windows/README.md).
 
 ---
 
-## 3. Start the model
+## 3. Start a model
+
+findery talks to any `/v1/embeddings` endpoint. Pick **one** of the three ways
+below, then point findery at it — two settings, written to the file the daemon
+reads, so they survive the terminal and the reboot.
+
+### A — Natively, with the bundled runtime
+
+[`runtime/`](../runtime/) installs llama.cpp behind llama-swap: one port,
+`127.0.0.1:8090`, serving Harrier and Qwen3-Embedding (Q8_0), routed by the
+name in each request. Both binaries are pinned in
+[`runtime/pins.txt`](../runtime/pins.txt) and every download is checked
+against its sha256. The default build uses Vulkan, which runs on any recent
+AMD, NVIDIA or Intel GPU; `cpu` is there for a machine without one.
+
+| | Windows | Linux |
+|---|---|---|
+| Install | `.\runtime\models.ps1 install` | `runtime/models.sh install` |
+| Without a GPU | `.\runtime\models.ps1 install -Backend cpu` | `runtime/models.sh install --backend cpu` |
+| Start, in the background | `.\runtime\models.ps1 start` | `runtime/models.sh start` |
+| Start at every login | `.\runtime\models.ps1 autostart on` | `runtime/models.sh autostart on` *(a systemd user service)* |
+| Same, through the task runner | `.\tools\tasks.ps1 models-install`, `models-start` | `make models-install`, `make models-start` |
+
+Then:
 
 ```bash
-make up-model              # docker compose up -d tei
-docker compose logs -f tei # wait for it to report ready
+findery config set url   http://127.0.0.1:8090
+findery config set model harrier-oss-v1-0.6b
+```
+
+Everything lands in a runtime directory beside findery's data —
+`%LOCALAPPDATA%\findery\runtime` on Windows,
+`~/.local/share/findery/runtime` on Linux (`FINDERY_RUNTIME_DIR` moves it).
+The models are read from your LM Studio library (`~/.lmstudio/models`) when
+it has them and downloaded otherwise, about 1.3 GB for the two; `--models
+<dir>` puts them elsewhere. The served names are the ones LM Studio uses, so
+vectors computed through LM Studio are reused.
+
+To watch it:
+
+| Command | Answers |
+|---|---|
+| `status` | whether it answers, which models are loaded, which files are missing |
+| `ui` | opens the llama-swap dashboard, `http://127.0.0.1:8090/ui` |
+| `logs` | follows the log (`journalctl` when it runs as a service) |
+| `devices` | the GPUs llama.cpp sees — add `--device Vulkan1` in `llama-swap.yaml` to pick another |
+| `stop`, `restart`, `uninstall` | what they say; `uninstall` keeps the config and the models |
+
+`install` can be run again at any time: a step already done is skipped, and
+the `llama-swap.yaml` it wrote is never overwritten, so edit it freely. A model
+unloads after 30 idle minutes and loads again on the next request.
+
+On Linux the GPU build needs the Vulkan loader (`libvulkan1` and your GPU's
+Vulkan driver, `mesa-vulkan-drivers` on AMD and Intel); `devices` says whether
+it sees one.
+
+### B — In Docker
+
+Hugging Face TEI serving Harrier, on CPU (`make up-model-gpu` for CUDA):
+
+```bash
+make up-model                # docker compose up -d tei
+docker compose logs -f tei   # wait for it to report ready
+findery config set url   http://127.0.0.1:8080
+findery config set model microsoft/harrier-oss-v1-0.6b
 ```
 
 `docker compose` is identical on every platform, so `.\tools\tasks.ps1 up-model`
 and the raw command are interchangeable here.
 
-First run downloads about 1.2 GB of weights. They land in a Docker volume and
-survive `docker compose down`, so this happens once.
+The first run downloads about 1.2 GB of weights. They land in a Docker volume
+and survive `docker compose down`, so this happens once.
 
-**Already running a model?** Skip this entirely. Anything serving
-`/v1/embeddings` works — Ollama, llama.cpp, LM Studio, vLLM, or a hosted
-provider. Point the daemon at it and move on:
+### C — A runtime you already run
+
+Anything serving `/v1/embeddings` works — LM Studio, Ollama, vLLM, or a hosted
+provider:
 
 ```bash
-findery config set url http://127.0.0.1:11434
+findery config set url   http://127.0.0.1:1234      # LM Studio; Ollama is :11434
 findery config set model <the name that runtime reports>
 ```
 
-These are written to a file the daemon reads, not to your shell: they survive
-the terminal, the reboot, and the next person who opens a different one. See
+Left untouched, the configuration points at DashScope's hosted
+`qwen3.7-text-embedding`, which needs a key — see
 [step 4bis](#4bis-settings) for the whole surface.
 
 ---
@@ -193,6 +255,7 @@ diagnostic is the last thing that should go down with the model.
 so a setting survives the terminal that made it.
 
 ```bash
+# DashScope's hosted qwen3.7-text-embedding, the built-in default
 findery config set model qwen3.7-text-embedding
 findery config set url   https://dashscope-intl.aliyuncs.com/compatible-mode
 findery config set key   <your API key>
@@ -256,15 +319,16 @@ findery sync          # indexes it
 The project id is derived from the directory name, and the daemon reads your
 real filesystem — no mount to declare, no path to type.
 
-The first pass takes minutes on a large repository, so `sync` draws a bar while
-it runs:
+The first pass takes minutes on a large repository, so `sync` draws two bars
+while it runs — files, then embeddings, each once it means something:
 
 ```text
-⠸ =>===============------------- 892/3104 files · indexing · 6104 chunks · 1430 embedded / 4674 cached
+files ============================ 312/312 · 6 888 unchanged
+embed ===============>             1 541/2 300 · 5 937 cached · 38/s · ETA 0:42
 ```
 
-The `3104` is a count of files, not a guess: the walk completes before anything
-is read, which is what lets the bar track real progress.
+The counts are not guesses: the pass is planned before anything is read, so the
+bar knows how many files are left to read and how many are unchanged.
 
 Piped or redirected, there is no bar — just the summary line a script can read.
 
@@ -274,7 +338,9 @@ Piped or redirected, there is no bar — just the summary line a script can read
 
 `findery init --sync` does both in one go when you know the model is there.
 
-By default it indexes `.rs` and `.md`. To widen:
+By default it indexes every language the chunkers know —
+`rs, md, toml, js, mjs, cjs, ts, py, php, json, axle, java, kt, kts, go`. To
+choose:
 
 ```bash
 findery init --ext rs,md,toml,yml,sql
@@ -282,11 +348,12 @@ findery init --ext rs,md,toml,yml,sql
 
 ### More than one index
 
-Each project gets its own **bucket** by default: one SQLite file holding its
-chunks and vectors, living at `.findery/bucket.db` inside the project. Nothing
-to create, nothing to name, and the index travels with the code.
+Each project gets its own **bucket** by default: its chunks and vectors, in
+SQLite files under `.findery/` inside the project — one file per model, named
+after it. Nothing to create, nothing to name, and the index travels with the
+code.
 
-A bucket becomes shared when two projects point at the same file. Declare that
+A bucket becomes shared when two projects point at the same path. Declare that
 in the manifest:
 
 ```toml
@@ -296,7 +363,7 @@ path = "D:/shared/team.db"
 ```
 
 ```bash
-findery bucket ls                    # what each holds, and where it lives
+findery bucket ls                    # what each holds, file by file
 findery bucket create work           # a named one, for `findery init --bucket work`
 ```
 
@@ -364,9 +431,10 @@ Create `.mcp.json` at the root of the project you want the agent to search:
 }
 ```
 
-Restart Claude Code and type `/mcp`. You should see `search_code` and eight
-other tools. `search_code` becomes the agent's first move when locating
-anything — instead of a glob, four greps and three file reads.
+Restart Claude Code and type `/mcp`. You should see five tools — `search`,
+`read`, `projects`, `sync`, `note` — and seven prompts. `search` becomes the
+agent's first move when locating anything, instead of a glob, a handful of greps
+and three file reads.
 
 Claude Code launches the bridge, not your shell, so it takes its daemon address
 from the `env` block of this file rather than from your settings. Add it when
@@ -382,14 +450,18 @@ If `findery-mcp` is not on the PATH Claude Code sees, use its absolute path.
 
 ## What to expect
 
-Sizing from real measurements. Times are for CPU; a GPU is five to ten times
-faster.
+The vector scan and the disk figures are measured (`make bench`, and a real
+bucket at ~10.7 kB per chunk); the first-index times are estimates until the
+end-to-end benchmark exists ([roadmap R8](../.claude/roadmap/README.md)). They
+are for CPU; a GPU is five to ten times faster.
 
-| Codebase             | Files  | Chunks  | First index (CPU) | Disk    | Search |
-|----------------------|--------|---------|-------------------|---------|--------|
-| Small (~10k lines)   | ~70    | ~1,000  | 20-40 s           | ~11 MB  | ~3 ms  |
-| Medium (~100k lines) | ~500   | ~12,000 | 4-8 min           | ~130 MB | ~5 ms  |
-| Large (~500k lines)  | ~3,000 | ~60,000 | 20-40 min         | ~640 MB | ~15 ms |
+| Codebase             | Files  | Chunks  | First index (CPU) | Disk    | Vector scan |
+|----------------------|--------|---------|-------------------|---------|-------------|
+| Small (~10k lines)   | ~70    | ~1,000  | 15-30 s           | ~11 MB  | < 1 ms      |
+| Medium (~100k lines) | ~500   | ~10,000 | 2-5 min           | ~110 MB | ~2.5 ms     |
+| Large (~500k lines)  | ~3,000 | ~50,000 | 10-25 min         | ~535 MB | ~12 ms      |
+
+A search adds the query's own embedding to the scan: 15 to 60 ms end to end.
 
 The first index is the only slow moment. Everything after is incremental, and
 re-indexing an unchanged repository costs **zero** embeddings — vectors are keyed
@@ -413,7 +485,7 @@ Two numbers worth reading in the sync report:
 | `no indexed project contains …` | `findery init` here, or `-p <id>` |
 | daemon does not answer | `findery doctor` — it names the cause and the fix |
 | daemon will not start | `<data-dir>/finderyd.log` has the reason; `findery doctor` prints the path |
-| `DEGRADED` / every search returns 502 | the model is down — `docker compose logs tei` |
+| searches print `keyword results only: …` | the model is down: `findery doctor`, then `runtime/models.* status` or `docker compose logs tei` |
 | search finds nothing that clearly exists | not synced yet, or a filter is too narrow — check `findery status` |
 | sync re-embeds everything | the model or dimension changed, which opens a new cache namespace |
 | a sync is refused, naming two recipes | that bucket holds vectors from another model — `findery bucket ls` names the conflict, and keyword search still works there |

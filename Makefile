@@ -1,6 +1,6 @@
 # findery — everything you need to build, check and run the stack.
 .DEFAULT_GOAL := help
-.PHONY: help build test clippy fmt fmt-check check bench layers sizes up-model up-model-gpu run install up up-gpu up-qdrant down logs ps shell health image clean
+.PHONY: help build test clippy fmt fmt-check check bench layers sizes models-install models-start models-stop models-status up-model up-model-gpu run install up up-gpu up-qdrant down logs ps shell health image clean
 
 ## --- Rust ------------------------------------------------------------------
 
@@ -32,6 +32,20 @@ check: fmt-check clippy test layers sizes imports  ## Everything CI would run
 
 bench:            ## Measure the brute-force vector scan (release only)
 	cargo run -p findery-bench --release
+
+## --- Model runtime, native (llama.cpp + llama-swap, see runtime/) ----------
+
+models-install:   ## Install the native model runtime and its models (GPU via Vulkan)
+	bash runtime/models.sh install
+
+models-start:     ## Start it in the background, on 127.0.0.1:8090
+	bash runtime/models.sh start
+
+models-stop:      ## Stop it
+	bash runtime/models.sh stop
+
+models-status:    ## Whether it answers, and which models are loaded
+	bash runtime/models.sh status
 
 ## --- Docker ----------------------------------------------------------------
 

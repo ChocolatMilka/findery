@@ -109,7 +109,9 @@ make check                  # fmt-check + clippy -D warnings + test + layers + s
 make test                   # 886 tests
 make bench                  # measures the vector scan (release)
 make install                # findery + finderyd + MCP bridge into ~/.cargo/bin
-make up-model               # the model alone, in Docker — the daemon runs natively
+make models-install         # a native model runtime: llama.cpp + llama-swap on :8090 (runtime/)
+make models-start / models-status
+make up-model               # or the model alone, in Docker — the daemon runs natively
 make run                    # the daemon, on this machine
 make up                     # all-Docker variant (requires FINDERY_WORKSPACES)
 make up-gpu / up-qdrant / logs / health / down

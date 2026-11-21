@@ -21,7 +21,8 @@ else starts itself.
 That is the entire surface. There is no service to register, no port to open,
 no database to provision.
 
-The daemon listens on `127.0.0.1:8077` and writes one SQLite file.
+The daemon listens on `127.0.0.1:8077` and writes its index as SQLite files,
+one per model.
 
 ### Where the data lives
 
@@ -32,21 +33,26 @@ The daemon listens on `127.0.0.1:8077` and writes one SQLite file.
 
 `FINDERY_DATA_DIR` moves it. The directory holds:
 
-- `bucket.db` — everything: files, chunks, vectors, the cache
+- `bucket.<model>-<tag>.db` — everything: files, chunks, vectors, the cache,
+  one file per model
+- `config.toml` — the settings `findery config set` writes
 - `finderyd.log`
+- `runtime/` — the native model runtime, when [`runtime/`](../runtime/)
+  installed one
 
 Deleting it is a full reset and costs one re-index.
 
 A daemon can serve several buckets:
 
-- **The default one** — `bucket.db` at the root of the data directory
-- **Every other name** — lives at `buckets/<name>/bucket.db`
+- **The default one** — at the root of the data directory
+- **Every other name** — under `buckets/<name>/`, unless its manifest names a
+  path — by default a project's own bucket lives in its `.findery/`
 
 They are independent — separate files, separate projects, separate vectors —
 which is what lets you keep a team's code out of a personal index without
 running a second daemon.
 
-`findery bucket ls` prints each one and its path.
+`findery bucket ls` prints each one, file by file.
 
 ---
 
@@ -56,13 +62,14 @@ Where do vectors come from? Everything else follows.
 
 ### A. Each user runs a local model
 
-The most private option and the one with no running cost. The user installs
-LM Studio, Ollama or llama.cpp, loads an embedding model, and you set two
-variables.
+The most private option and the one with no running cost. The user runs
+[`runtime/`](../runtime/) — `models.ps1 install` on Windows, `models.sh
+install` on Linux, then `autostart on` — or LM Studio, Ollama or llama.cpp of
+their own, and you set two variables.
 
 ```bash
-export FINDERY_EMBED_BASE_URL=http://127.0.0.1:1234   # LM Studio
-export FINDERY_EMBED_MODEL=<the name your local runtime reports>
+export FINDERY_EMBED_BASE_URL=http://127.0.0.1:8090   # runtime/; LM Studio is :1234
+export FINDERY_EMBED_MODEL=harrier-oss-v1-0.6b        # or the name your runtime reports
 ```
 
 - **Cost** — nothing.

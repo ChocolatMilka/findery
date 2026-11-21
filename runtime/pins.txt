@@ -1,0 +1,25 @@
+# What `models.ps1` and `models.sh` install, pinned, with the sha256 of every
+# download. Both scripts read this file and nothing else decides a version.
+#
+# INTENT: a runtime that installs "latest" is a runtime that changes under a
+# working setup. Bumping a version is an edit here: the tag, then the sha256
+# GitHub lists for each asset (`digest` in the release API) and the one
+# Hugging Face lists for each file (`X-Linked-ETag`).
+#
+# kind     name                                     value                                                                sha256
+
+version    llama.cpp                                b12606
+version    llama-swap                               275
+
+asset      llama-b12606-bin-win-vulkan-x64.zip      -                                                                    76e3c7df27b892bff158bf46f30c3a01aff7ff20a05830d6f492721f9ebc136b
+asset      llama-b12606-bin-win-cpu-x64.zip         -                                                                    425eeb2a94a9600dadf369a7c9c7dd0141948921efc0fa9ec7872970fffc845d
+asset      llama-b12606-bin-ubuntu-vulkan-x64.tar.gz -                                                                   0c48a9bde079519d5775296d4682599fc6173a6660fe4dc18d1d243cd9f610b4
+asset      llama-b12606-bin-ubuntu-x64.tar.gz       -                                                                    23ad17d2052e35a7c0a16a7d84a46b3f44c0f90d8ef438e27712c1c158321024
+asset      llama-swap_275_windows_amd64.zip         -                                                                    00acc3fb5ef0a9b0408ef2ef41000beee2cc8fab074eaf33b91e2cd090450249
+asset      llama-swap_275_linux_amd64.tar.gz        -                                                                    a7fa5946e054783d4c4a5e2ab8f3ddd467de0805519f6b6f2a41508ae453fbe8
+
+# A model: the name findery sends as `model`, its Hugging Face path
+# (`owner/repo/file`, laid out on disk the way LM Studio lays it out, so an LM
+# Studio library is reused as is), and the file's sha256.
+model      harrier-oss-v1-0.6b                      mradermacher/harrier-oss-v1-0.6b-GGUF/harrier-oss-v1-0.6b.Q8_0.gguf  ba2c9408f82cfdb73aaf70aaea9f125f3fb24c5e76ce0efb469e1530e5ec53e4
+model      text-embedding-qwen3-embedding-0.6b      Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf        06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
