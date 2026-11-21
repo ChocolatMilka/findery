@@ -8,7 +8,8 @@
 //! syntax is still moving; everything that may change is the keyword table
 //! below, nothing structural.
 
-use crate::brace::{ItemMeta, Profile, chunk_with, next_ident, split_trivia};
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::{header_of, next_ident, split_trivia};
 use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
@@ -56,12 +57,13 @@ impl Profile for AxleProfile {
         &Lexicon::AXLE
     }
 
-    fn classify(&self, item: &str, _nested: bool) -> ItemMeta {
-        let (_, code) = split_trivia(item, self.lexicon());
+    fn classify(&self, item: &str, _parent: Option<ChunkKind>) -> ItemMeta {
+        let lex = self.lexicon();
+        let (_, code) = split_trivia(item, lex);
         // `=` ends the header too: `const N : i32 = 4;` names `N`, and what
-        // follows the `=` is a value that may spell any keyword.
-        let header_end = code.find(['{', ';', '=']).unwrap_or(code.len());
-        let (kind, symbol) = parse_header(&code[..header_end]);
+        // follows the `=` is a value that may spell any keyword. A parameter's
+        // default (`fn f(x : i32 = 4)`) does not.
+        let (kind, symbol) = parse_header(header_of(code, lex, b"{;="));
         ItemMeta {
             kind,
             symbol,
@@ -70,7 +72,17 @@ impl Profile for AxleProfile {
     }
 
     fn recursable(&self, kind: ChunkKind) -> bool {
-        matches!(kind, ChunkKind::Struct | ChunkKind::Trait | ChunkKind::Impl)
+        matches!(
+            kind,
+            ChunkKind::Struct | ChunkKind::Trait | ChunkKind::Impl | ChunkKind::Module
+        )
+    }
+
+    /// A `when T : Bound { … }` group — the one `Impl` that sits inside a
+    /// class — only gathers methods under a condition: when its class is
+    /// split, its methods are split too.
+    fn splits_with_parent(&self, kind: ChunkKind) -> bool {
+        kind == ChunkKind::Impl
     }
 }
 
@@ -79,19 +91,45 @@ fn parse_header(header: &str) -> (ChunkKind, Option<String>) {
     // Generic lists and parameter lists are blown apart so that
     // `class List<T>` tokenizes as `class` + `List`.
     let cleaned = header.replace(['(', ')', ',', '<', '>', ':'], " ");
-    let mut toks = cleaned.split_whitespace();
-    while let Some(tok) = toks.next() {
-        let Some((word, kind)) = KEYWORDS.iter().find(|(kw, _)| *kw == tok) else {
+    let toks: Vec<&str> = cleaned.split_whitespace().collect();
+    for (k, tok) in toks.iter().enumerate() {
+        let Some((word, kind)) = KEYWORDS.iter().find(|(kw, _)| kw == tok) else {
             continue;
         };
         let symbol = if SELF_NAMED.contains(word) {
             Some((*word).to_string())
         } else {
-            next_ident(toks.next())
+            next_ident(toks.get(k + 1).copied())
         };
         return (*kind, symbol);
     }
-    (ChunkKind::Text, None)
+    // No declaring keyword: the three forms that declare without one.
+    match toks.as_slice() {
+        // `when T : Printable { … }` — conditional methods, named by their
+        // condition, as an `impl` is named by what it implements.
+        ["when", ..] => {
+            let condition = header.split_whitespace().collect::<Vec<_>>().join(" ");
+            (ChunkKind::Impl, Some(condition))
+        }
+        // `extern "C" from "user32" { … }` — a file of bindings, named after
+        // the library it binds.
+        _ if toks.contains(&"extern") && toks.contains(&"from") => {
+            let lib = toks
+                .iter()
+                .skip_while(|t| **t != "from")
+                .nth(1)
+                .map(|t| t.trim_matches('"'))
+                .filter(|t| !t.is_empty())
+                .map(str::to_string);
+            (ChunkKind::Module, lib)
+        }
+        // `pub static MAX : i64 = 500;` — one slot for the class.
+        _ if toks.contains(&"static") => {
+            let after = toks.iter().skip_while(|t| **t != "static").nth(1);
+            (ChunkKind::Const, next_ident(after.copied()))
+        }
+        _ => (ChunkKind::Text, None),
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +238,100 @@ mod tests {
     fn a_value_spelling_a_keyword_does_not_rename_the_constant() {
         let out = chunk("const FN_NAME : string = \"fn other\";\n");
         assert_eq!(out[0].symbol.as_deref(), Some("FN_NAME"));
+    }
+
+    #[test]
+    fn a_stop_byte_inside_a_string_does_not_cut_the_header() {
+        let out = chunk("extern \"C\" from \"lib{x}=1\" {\n    fn f() : i32;\n}\n");
+        assert_eq!(out[0].kind, ChunkKind::Module, "got {out:#?}");
+        assert_eq!(out[0].symbol.as_deref(), Some("lib{x}=1"));
+    }
+
+    #[test]
+    fn a_static_fn_and_a_derived_visibility_are_still_named_members() {
+        let filler = "        // padding padding padding padding padding padding\n".repeat(4);
+        let src = format!(
+            "class StringUtil {{\n    pub static fn isAscii(s : string) : bool {{\n{filler}        return true;\n    }}\n\n\
+             \x20   pub(derived) fn hook(self) : void {{\n{filler}    }}\n\n\
+             \x20   readonly id : i64;\n    pub static MAX_OVERDRAFT : i64 = 500;\n}}\n"
+        );
+        let out = tight(&src, 200);
+        let is_ascii = out
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("isAscii"))
+            .expect("isAscii");
+        assert_eq!(is_ascii.kind, ChunkKind::Method);
+        assert_eq!(
+            out.iter()
+                .find(|c| c.symbol.as_deref() == Some("hook"))
+                .map(|c| c.kind),
+            Some(ChunkKind::Method)
+        );
+        // A static slot is the class's constant; a readonly field is a field.
+        assert_eq!(
+            out.iter()
+                .find(|c| c.symbol.as_deref() == Some("MAX_OVERDRAFT"))
+                .map(|c| c.kind),
+            Some(ChunkKind::Const),
+            "got {out:#?}"
+        );
+        assert!(!out.iter().any(|c| c.symbol.as_deref() == Some("id")));
+    }
+
+    #[test]
+    fn an_extern_group_is_one_module_named_after_its_library() {
+        let out = chunk(
+            "@target(os = windows)\nextern \"C\" from \"winmm\" {\n    fn timeBeginPeriod(ms : i32) : i32;\n}\n\nfn after() : void {}\n",
+        );
+        assert_eq!(out[0].kind, ChunkKind::Module, "got {out:#?}");
+        assert_eq!(out[0].symbol.as_deref(), Some("winmm"));
+        assert!(out[0].text.starts_with("@target("));
+        assert_eq!(symbols(&out), vec!["winmm", "after"]);
+    }
+
+    #[test]
+    fn a_large_extern_group_splits_per_binding() {
+        let src = "extern \"C\" from \"user32\" {\n    fn RegisterClassExW(wc : ptr) : i32;\n    fn CreateWindowExW(style : i32) : ptr;\n}\n";
+        let out = tight(src, 60);
+        let create = out
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("CreateWindowExW"))
+            .expect("CreateWindowExW");
+        assert_eq!(
+            create.breadcrumb.as_deref(),
+            Some("user32 > CreateWindowExW")
+        );
+    }
+
+    #[test]
+    fn a_when_group_splits_with_its_class_and_keeps_its_methods_named() {
+        let filler = "        // padding padding padding padding padding padding\n".repeat(4);
+        let src = format!(
+            "class Wrapper<T> {{\n    value : T;\n\n    pub fn get(self) : T {{\n{filler}        return self.value;\n    }}\n\n\
+             \x20   when T : Printable {{\n        fn tag(self) : i32 {{ return 1; }}\n        fn show(self) : void {{}}\n    }}\n}}\n"
+        );
+        let out = tight(&src, 200);
+        let tag = out
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("tag"))
+            .expect("tag is its own chunk");
+        assert_eq!(tag.kind, ChunkKind::Method);
+        assert_eq!(
+            tag.breadcrumb.as_deref(),
+            Some("Wrapper > when T : Printable > tag")
+        );
+        assert!(out.iter().any(|c| c.symbol.as_deref() == Some("show")));
+    }
+
+    #[test]
+    fn every_annotation_prefix_rides_with_its_item() {
+        let out = chunk(
+            "@inline(always)\n@heat(cold)\nfn hot() : void {}\n\n@derive(Eq, Ord, Hashable)\nstruct P {\n    x : i32;\n}\n\n@layout(packed)\nextern \"C\" struct H {\n    m : u16;\n}\n",
+        );
+        assert_eq!(symbols(&out), vec!["hot", "P", "H"], "got {out:#?}");
+        assert!(out[0].text.starts_with("@inline(always)\n@heat(cold)"));
+        assert!(out[1].text.starts_with("@derive("));
+        assert_eq!(out[2].kind, ChunkKind::Struct);
     }
 
     #[test]

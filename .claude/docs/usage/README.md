@@ -19,19 +19,23 @@ Without `make` — Windows — the same names work through
 `.\tools\tasks.ps1 install` and `.\tools\tasks.ps1 up-model`.
 
 Windows also has a released `.msi`, for a machine with no Rust toolchain at all:
-it installs the three binaries into `C:\Program Files\findery` and appends that
-directory to the system `PATH`. The binaries go together because `findery`
-resolves `finderyd` next to itself before consulting `PATH` — a CLI split from
-its server is a CLI talking to a build it never found. The installer also closes
-a running `finderyd` before replacing it, since Windows will not overwrite a
-running executable and the daemon starts itself. See
-[`packaging/windows/`](../../../packaging/windows/README.md).
+
+- **What it installs** — the three binaries into `C:\Program Files\findery`,
+  and that directory appended to the system `PATH`.
+- **Why the binaries go together** — `findery` resolves `finderyd` next to
+  itself before consulting `PATH`: a CLI split from its server is a CLI talking
+  to a build it never found.
+- **What it closes first** — a running `finderyd`, before replacing it, since
+  Windows will not overwrite a running executable and the daemon starts itself.
+
+See [`packaging/windows/`](../../../packaging/windows/README.md).
 
 Nothing else is on that list. The first `findery` command in a project starts the
 index server in the background, silently, and every later command reuses it; the
-one you would otherwise keep a terminal open for is not yours to manage. It sees
-your real filesystem, so **any path on any disk is indexable** — no mount to
-declare, no path translation. `FINDERY_WORKSPACES` is irrelevant here.
+one you would otherwise keep a terminal open for is not yours to manage.
+
+It sees your real filesystem, so **any path on any disk is indexable** — no
+mount to declare, no path translation. `FINDERY_WORKSPACES` is irrelevant here.
 
 | Command | For |
 |---------|-----|
@@ -50,9 +54,11 @@ by a local index answering from nothing.
 **Why a process at all?** Searching means comparing a query against every chunk,
 from a matrix of normalized vectors held contiguously in RAM. For a large
 codebase that is a few hundred megabytes; a fresh process would spend one to
-three seconds rebuilding it from SQLite before it could compare anything. One
-long-lived process builds it once and answers in milliseconds. That is the whole
-reason, and it is why the process is not something you are asked to think about.
+three seconds rebuilding it from SQLite before it could compare anything.
+
+One long-lived process builds it once and answers in milliseconds. That is the
+whole reason, and it is why the process is not something you are asked to think
+about.
 
 The container beside it is a different thing entirely: a stateless third-party
 inference runtime that turns text into vectors and keeps nothing. It is never the
@@ -170,8 +176,9 @@ path = "D:/shared/team.db"
 ```
 
 Nothing is written down about *which project lives in which bucket*: that fact
-is which file holds the project's row, and it stays in exactly one place. The
-daemon does keep a small `buckets.toml` in the data directory, but only as a
+is which file holds the project's row, and it stays in exactly one place.
+
+The daemon does keep a small `buckets.toml` in the data directory, but only as a
 discovery index — it records where a bucket's *file* is, because a path cannot
 be derived from a name. Named buckets are still found by scanning, so losing
 that file costs only the out-of-place ones.
@@ -183,11 +190,15 @@ The choice is made **once**, at registration, and never named again.
 file open — on Windows a SQLite file a live process has open cannot be removed
 at all.
 
-**When to reach for a shared bucket.** Two repositories that should not share a
-file: a work index and a personal one, a client's code and your own. Or a model
-change: a new recipe can go in a new bucket, leaving the old index intact and
-readable until you are ready to move. What it is *not* for is search scoping —
-projects in one bucket still search together, and `-p <id>` narrows that.
+**When to reach for a shared bucket.**
+
+- **Two repositories that should not share a file** — a work index and a
+  personal one, a client's code and your own.
+- **A model change** — a new recipe can go in a new bucket, leaving the old
+  index intact and readable until you are ready to move.
+
+What it is *not* for is search scoping — projects in one bucket still search
+together, and `-p <id>` narrows that.
 
 ### Scopes — a named restriction on the same index
 
@@ -225,9 +236,11 @@ findery config path
 ```
 
 Written to `<data_dir>/config.toml`, validated before the write, and the daemon
-is restarted so it takes effect. `model`, `url`, `key`, `dim`, `store`, `token`,
-`bind`, `instruction` and `extensions` are short names for the common keys;
-everything else takes its dotted path.
+is restarted so it takes effect.
+
+`model`, `url`, `key`, `dim`, `store`, `token`, `bind`, `instruction` and
+`extensions` are short names for the common keys; everything else takes its
+dotted path.
 
 The precedence has three levels, narrowest last:
 
@@ -275,12 +288,17 @@ The point of the file layer is that on Windows naming a daemon otherwise costs a
 started from a shortcut. `findery config set server …` is a command that
 persists, not an export that dies with the terminal.
 
-One asymmetry worth knowing: **`findery-mcp` takes its address from the `env`
-block of `.mcp.json`**, not from this file. Claude Code launches the bridge
-rather than your shell, and an MCP client's `env` block is its native
-configuration mechanism. Leave the block out for a loopback daemon; add
-`FINDERY_SERVER_URL` to it when the daemon is elsewhere. The default both fall
-back to is the same constant, so an unconfigured pair still meets.
+> **Note** — one asymmetry worth knowing: **`findery-mcp` takes its address
+> from the `env` block of `.mcp.json`**, not from this file.
+
+Claude Code launches the bridge rather than your shell, and an MCP client's
+`env` block is its native configuration mechanism.
+
+- Leave the block out for a loopback daemon.
+- Add `FINDERY_SERVER_URL` to it when the daemon is elsewhere.
+
+The default both fall back to is the same constant, so an unconfigured pair
+still meets.
 
 ---
 
@@ -316,7 +334,7 @@ findery projects                   # all of them, current one marked *
 A first pass over a large repository takes minutes, so `findery sync` draws a
 bar on **stderr** while it runs:
 
-```
+```text
 ⠹ =>=============-------------- 612/2048 files · indexing · 4180 chunks · 1204 embedded / 2976 cached
 ```
 
@@ -325,10 +343,12 @@ first, so `2048` is a count of files, not an estimate.
 
 The bar only exists when someone is watching — a terminal on stderr and no
 `--json`. Piped or redirected, the run prints the same one-line summary it
-always did, which is what a script or a CI log can grep for. Either way the run
-IS a job on the daemon, followed poll by poll: the CLI never holds one request
-open for the length of a sync, because a client timeout would then abort the
-indexing mid-write. `--background` returns the job id instead of following it.
+always did, which is what a script or a CI log can grep for.
+
+Either way the run IS a job on the daemon, followed poll by poll: the CLI never
+holds one request open for the length of a sync, because a client timeout would
+then abort the indexing mid-write. `--background` returns the job id instead of
+following it.
 
 `--json` on any command prints the daemon's answer verbatim, for scripting.
 
@@ -363,9 +383,9 @@ findery search "why rank fusion" --task docs        # rationale, not implementat
 | `error` | a message, a panic, a diagnostic code |
 
 `--instruction "…"` (`--instruct` still works) overrides the preset with
-free-form text. Describe the TASK,
-not the query — restating the query duplicates signal the query already carries
-and performs worse than the default.
+free-form text. Describe the TASK, not the query — restating the query
+duplicates signal the query already carries and performs worse than the
+default.
 
 **The model reads a pair.** Qwen is handed `Instruct: <the task>\nQuery: <your
 question>`, and the two halves are separate all the way from the CLI or the MCP
@@ -375,7 +395,7 @@ the task, the query is the question, and neither is derived from the other.
 The whole precedence, resolved once in L0 so no transport can invent its own
 ordering:
 
-```
+```text
 --instruction  >  --task  >  the project's manifest  >  the daemon's
                                                           embedder.query_instruction
 ```
@@ -403,9 +423,13 @@ the code is nothing like the wording in your head.
 findery search "cache" --path 'crates/store/**' --lang rust --kind method
 ```
 
-`--path` takes globs, `--lang` one of `rust markdown toml other`, `--kind` one of
-`file function method struct enum trait impl module macro test const doc_section
-text`. A malformed glob is rejected, never silently matched against nothing.
+| Flag     | Takes |
+|----------|-------|
+| `--path` | globs |
+| `--lang` | one of `rust markdown toml other` |
+| `--kind` | one of `file function method struct enum trait impl module macro test const doc_section text` |
+
+A malformed glob is rejected, never silently matched against nothing.
 
 ### Token budget
 
@@ -429,11 +453,11 @@ Per project, at `findery init` or by re-registering:
 findery init --ext rs,md,toml,yml,sql
 ```
 
-Four independent levers, applied in this order:
+Five independent levers, applied in this order:
 
 | Lever | Default | Effect |
 |-------|---------|--------|
-| `extensions` | `rs`, `md`, `toml`, `js`, `mjs`, `cjs`, `ts`, `py`, `php`, `json`, `axle` | empty means everything that survives the rest |
+| `extensions` | `rs`, `md`, `toml`, `js`, `mjs`, `cjs`, `ts`, `py`, `php`, `json`, `axle`, `java`, `kt`, `kts`, `go` | empty means everything that survives the rest |
 | `include` | none | globs; narrows to these |
 | `exclude` | build output + secrets | globs; subtracts |
 | `follow_gitignore` | true | honours `.gitignore` even outside a git repo |
@@ -441,21 +465,36 @@ Four independent levers, applied in this order:
 
 Dot-directories are indexed **by default**, because `.github/workflows`,
 `.cargo/config.toml` and design notes under `.claude/` are exactly what people
-ask about. The default `exclude` list is what keeps credentials out: `.env*`,
-`.ssh/`, `.aws/`, `.gnupg/`, `.netrc`, `.npmrc`, `*.pem`, `*.p12`, `id_rsa*`,
+ask about.
+
+The default `exclude` list is what keeps credentials out: `.env*`, `.ssh/`,
+`.aws/`, `.gnupg/`, `.netrc`, `.npmrc`, `*.pem`, `*.p12`, `id_rsa*`,
 `id_ed25519*`. Drop a pattern if you want that file indexed.
 
 Files that are not valid UTF-8, or above `max_file_bytes` (2 MB), are skipped
 and **reported** in `warnings` — never dropped in silence.
 
-**Chunking quality differs by language.** `.rs`, `.js`/`.ts`, `.py`, `.php` and `.axle`
-get a syntactic chunker (one chunk per item, with symbol and breadcrumb), `.md`
-a heading-based one. `.json` answers as one chunk while it fits `max_chars`,
-then splits per top-level member, each carrying its key. `.toml` and
-everything else fall back to line windows: usable, but with no symbol. Adding a
-real chunker for a language is a `Profile` in `findery-chunk` — its lexicon, its
-keyword table — one line in `Registry`, one entry in the default `extensions`,
-and one arm in `Lang`: see [`../chunk/README.md`](../chunk/README.md).
+**Chunking quality differs by language.**
+
+| Files | What they get |
+|-------|---------------|
+| `.rs`, `.js`/`.ts`, `.py`, `.php`, `.axle`, `.java`, `.kt`/`.kts`, `.go` | a syntactic chunker (one chunk per item, with symbol and breadcrumb) |
+| `.md` | a heading-based one |
+| `.json` | answers as one chunk while it fits `max_chars`, then splits per top-level member, each carrying its key |
+| `.toml` and everything else | fall back to line windows: usable, but with no symbol |
+
+Adding a real chunker for a language is a `Profile` in `findery-chunk` — its
+lexicon, its keyword table — one line in `Registry`, one entry in the default
+`extensions`, and one arm in `Lang`: see
+[`../chunk/README.md`](../chunk/README.md).
+
+**Line endings do not matter.** A `\r\n` is read as `\n` before chunking, so a
+Windows checkout and a Linux one of the same commit give the same chunks and
+the same content hashes: cloning a repository on the other OS costs no
+embedding.
+
+A file indexed before this rule re-embeds its chunks once, the next time it is
+chunked again (an edit, or `findery sync --full`).
 
 Global defaults for every project: `FINDERY_EXTENSIONS=rs,md,js,py` and
 `FINDERY_INCLUDE_HIDDEN=false`.
@@ -476,23 +515,31 @@ FINDERY_EMBED_BASE_URL=https://api.openai.com   FINDERY_EMBED_API_KEY=sk-…
 Changing model or dimension opens a **new** cache namespace
 (`recipe = "<model>:<dim>"`). A bucket refuses to mix two recipes, and the
 refusal lands on the operation that would mix them — the sync, never the daemon
-boot. That matters: a bucket built by another model still serves keyword search
-and can still be deleted, and a daemon that refused to start would take both of
+boot.
+
+That matters: a bucket built by another model still serves keyword search and
+can still be deleted, and a daemon that refused to start would take both of
 those down, including the `findery bucket rm` the message recommends.
 
-The remedies, in order of how much they cost you: index the project into a
-**new bucket** (`findery init --bucket <name>`, leaving the old index intact
-and readable), point `FINDERY_DATA_DIR` at a fresh directory, or delete the
-bucket and re-index. `findery bucket ls` names the conflict on the bucket
-that carries it.
+The remedies, in order of how much they cost you:
+
+1. Index the project into a **new bucket** (`findery init --bucket <name>`,
+   leaving the old index intact and readable).
+2. Point `FINDERY_DATA_DIR` at a fresh directory.
+3. Delete the bucket and re-index.
+
+`findery bucket ls` names the conflict on the bucket that carries it.
 
 At boot the daemon sends one throwaway input and compares the returned width to
 `FINDERY_EMBED_DIM`. A mismatch is fatal — half a corpus at the wrong width is
 silently unsearchable, and this is the only cheap moment to catch it.
 
-Throughput: `FINDERY_EMBED_BATCH_SIZE` (inputs per request) and
-`FINDERY_EMBED_CONCURRENCY` (batches in flight). Raising them past what the runtime
-can absorb only lengthens the queue.
+Throughput:
+
+- `FINDERY_EMBED_BATCH_SIZE` — inputs per request.
+- `FINDERY_EMBED_CONCURRENCY` — batches in flight.
+
+Raising them past what the runtime can absorb only lengthens the queue.
 
 ---
 
@@ -520,7 +567,7 @@ Disk: about 10.7 kB per chunk at 1024 dims, so ~535 MB for a 500k-line codebase.
 
 | Key | Default | Raising it means |
 |-----|---------|------------------|
-| `FINDERY_CHUNK_MAX_CHARS` | 2400 | fewer, larger excerpts: better context, less precision, more tokens per hit |
+| `FINDERY_CHUNK_MAX_CHARS` | 2400 | fewer, larger excerpts: better context, less precision, more tokens per hit. A hard ceiling in bytes: even a one-line minified file is cut to it |
 | `FINDERY_CHUNK_MIN_CHARS` | 120 | more aggressive merging of tiny neighbours |
 | `FINDERY_CHUNK_OVERLAP_CHARS` | 200 | more redundancy across window boundaries |
 
@@ -544,7 +591,9 @@ working.
 **Buckets split that sharing when it should be split.** One server, one model,
 but as many independent indexes as there are bucket files: a work index and a
 personal one never share a file, and a client pointed at one cannot search the
-other. What a bucket does *not* do is scope a single search — projects inside one
+other.
+
+What a bucket does *not* do is scope a single search — projects inside one
 bucket are searched together, and `-p <id>` is the lever for that. Scoping one
 search is what a [scope](#scopes--a-named-restriction-on-the-same-index) is for.
 

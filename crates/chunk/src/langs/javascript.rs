@@ -7,7 +7,8 @@
 //! (`<p>don't</p>`), which a lexical scanner reads as the opening of a string
 //! and lets run across the markup. They take the text fallback instead.
 
-use crate::brace::{ItemMeta, Profile, chunk_with, keyword_header, split_trivia};
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::{keyword_header, split_trivia};
 use crate::items::LineIndex;
 use crate::scanner::Lexicon;
 use findery_core::Result;
@@ -64,7 +65,7 @@ impl Profile for JsProfile {
         &Lexicon::JAVASCRIPT
     }
 
-    fn classify(&self, item: &str, nested: bool) -> ItemMeta {
+    fn classify(&self, item: &str, parent: Option<ChunkKind>) -> ItemMeta {
         let (_, code) = split_trivia(item, self.lexicon());
         let header_end = code.find(['{', ';', '=']).unwrap_or(code.len());
         let header = &code[..header_end];
@@ -79,7 +80,9 @@ impl Profile for JsProfile {
         // A class member has no keyword of its own, so its name is read from
         // the call shape of its header. Only INSIDE a container: a top-level
         // `doSomething();` is a statement, not a method of anything.
-        if nested && let Some(name) = member_symbol(header) {
+        if parent.is_some()
+            && let Some(name) = member_symbol(header)
+        {
             return ItemMeta {
                 kind: ChunkKind::Method,
                 symbol: Some(name),

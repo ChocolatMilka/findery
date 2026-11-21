@@ -7,11 +7,13 @@ model: opus
 ## 📚 `.claude/docs/` is THE source of truth — before, and after
 
 **Before writing anything**, open `.claude/docs/README.md` then the page for
-the area in question. These pages are written so that findery is
-understood faster from the `.md` than from the `.rs`: reading them isn't
-diligence, it's the shortest path. An hour spent rebuilding from the source
-what a page already states is an hour lost, and the reconstruction is
-usually wrong in a way the page would have avoided.
+the area in question.
+
+These pages are written so that findery is understood faster from the `.md`
+than from the `.rs`: reading them isn't diligence, it's the shortest path. An
+hour spent rebuilding from the source what a page already states is an hour
+lost, and the reconstruction is usually wrong in a way the page would have
+avoided.
 
 **A page that contradicts the code is a bug in one of the two.** Decide
 which, and fix that one. Never silently work around a doc.
@@ -37,33 +39,34 @@ Your final report explicitly names the pages read and the pages updated —
  L0   findery-core                                       THE VOCABULARY — zero I/O, zero internal dep.
 ```
 
-| Crate | Knows | Doesn't know |
-|-------|------|-------------|
-| `findery-core` | types, ids, errors, config, traits | that a disk or a network exists |
-| `findery-chunk` | chunking text, purely | where the text comes from, what will be done with it |
-| `findery-embed` | talking to an embeddings runtime | what a project or a chunk is |
-| `findery-store` | persisting and searching | what produced the vectors |
-| `findery-client` | the HTTP API | the rest of the daemon |
-| `findery-index` | orchestrating the four | that a transport exists |
-| `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
+| Crate                        | Knows                              | Doesn't know                                         |
+|------------------------------|------------------------------------|------------------------------------------------------|
+| `findery-core`               | types, ids, errors, config, traits | that a disk or a network exists                      |
+| `findery-chunk`              | chunking text, purely              | where the text comes from, what will be done with it |
+| `findery-embed`              | talking to an embeddings runtime   | what a project or a chunk is                         |
+| `findery-store`              | persisting and searching           | what produced the vectors                            |
+| `findery-client`             | the HTTP API                       | the rest of the daemon                               |
+| `findery-index`              | orchestrating the four             | that a transport exists                              |
+| `findery-server`             | HTTP, auth, statuses               | how a sync works                                     |
+| `findery-mcp`, `findery-cli` | making it readable                 | that a bucket exists                                 |
 
 ### The founding contract: L0 names, the layers execute
 
 Any type that crosses a boundary (HTTP, MCP, CLI, Rust client) is defined
-**exactly once**, in `findery-core::model` or `findery-core::api`. A transport
-validates, calls **one** `Indexer` method, serializes. It decides nothing
-(CONV-002).
+**exactly once**, in `findery-core::model` or `findery-core::api`.
 
-The trap has already been paid for once: the DTOs nearly ended up living in
-`findery-server`. `findery-client` wouldn't have seen them, `findery-mcp` would have
-redefined its own, and the three would have diverged at the first field
-added.
+A transport validates, calls **one** `Indexer` method, serializes. It decides
+nothing (CONV-002).
+
+> **Why** — The trap has already been paid for once: the DTOs nearly ended up
+> living in `findery-server`. `findery-client` wouldn't have seen them,
+> `findery-mcp` would have redefined its own, and the three would have
+> diverged at the first field added.
 
 ### The three seams — the only replacement points
 
 | Trait | Implementations | What plugs in |
-|-------|-----------------|------------------|
+|---|---|---|
 | `Embedder` | `OpenAiCompatEmbedder`, `MockEmbedder` | TEI, llama.cpp, vLLM, Ollama, OpenAI, Voyage… local or remote |
 | `VectorStore` | `SqliteVectorStore`, `QdrantStore` | where the vectors go |
 | `Chunker` | `RustChunker`, `MarkdownChunker`, `TextChunker` | how it's chunked |
@@ -124,15 +127,18 @@ gate 3: (recipe, content_hash) hit     → nothing is embedded
    fix ships the systemic lock — test, invariant, watchdog — that makes
    recurrence IMPOSSIBLE.
 
+---
+
 ## Rules to load
 
 ```
 @import .claude/rules/CONVENTIONS.md
 ```
 
-Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
-writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
-`mcp/`). Keep `.claude/roadmap/README.md` up to date.
+- Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
+  writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
+  `mcp/`).
+- Keep `.claude/roadmap/README.md` up to date.
 
 ---
 
@@ -161,22 +167,24 @@ tested.
 
 ### Inner monologue
 
-> "Does this type cross a boundary? → `findery-core::api`, not the transport
+> - "Does this type cross a boundary? → `findery-core::api`, not the transport
 >   (CONV-001)."
-> "Does this handler decide something? → it moves up into `Indexer`
+> - "Does this handler decide something? → it moves up into `Indexer`
 >   (CONV-002)."
-> "This data: reading? `&`. Mutating? Am I in MY window? Otherwise stop."
-> "`.unwrap()`? Never outside `#[cfg(test)]` — `?` or an `Error` variant."
-> "Does this input come from an MCP call? It doesn't pass without
+> - "This data: reading? `&`. Mutating? Am I in MY window? Otherwise stop."
+> - "`.unwrap()`? Never outside `#[cfg(test)]` — `?` or an `Error` variant."
+> - "Does this input come from an MCP call? It doesn't pass without
 >   validation."
-> "This `String` in a signature — it's a `ProjectId` or a `ChunkId`
+> - "This `String` in a signature — it's a `ProjectId` or a `ChunkId`
 >   (CONV-015)."
-> "This file exceeds 450 lines — I split by responsibility (CONV-029)."
-> "I'm writing `chunks` — am I writing `chunks_fts` in the SAME
+> - "This file exceeds 450 lines — I split by responsibility (CONV-029)."
+> - "I'm writing `chunks` — am I writing `chunks_fts` in the SAME
 >   transaction?"
-> "This magic number — it lives in `Config` (CONV-014)."
-> "This test is called `test_sync_2` — no: it names a behavior
+> - "This magic number — it lives in `Config` (CONV-014)."
+> - "This test is called `test_sync_2` — no: it names a behavior
 >   (CONV-033)."
+
+---
 
 ## 2. Before writing
 
@@ -188,6 +196,8 @@ tested.
 5. **List the failure cases**: empty input, `..` path, malformed glob,
    unreachable runtime, diverging dimension, non-UTF-8 file — and the guard
    for each.
+
+---
 
 ## 3. Non-negotiable standards
 
@@ -220,14 +230,14 @@ clone()?                 → justified in writing, or forbidden.
 
 ### 3.3 Boundary guards — the bug stops HERE
 
-| Boundary | Guard |
-|-----------|-------|
-| path from a client | `sanitize_rel` — refuses any `..` segment |
-| search glob | `CompiledFilter::new` — a broken glob is **refused**, not ignored |
-| full-text query | `fts_query` — identifier tokens, each quoted |
-| runtime response | width checked, otherwise `Error::Embed` |
-| HTTP body | `max_body_bytes` |
-| project id | `ProjectId::new` — `[a-z0-9_-]{1,64}` |
+| Boundary           | Guard                                                             |
+|--------------------|-------------------------------------------------------------------|
+| path from a client | `sanitize_rel` — refuses any `..` segment                         |
+| search glob        | `CompiledFilter::new` — a broken glob is **refused**, not ignored |
+| full-text query    | `fts_query` — identifier tokens, each quoted                      |
+| runtime response   | width checked, otherwise `Error::Embed`                           |
+| HTTP body          | `max_body_bytes`                                                  |
+| project id         | `ProjectId::new` — `[a-z0-9_-]{1,64}`                             |
 
 ### 3.4 Errors
 
@@ -245,15 +255,18 @@ silent `continue` (CONV-022).
 
 ### 3.5 Tests
 
-Name a behavior, not a function. Happy path **and** error case. Nothing
-touches the network or a model: `EmbedderBackend::Mock` and
-`Bucket::open_in_memory()` exist for that.
+- Name a behavior, not a function.
+- Happy path **and** error case.
+- Nothing touches the network or a model: `EmbedderBackend::Mock` and
+  `Bucket::open_in_memory()` exist for that.
 
 ```rust
 #[tokio::test]
 async fn a_second_sync_costs_no_embedding_at_all() { ... }   // ✅
 #[test] fn test_sync_2() { ... }                              // ❌
 ```
+
+---
 
 ## 4. Feature creation order
 
@@ -271,6 +284,8 @@ async fn a_second_sync_costs_no_embedding_at_all() { ... }   // ✅
 
 Backend first: the code breaks as long as the upper layers don't handle the
 new case — that's intentional, the Rust compiler is your guard dog.
+
+---
 
 ## 5. Quality checklist — 100%, not a buffet
 
@@ -304,6 +319,8 @@ findery health          # what the daemon actually serves
 finderyd --check           # the config actually resolved
 ```
 
+---
+
 ## 6. War ethics
 
 - **A task at 80% is a task at 0% that lies.** You deliver WHOLE or you
@@ -316,24 +333,28 @@ finderyd --check           # the config actually resolved
   leaves clean; `@reviewer` looks for what you didn't see, not what you
   didn't do.
 
+---
+
 ## 7. Common mistakes — immediate execution
 
-| ❌ | ✅ | CONV |
-|---|---|------|
-| `.unwrap()` outside test | `?` / `Error` variant | 019 |
-| DTO defined in `findery-server` | `findery-core::api` | 001 |
-| `StatusCode::NOT_FOUND` hardcoded | `Error::http_status()` | 010 |
-| Business logic in a handler | an `Indexer` method | 002 |
-| `project: String` in signature | `project: &ProjectId` | 015 |
-| `continue` on unreadable file | `warnings.push(...)` | 022 |
-| Magic number | `Config` field | 014 |
-| `chunks` written without `chunks_fts` | same transaction | 027 |
-| `"Instruct: "` concatenated by hand | `findery_core::prompt` | 012 |
-| `println!` in `findery-mcp` | `tracing` on stderr | — |
-| File > 450 lines | split by responsibility | 029 |
-| `fn test_x()` | `fn <behavior>()` | 033 |
+| ❌                                    | ✅                      | CONV |
+|---------------------------------------|-------------------------|------|
+| `.unwrap()` outside test              | `?` / `Error` variant   | 019  |
+| DTO defined in `findery-server`       | `findery-core::api`     | 001  |
+| `StatusCode::NOT_FOUND` hardcoded     | `Error::http_status()`  | 010  |
+| Business logic in a handler           | an `Indexer` method     | 002  |
+| `project: String` in signature        | `project: &ProjectId`   | 015  |
+| `continue` on unreadable file         | `warnings.push(...)`    | 022  |
+| Magic number                          | `Config` field          | 014  |
+| `chunks` written without `chunks_fts` | same transaction        | 027  |
+| `"Instruct: "` concatenated by hand   | `findery_core::prompt`  | 012  |
+| `println!` in `findery-mcp`           | `tracing` on stderr     | —    |
+| File > 450 lines                      | split by responsibility | 029  |
+| `fn test_x()`                         | `fn <behavior>()`       | 033  |
 
-## 8. Golden Rules
+---
+
+## 8. Golden rules
 
 1. **L0 names, the layers execute** — never a decision in a transport
 2. **One writer, one window, then read** — `&` by default

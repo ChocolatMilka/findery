@@ -2,26 +2,29 @@
 
 These pages are written so that **findery is understood faster from
 the `.md` than from the `.rs`**. Reading them isn't diligence, it's the
-shortest path: an hour spent reconstructing from the source what a page
-already states is an hour lost, and the reconstruction is usually wrong in a
-way the page would have avoided.
+shortest path.
 
-**A page that contradicts the code is a bug in one of the two.** We decide
-which, and fix that one. We never route around a doc in silence (CONV-037).
+An hour spent reconstructing from the source what a page already states is an
+hour lost, and the reconstruction is usually wrong in a way the page would have
+avoided.
+
+> **Note** — a page that contradicts the code is a bug in one of the two. We
+> decide which, and fix that one. We never route around a doc in silence
+> (CONV-037).
 
 ## Map
 
-| Page | What it carries |
-|------|------------------|
-| [`usage/README.md`](usage/README.md) | Running modes, every CLI flag, every tuning knob, and when to reach for it |
-| [`overview/pipeline.md`](overview/pipeline.md) | The full path: file on disk → chunk → vector → hit cited by the agent |
-| [`overview/layers.md`](overview/layers.md) | The layer law, the crates, what each is allowed to know |
-| [`chunk/README.md`](chunk/README.md) | Chunking per language, the lexical lexicons, item boundaries, windows, merging |
-| [`embed/README.md`](embed/README.md) | Models, Qwen3 instruction, local and remote providers, cache recipe |
-| [`store/README.md`](store/README.md) | SQLite bucket, vector backends, **the measurements that justify the choice**, export |
-| [`index/README.md`](index/README.md) | Incremental sync (the three gates), hybrid search, jobs, watch |
-| [`server/README.md`](server/README.md) | HTTP API reference |
-| [`mcp/README.md`](mcp/README.md) | MCP tools, wiring into Claude Code, token budget |
+| Page                                                     | What it carries |
+|----------------------------------------------------------|-----------------|
+| [`usage/README.md`](usage/README.md)                     | Running modes, every CLI flag, every tuning knob, and when to reach for it |
+| [`overview/pipeline.md`](overview/pipeline.md)           | The full path: file on disk → chunk → vector → hit cited by the agent |
+| [`overview/layers.md`](overview/layers.md)               | The layer law, the crates, what each is allowed to know |
+| [`chunk/README.md`](chunk/README.md)                     | Chunking per language, the lexical lexicons, item boundaries, windows, merging |
+| [`embed/README.md`](embed/README.md)                     | Models, Qwen3 instruction, local and remote providers, cache recipe |
+| [`store/README.md`](store/README.md)                     | SQLite bucket, vector backends, **the measurements that justify the choice**, export |
+| [`index/README.md`](index/README.md)                     | Incremental sync (the three gates), hybrid search, jobs, watch |
+| [`server/README.md`](server/README.md)                   | HTTP API reference |
+| [`mcp/README.md`](mcp/README.md)                         | MCP tools, wiring into Claude Code, token budget |
 
 **Open** work lives in [`../roadmap/README.md`](../roadmap/README.md) — not
 here. Fixing a roadmap entry means deleting it (CONV-038).
@@ -37,8 +40,10 @@ here. Fixing a roadmap entry means deleting it (CONV-038).
 4. **The vector is content-addressed.** Key `(recipe, content_hash)`, never
    the location — but the hash covers the text actually embedded, `path:`
    included, so a chunk re-embedded for a moved file is a chunk whose path
-   moved. Moving a function *inside* its file, re-running a sync on an
-   unchanged tree and re-cloning to the same relative path cost nothing.
+   moved.
+
+   Moving a function *inside* its file, re-running a sync on an unchanged
+   tree and re-cloning to the same relative path cost nothing.
 5. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend swappable.
 6. **A performance claim is a reproducible number**

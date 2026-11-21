@@ -5,9 +5,12 @@
 //! indexed?" — and it is where a language proves it produces named items
 //! rather than one anonymous blob.
 
+mod fixtures;
+
 use findery_chunk::Registry;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
+use fixtures::*;
 
 fn chunks_under(path: &str, src: &str, max_chars: usize) -> Vec<RawChunk> {
     let cfg = ChunkConfig {
@@ -38,35 +41,7 @@ fn named<'a>(out: &'a [RawChunk], symbol: &str) -> &'a RawChunk {
 
 #[test]
 fn a_javascript_module_yields_one_chunk_per_declaration() {
-    let src = "\
-import { readFileSync } from 'node:fs';
-
-const DEFAULTS = { retries: 3 };
-
-// Retry with exponential backoff.
-async function withBackoff(fn, attempts = DEFAULTS.retries) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (i === attempts - 1) throw e;
-    }
-  }
-}
-
-export class Client {
-  constructor(base) {
-    this.base = base;
-  }
-
-  async get(path) {
-    return fetch(`${this.base}${path}`);
-  }
-}
-
-export default Client;
-";
-    let out = chunks("src/client.js", src);
+    let out = chunks("src/client.js", JS_SRC);
     assert_eq!(
         names(&out),
         vec!["DEFAULTS", "withBackoff", "Client"],
@@ -83,20 +58,7 @@ export default Client;
 
 #[test]
 fn a_typescript_module_keeps_its_type_declarations() {
-    let src = "\
-export interface RetryOptions {
-  attempts: number;
-}
-
-export type Handler = (code: number) => string;
-
-export const MAX_ATTEMPTS = 5;
-
-export function retry<T>(fn: () => T, options: RetryOptions): T {
-  return fn();
-}
-";
-    let out = chunks("src/retry.ts", src);
+    let out = chunks("src/retry.ts", TS_SRC);
     assert_eq!(
         names(&out),
         vec!["RetryOptions", "Handler", "MAX_ATTEMPTS", "retry"],
@@ -108,29 +70,7 @@ export function retry<T>(fn: () => T, options: RetryOptions): T {
 
 #[test]
 fn a_python_module_yields_one_chunk_per_definition() {
-    let src = "\
-\"\"\"Rate limiting.\"\"\"
-
-import time
-
-DEFAULT_WINDOW = 60
-
-
-def sleep_backoff(attempt):
-    \"\"\"Sleep for the attempt's window.\"\"\"
-    time.sleep(2 ** attempt)
-
-
-class Limiter:
-    \"\"\"A token bucket.\"\"\"
-
-    def __init__(self, limit):
-        self.limit = limit
-
-    def take(self):
-        return self.limit > 0
-";
-    let out = chunks("app/limits.py", src);
+    let out = chunks("app/limits.py", PYTHON_SRC);
     assert_eq!(
         names(&out),
         vec!["limits", "DEFAULT_WINDOW", "sleep_backoff", "Limiter"],
@@ -147,31 +87,8 @@ class Limiter:
 
 #[test]
 fn a_php_class_yields_one_chunk_until_it_has_to_split() {
-    let src = "\
-<?php
-
-declare(strict_types=1);
-
-namespace App\\Http;
-
-use App\\Support\\Signer;
-
-class Client
-{
-    public const TIMEOUT = 30;
-
-    public function __construct(private Signer $signer)
-    {
-    }
-
-    public function send(string $body): string
-    {
-        return $this->signer->sign($body);
-    }
-}
-";
     // A class that fits the budget stays whole, methods included.
-    let out = chunks("src/Http/Client.php", src);
+    let out = chunks("src/Http/Client.php", PHP_SRC);
     assert_eq!(names(&out), vec!["App\\Http", "Client"], "got {out:#?}");
     let client = named(&out, "Client");
     assert_eq!(client.kind, ChunkKind::Struct);
@@ -179,7 +96,7 @@ class Client
     assert!(client.text.contains("function send"));
 
     // Under pressure it splits per member, each with its breadcrumb.
-    let tight = chunks_under("src/Http/Client.php", src, 200);
+    let tight = chunks_under("src/Http/Client.php", PHP_SRC, 200);
     let send = named(&tight, "send");
     assert_eq!(send.kind, ChunkKind::Method);
     assert_eq!(send.breadcrumb.as_deref(), Some("Client > send"));
@@ -206,31 +123,105 @@ fn a_json_document_answers_whole_until_it_is_too_big() {
 
 #[test]
 fn a_rust_module_yields_one_chunk_per_item() {
-    let src = "\
-//! Backoff.
-
-use std::time::Duration;
-
-/// How many times to retry.
-pub const MAX_ATTEMPTS: u32 = 5;
-
-pub fn with_backoff(attempt: u32) -> Duration {
-    Duration::from_millis(1 << attempt)
-}
-
-pub struct Policy {
-    pub attempts: u32,
-}
-";
-    let out = chunks("src/backoff.rs", src);
+    let out = chunks("src/backoff.rs", RUST_SRC);
     assert_eq!(
         names(&out),
-        vec!["backoff", "MAX_ATTEMPTS", "with_backoff", "Policy"],
+        vec![
+            "backoff",
+            "MAX_ATTEMPTS",
+            "with_backoff",
+            "Policy",
+            "Policy"
+        ],
         "got {out:#?}"
     );
     assert_eq!(out[0].kind, ChunkKind::Module);
     assert_eq!(named(&out, "MAX_ATTEMPTS").kind, ChunkKind::Const);
     assert_eq!(named(&out, "Policy").kind, ChunkKind::Struct);
+    assert!(out.iter().any(|c| c.kind == ChunkKind::Impl));
+}
+
+#[test]
+fn a_java_class_yields_one_chunk_until_it_has_to_split() {
+    let out = chunks("src/main/java/app/http/Client.java", JAVA_SRC);
+    assert_eq!(names(&out), vec!["Client", "Audited"], "got {out:#?}");
+    let client = named(&out, "Client");
+    assert_eq!(client.kind, ChunkKind::Struct);
+    assert_eq!(client.start_line, 6); // the javadoc rides with it
+    assert!(client.text.contains("@Service"));
+    assert_eq!(named(&out, "Audited").kind, ChunkKind::Trait);
+
+    let tight = chunks_under("src/main/java/app/http/Client.java", JAVA_SRC, 300);
+    // Split, the class keeps a chunk of its own: the header its members lack.
+    let header = named(&tight, "Client");
+    assert_eq!((header.start_line, header.end_line), (6, 8));
+    assert_eq!(named(&tight, "MAX_RETRIES").kind, ChunkKind::Const);
+    let send = named(&tight, "send");
+    assert_eq!(send.kind, ChunkKind::Method);
+    assert_eq!(send.breadcrumb.as_deref(), Some("Client > send"));
+    assert_eq!((send.start_line, send.end_line), (17, 25));
+}
+
+#[test]
+fn a_kotlin_file_yields_one_chunk_per_declaration_without_semicolons() {
+    let out = chunks("src/main/kotlin/app/http/Client.kt", KOTLIN_SRC);
+    assert_eq!(
+        names(&out),
+        vec!["MAX_RETRIES", "Client", "String.slug", "sends once"],
+        "got {out:#?}"
+    );
+    assert_eq!(named(&out, "MAX_RETRIES").kind, ChunkKind::Const);
+    let client = named(&out, "Client");
+    assert_eq!((client.start_line, client.end_line), (8, 18));
+    assert_eq!(named(&out, "sends once").kind, ChunkKind::Test);
+
+    let tight = chunks_under("src/main/kotlin/app/http/Client.kt", KOTLIN_SRC, 150);
+    let send = named(&tight, "send");
+    assert_eq!(send.kind, ChunkKind::Method);
+    assert_eq!(send.breadcrumb.as_deref(), Some("Client > send"));
+    assert_eq!(named(&tight, "Companion").kind, ChunkKind::Struct);
+}
+
+#[test]
+fn a_go_file_yields_functions_methods_and_types_with_their_comments() {
+    let out = chunks("client/client_test.go", GO_SRC);
+    assert_eq!(
+        names(&out),
+        vec!["MaxRetries", "Client", "Client.Send", "TestSend"],
+        "got {out:#?}"
+    );
+    assert!(
+        out[0].symbol.is_none(),
+        "package and imports stay anonymous"
+    );
+    let send = named(&out, "Client.Send");
+    assert_eq!(send.kind, ChunkKind::Method);
+    assert_eq!((send.start_line, send.end_line), (16, 21));
+    assert_eq!(named(&out, "Client").kind, ChunkKind::Struct);
+    assert_eq!(named(&out, "TestSend").kind, ChunkKind::Test);
+    assert_eq!(named(&out, "MaxRetries").start_line, 9);
+}
+
+#[test]
+fn an_axle_module_yields_named_items_with_their_annotations_and_docs() {
+    let out = chunks("std/buf.axle", AXLE_SRC);
+    assert_eq!(named(&out, "Sort").kind, ChunkKind::Enum);
+    assert!(
+        named(&out, "Sort")
+            .text
+            .starts_with("/** Sort direction. */")
+    );
+    let ext = named(&out, "libc_getpid");
+    assert_eq!(ext.kind, ChunkKind::Function);
+    assert!(ext.text.starts_with("@link("));
+    assert_eq!(named(&out, "Buf").kind, ChunkKind::Struct);
+
+    let tight = chunks_under("std/buf.axle", AXLE_SRC, 90);
+    let cap = named(&tight, "cap");
+    assert_eq!(cap.kind, ChunkKind::Method);
+    assert_eq!(cap.breadcrumb.as_deref(), Some("Buf > cap"));
+    assert_eq!(named(&tight, "constructor").kind, ChunkKind::Method);
+    assert_eq!(named(&tight, "drop").kind, ChunkKind::Method);
 }
 
 #[test]
@@ -258,11 +249,18 @@ fn every_truncation_of_every_language_keeps_sane_bounds() {
             "a.md",
             "# A\n\ntext\n\n```rust\n# no\n```\n\nTitle\n=====\n",
         ),
+        ("Client.java", JAVA_SRC),
+        ("Client.kt", KOTLIN_SRC),
+        ("client_test.go", GO_SRC),
+        ("buf.axle", AXLE_SRC),
     ];
     for (path, full) in sources {
         let lines = full.lines().count() as u32 + 1;
         for cut in (0..full.len()).filter(|i| full.is_char_boundary(*i)) {
-            let out = chunks(path, &full[..cut]);
+            // A tight budget too, so the truncated containers are recursed into
+            // and not only kept whole.
+            let mut out = chunks(path, &full[..cut]);
+            out.extend(chunks_under(path, &full[..cut], 120));
             for c in &out {
                 assert!(c.start_line >= 1, "{path}@{cut}: {c:?}");
                 assert!(c.end_line >= c.start_line, "{path}@{cut}: {c:?}");
@@ -309,6 +307,39 @@ fn every_language_keeps_a_brace_inside_a_literal_out_of_its_counting() {
             20,
             &["a", "b"],
         ),
+        (
+            "A.java",
+            "class A { String t = \"\"\"\n} \\\"\"\" }\n\"\"\"; }\n\nclass Keep {}\n",
+            2400,
+            &["A", "Keep"],
+        ),
+        (
+            "a.kt",
+            "fun a() = \"${m[\"}\"]} }\"\n\nfun keep() {}\n",
+            2400,
+            &["a", "keep"],
+        ),
+        (
+            // A template that never closes costs its own line, not the file.
+            "b.kt",
+            "fun a() = \"${\"\nfun b() = 1\nfun c() = 2\n",
+            2400,
+            &["a", "b", "c"],
+        ),
+        (
+            // A half-typed template is text of its string: the `)` after it
+            // still closes the call, and nothing below is swallowed.
+            "c.kt",
+            "fun a() {\n    println(\"${x\")\n}\n\nfun b() {}\n\nfun c() {}\n",
+            2400,
+            &["a", "b", "c"],
+        ),
+        (
+            "a.go",
+            "func a() string { return `}` + string('}') }\n\nfunc keep() {}\n",
+            2400,
+            &["a", "keep"],
+        ),
     ];
     for (path, src, budget, expected) in cases {
         let out = chunks_under(path, src, *budget);
@@ -320,53 +351,4 @@ fn every_language_keeps_a_brace_inside_a_literal_out_of_its_counting() {
             );
         }
     }
-}
-
-#[test]
-fn an_axle_module_yields_named_items_with_their_annotations_and_docs() {
-    let src = "\
-use std::io::Path;
-
-/** Sort direction. */
-enum Sort {
-    Up,
-    Down,
-}
-
-@link(symbol = \"getpid\")
-extern \"C\" fn libc_getpid() : i32;
-
-pub(crate) class Buf<T> {
-    data : T[];
-
-    constructor(n : i64) {
-        self.data = new T[n];
-    }
-
-    /** The capacity. */
-    pub fn cap(self) : i64 {
-        return 0;
-    }
-
-    drop() {}
-}
-";
-    let out = chunks("std/buf.axle", src);
-    assert_eq!(named(&out, "Sort").kind, ChunkKind::Enum);
-    assert!(
-        named(&out, "Sort")
-            .text
-            .starts_with("/** Sort direction. */")
-    );
-    let ext = named(&out, "libc_getpid");
-    assert_eq!(ext.kind, ChunkKind::Function);
-    assert!(ext.text.starts_with("@link("));
-    assert_eq!(named(&out, "Buf").kind, ChunkKind::Struct);
-
-    let tight = chunks_under("std/buf.axle", src, 90);
-    let cap = named(&tight, "cap");
-    assert_eq!(cap.kind, ChunkKind::Method);
-    assert_eq!(cap.breadcrumb.as_deref(), Some("Buf > cap"));
-    assert_eq!(named(&tight, "constructor").kind, ChunkKind::Method);
-    assert_eq!(named(&tight, "drop").kind, ChunkKind::Method);
 }

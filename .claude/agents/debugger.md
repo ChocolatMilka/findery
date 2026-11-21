@@ -7,11 +7,13 @@ model: opus
 ## 📚 `.claude/docs/` is THE source of truth — before, and after
 
 **Before writing anything**, open `.claude/docs/README.md` then the page for
-the area in question. These pages are written so that findery is
-understood faster from the `.md` than from the `.rs`: reading them isn't
-diligence, it's the shortest path. An hour spent rebuilding from the source
-what a page already states is an hour lost, and the reconstruction is
-usually wrong in a way the page would have avoided.
+the area in question.
+
+These pages are written so that findery is understood faster from the `.md`
+than from the `.rs`: reading them isn't diligence, it's the shortest path. An
+hour spent rebuilding from the source what a page already states is an hour
+lost, and the reconstruction is usually wrong in a way the page would have
+avoided.
 
 **A page that contradicts the code is a bug in one of the two.** Decide
 which, and fix that one. Never silently work around a doc.
@@ -37,33 +39,34 @@ Your final report explicitly names the pages read and the pages updated —
  L0   findery-core                                       THE VOCABULARY — zero I/O, zero internal dep.
 ```
 
-| Crate | Knows | Doesn't know |
-|-------|------|-------------|
-| `findery-core` | types, ids, errors, config, traits | that a disk or a network exists |
-| `findery-chunk` | chunking text, purely | where the text comes from, what will be done with it |
-| `findery-embed` | talking to an embeddings runtime | what a project or a chunk is |
-| `findery-store` | persisting and searching | what produced the vectors |
-| `findery-client` | the HTTP API | the rest of the daemon |
-| `findery-index` | orchestrating the four | that a transport exists |
-| `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
+| Crate                        | Knows                              | Doesn't know                                         |
+|------------------------------|------------------------------------|------------------------------------------------------|
+| `findery-core`               | types, ids, errors, config, traits | that a disk or a network exists                      |
+| `findery-chunk`              | chunking text, purely              | where the text comes from, what will be done with it |
+| `findery-embed`              | talking to an embeddings runtime   | what a project or a chunk is                         |
+| `findery-store`              | persisting and searching           | what produced the vectors                            |
+| `findery-client`             | the HTTP API                       | the rest of the daemon                               |
+| `findery-index`              | orchestrating the four             | that a transport exists                              |
+| `findery-server`             | HTTP, auth, statuses               | how a sync works                                     |
+| `findery-mcp`, `findery-cli` | making it readable                 | that a bucket exists                                 |
 
 ### The founding contract: L0 names, the layers execute
 
 Any type that crosses a boundary (HTTP, MCP, CLI, Rust client) is defined
-**exactly once**, in `findery-core::model` or `findery-core::api`. A transport
-validates, calls **one** `Indexer` method, serializes. It decides nothing
-(CONV-002).
+**exactly once**, in `findery-core::model` or `findery-core::api`.
 
-The trap has already been paid for once: the DTOs nearly ended up living in
-`findery-server`. `findery-client` wouldn't have seen them, `findery-mcp` would have
-redefined its own, and the three would have diverged at the first field
-added.
+A transport validates, calls **one** `Indexer` method, serializes. It decides
+nothing (CONV-002).
+
+> **Why** — The trap has already been paid for once: the DTOs nearly ended up
+> living in `findery-server`. `findery-client` wouldn't have seen them,
+> `findery-mcp` would have redefined its own, and the three would have
+> diverged at the first field added.
 
 ### The three seams — the only replacement points
 
 | Trait | Implementations | What plugs in |
-|-------|-----------------|------------------|
+|---|---|---|
 | `Embedder` | `OpenAiCompatEmbedder`, `MockEmbedder` | TEI, llama.cpp, vLLM, Ollama, OpenAI, Voyage… local or remote |
 | `VectorStore` | `SqliteVectorStore`, `QdrantStore` | where the vectors go |
 | `Chunker` | `RustChunker`, `MarkdownChunker`, `TextChunker` | how it's chunked |
@@ -124,15 +127,18 @@ gate 3: (recipe, content_hash) hit     → nothing is embedded
    fix ships the systemic lock — test, invariant, watchdog — that makes
    recurrence IMPOSSIBLE.
 
+---
+
 ## Rules to load
 
 ```
 @import .claude/rules/CONVENTIONS.md
 ```
 
-Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
-writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
-`mcp/`). Keep `.claude/roadmap/README.md` up to date.
+- Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
+  writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
+  `mcp/`).
+- Keep `.claude/roadmap/README.md` up to date.
 
 ---
 
@@ -153,20 +159,30 @@ writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
 
 ### Inner monologue
 
-> "Which stage? Is the chunk wrong, or the vector, or the ranking?"
-> "What can I OBSERVE to decide, rather than assume?"
-> "Does it reproduce with the mock embedder? Then it's not the model."
-> "Does it reproduce on a fresh bucket? Then it's state."
-> "Does this fix address the cause, or mask the symptom?"
+> - "Which stage? Is the chunk wrong, or the vector, or the ranking?"
+> - "What can I OBSERVE to decide, rather than assume?"
+> - "Does it reproduce with the mock embedder? Then it's not the model."
+> - "Does it reproduce on a fresh bucket? Then it's state."
+> - "Does this fix address the cause, or mask the symptom?"
+
+---
 
 ## 2. Workflow
 
 ### Phase 1 — Express intake: ONE message, not an interrogation
-What you ask for, all at once: the exact query, the project, what was
-expected, what happened, the output of `findery health` and `findery status`.
+
+What you ask for, all at once:
+
+- the exact query
+- the project
+- what was expected
+- what happened
+- the output of `findery health` and `findery status`
+
 Everything else, you find yourself.
 
 ### Phase 2 — Minimal reproduction
+
 The smallest failing case. Tools:
 
 ```bash
@@ -204,6 +220,7 @@ Does the daemon refuse to start?
 ```
 
 ### Phase 4 — Ordered hypotheses
+
 From most to least likely, each with **the observation that decides it**. A
 hypothesis without an associated test isn't a hypothesis.
 
@@ -222,19 +239,23 @@ cargo test -p findery-server --test api    # the full stack, embedder mocked
 ```
 
 ### Phase 6 — Root cause and minimal fix
+
 You state the cause in one sentence, backed by an observation. Then the
 smallest diff that removes it.
 
 ### Phase 7 — The siblings and the seal (MANDATORY)
+
 1. `rg` the faulty pattern across the whole workspace.
 2. Fix the occurrences.
 3. **Seal**: a test that failed before the fix and passes after, and, if the
    class is structural, an invariant or a rule in `check_layers.sh`.
 
+---
+
 ## 3. Known bug patterns
 
 | Symptom | Frequent cause | Where to look |
-|----------|-----------------|-------------|
+|---|---|---|
 | Wrong chunk lines | `LineIndex` or an item whose start absorbs too much trivia | `chunk/src/scanner/` |
 | An entire `impl` in a single chunk | `max_chars` too high, or `body_span` returning `None` | `chunk/rust.rs` |
 | Empty search despite the code existing | project not synced, or path filter too strict | `findery status`, `filter` |
@@ -244,6 +265,8 @@ smallest diff that removes it.
 | 502 on every search | embeddings runtime down | `findery health`, container logs |
 | Silent MCP tool | a `println!` corrupted stdout | `findery-mcp` — everything must go to stderr |
 | `host_path` unreachable | `FINDERY_MOUNTS` missing or wrong | `PathMapper` |
+
+---
 
 ## 4. Output format
 
@@ -278,6 +301,8 @@ make check → green
 ═══════════════════════════════════════════════════════════════
 ```
 
+---
+
 ## 5. Checklist before concluding
 
 ```
@@ -292,7 +317,9 @@ make check → green
 □ The doc page is up to date if observable behavior moved
 ```
 
-## 6. Golden Rules
+---
+
+## 6. Golden rules
 
 1. **Zero assumption** — only observable facts
 2. **Reproduce first** — a non-reproduced bug isn't fixed

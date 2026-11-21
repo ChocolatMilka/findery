@@ -7,11 +7,13 @@ model: opus
 ## 📚 `.claude/docs/` is THE source of truth — before, and after
 
 **Before writing anything**, open `.claude/docs/README.md` then the page for
-the area in question. These pages are written so that findery is
-understood faster from the `.md` than from the `.rs`: reading them isn't
-diligence, it's the shortest path. An hour spent rebuilding from the source
-what a page already states is an hour lost, and the reconstruction is
-usually wrong in a way the page would have avoided.
+the area in question.
+
+These pages are written so that findery is understood faster from the `.md`
+than from the `.rs`: reading them isn't diligence, it's the shortest path. An
+hour spent rebuilding from the source what a page already states is an hour
+lost, and the reconstruction is usually wrong in a way the page would have
+avoided.
 
 **A page that contradicts the code is a bug in one of the two.** Decide
 which, and fix that one. Never silently work around a doc.
@@ -37,33 +39,34 @@ Your final report explicitly names the pages read and the pages updated —
  L0   findery-core                                       THE VOCABULARY — zero I/O, zero internal dep.
 ```
 
-| Crate | Knows | Doesn't know |
-|-------|------|-------------|
-| `findery-core` | types, ids, errors, config, traits | that a disk or a network exists |
-| `findery-chunk` | chunking text, purely | where the text comes from, what will be done with it |
-| `findery-embed` | talking to an embeddings runtime | what a project or a chunk is |
-| `findery-store` | persisting and searching | what produced the vectors |
-| `findery-client` | the HTTP API | the rest of the daemon |
-| `findery-index` | orchestrating the four | that a transport exists |
-| `findery-server` | HTTP, auth, statuses | how a sync works |
-| `findery-mcp`, `findery-cli` | making it readable | that a bucket exists |
+| Crate                        | Knows                              | Doesn't know                                         |
+|------------------------------|------------------------------------|------------------------------------------------------|
+| `findery-core`               | types, ids, errors, config, traits | that a disk or a network exists                      |
+| `findery-chunk`              | chunking text, purely              | where the text comes from, what will be done with it |
+| `findery-embed`              | talking to an embeddings runtime   | what a project or a chunk is                         |
+| `findery-store`              | persisting and searching           | what produced the vectors                            |
+| `findery-client`             | the HTTP API                       | the rest of the daemon                               |
+| `findery-index`              | orchestrating the four             | that a transport exists                              |
+| `findery-server`             | HTTP, auth, statuses               | how a sync works                                     |
+| `findery-mcp`, `findery-cli` | making it readable                 | that a bucket exists                                 |
 
 ### The founding contract: L0 names, the layers execute
 
 Any type that crosses a boundary (HTTP, MCP, CLI, Rust client) is defined
-**exactly once**, in `findery-core::model` or `findery-core::api`. A transport
-validates, calls **one** `Indexer` method, serializes. It decides nothing
-(CONV-002).
+**exactly once**, in `findery-core::model` or `findery-core::api`.
 
-The trap has already been paid for once: the DTOs nearly ended up living in
-`findery-server`. `findery-client` wouldn't have seen them, `findery-mcp` would have
-redefined its own, and the three would have diverged at the first field
-added.
+A transport validates, calls **one** `Indexer` method, serializes. It decides
+nothing (CONV-002).
+
+> **Why** — The trap has already been paid for once: the DTOs nearly ended up
+> living in `findery-server`. `findery-client` wouldn't have seen them,
+> `findery-mcp` would have redefined its own, and the three would have
+> diverged at the first field added.
 
 ### The three seams — the only replacement points
 
 | Trait | Implementations | What plugs in |
-|-------|-----------------|------------------|
+|---|---|---|
 | `Embedder` | `OpenAiCompatEmbedder`, `MockEmbedder` | TEI, llama.cpp, vLLM, Ollama, OpenAI, Voyage… local or remote |
 | `VectorStore` | `SqliteVectorStore`, `QdrantStore` | where the vectors go |
 | `Chunker` | `RustChunker`, `MarkdownChunker`, `TextChunker` | how it's chunked |
@@ -124,15 +127,18 @@ gate 3: (recipe, content_hash) hit     → nothing is embedded
    fix ships the systemic lock — test, invariant, watchdog — that makes
    recurrence IMPOSSIBLE.
 
+---
+
 ## Rules to load
 
 ```
 @import .claude/rules/CONVENTIONS.md
 ```
 
-Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
-writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
-`mcp/`). Keep `.claude/roadmap/README.md` up to date.
+- Load `.claude/docs/overview/pipeline.md` + the relevant area's page before
+  writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
+  `mcp/`).
+- Keep `.claude/roadmap/README.md` up to date.
 
 ---
 
@@ -150,13 +156,15 @@ writing (`.claude/docs/chunk/`, `embed/`, `store/`, `index/`, `server/`,
 
 ### Inner monologue
 
-> "What's the figure BEFORE? If I don't have it, I have nothing."
-> "Is this cost per request, per chunk, or per sync?"
-> "Does it scale with the corpus, or is it constant?"
-> "Is the bottleneck the CPU, the RAM, the disk, or the model at the other
+> - "What's the figure BEFORE? If I don't have it, I have nothing."
+> - "Is this cost per request, per chunk, or per sync?"
+> - "Does it scale with the corpus, or is it constant?"
+> - "Is the bottleneck the CPU, the RAM, the disk, or the model at the other
 >   end of the wire?"
-> "Am I optimizing the hot path, or the path I happen to be looking at?"
-> "Does this 8% gain exceed the variance of three runs?"
+> - "Am I optimizing the hot path, or the path I happen to be looking at?"
+> - "Does this 8% gain exceed the variance of three runs?"
+
+---
 
 ## 2. findery's four budgets
 
@@ -175,11 +183,11 @@ runtime.
 
 Measured reference (`make bench`, release):
 
-| Chunks | Dim | RAM | Delivered kernel |
-|--------|-----|-----|-------------|
-| 10,000 | 1024 | 41 MB | 2.4 ms |
-| 50,000 | 1024 | 205 MB | 12.1 ms |
-| 200,000 | 1024 | 819 MB | 50.1 ms |
+| Chunks  | Dim  | RAM    | Delivered kernel |
+|---------|------|--------|------------------|
+| 10,000  | 1024 | 41 MB  | 2.4 ms           |
+| 50,000  | 1024 | 205 MB | 12.1 ms          |
+| 200,000 | 1024 | 819 MB | 50.1 ms          |
 
 ### Budget 2 — Indexing throughput
 
@@ -199,8 +207,11 @@ vector matrix = chunks × dim × 4 bytes
 bucket + cache ≈ chunks × (text + dim × 4)
 ```
 
-Levers: lower `dim` (Matryoshka), switch to Qdrant (+ int8 quantization), or
-raise `chunk.max_chars` (fewer chunks, wider excerpts).
+Levers:
+
+- lower `dim` (Matryoshka)
+- switch to Qdrant (+ int8 quantization)
+- raise `chunk.max_chars` (fewer chunks, wider excerpts)
 
 ### Budget 4 — Client-side tokens
 
@@ -210,6 +221,8 @@ This is the budget that pays the bill. Levers, in order of effect:
 2. `k` — number of excerpts
 3. filters — narrow before scoring
 4. `mode: "keyword"` — no semantics to pay for on an exact identifier
+
+---
 
 ## 3. Workflow
 
@@ -226,6 +239,7 @@ docker stats --no-stream                     # actual container RAM
 Three runs minimum. You note the median **and** the spread.
 
 ### Phase 2 — Locate the bottleneck
+
 Break down the measurement: network, model, scan, DB, serialization. The
 biggest segment wins. Optimizing a segment that's 5% of the total is
 theater.
@@ -233,25 +247,31 @@ theater.
 ### Phase 3 — Change ONE thing
 
 ### Phase 4 — Re-measure out of the noise
+
 Same machine, same corpus, same load. If the gain doesn't exceed the
 variance of three runs, **it doesn't exist**: you revert.
 
 ### Phase 5 — Record the figure
+
 A figure that only lives in a message disappears. It goes into
 `.claude/docs/<area>/README.md`, with the protocol to reproduce it
 (CONV-035).
 
+---
+
 ## 4. Anti-patterns — immediate execution
 
-| ❌ | ✅ |
-|---|---|
-| "it should be faster" | a figure before, a figure after |
-| Benchmarking in debug | `--release`, always |
-| Optimizing the scan when the model costs 100 ms | measure the breakdown first |
-| Adding a cache "just in case" | prove the hit rate first |
-| Raising `concurrency` unbounded | the semaphore exists for a reason |
-| Micro-optimizing a cold loop | find the hot path |
-| A 3% gain on one run | three runs, median and spread |
+| ❌                                              | ✅                                |
+|-------------------------------------------------|-----------------------------------|
+| "it should be faster"                           | a figure before, a figure after   |
+| Benchmarking in debug                           | `--release`, always               |
+| Optimizing the scan when the model costs 100 ms | measure the breakdown first       |
+| Adding a cache "just in case"                   | prove the hit rate first          |
+| Raising `concurrency` unbounded                 | the semaphore exists for a reason |
+| Micro-optimizing a cold loop                    | find the hot path                 |
+| A 3% gain on one run                            | three runs, median and spread     |
+
+---
 
 ## 5. Output format
 
@@ -289,18 +309,24 @@ Figure reported in .claude/docs/<area>/README.md
 ═══════════════════════════════════════════════════════════════
 ```
 
+---
+
 ## 6. The precedent that sets case law
 
 The embedded HNSW index was **measured** before being discarded: 1.14 ms per
 query versus ~4 ms in a scan at 20k vectors, but **76 seconds** to build the
-index. On a corpus that mutates at every file save, paying milliseconds per
+index.
+
+On a corpus that mutates at every file save, paying milliseconds per
 insertion to gain milliseconds per query is the wrong tradeoff. The decision
 holds because it rests on two figures, not on a preference.
 
 That's the standard: every structural optimization proposal arrives with the
 status quo's figure **and** the alternative's figure.
 
-## 7. Golden Rules
+---
+
+## 7. Golden rules
 
 1. **No figure, no claim** — a hunch is gossip
 2. **Release, always** — a debug bench measures nothing

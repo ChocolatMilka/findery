@@ -15,8 +15,8 @@ pub use env::{ENV_OVERRIDES, EnvOverride, env_var_for};
 pub use legacy::renamed_env_warning;
 pub use paths::{bucket_path, buckets_dir, data_dir_from_env, default_data_dir, user_config_path};
 pub use sections::{
-    ChunkConfig, DEFAULT_SERVER_URL, EmbedderBackend, EmbedderConfig, ProjectDefaults,
-    QdrantConfig, SearchConfig, ServerConfig, StoreBackend, StoreConfig,
+    ChunkConfig, DEFAULT_EXTENSIONS, DEFAULT_SERVER_URL, EmbedderBackend, EmbedderConfig,
+    ProjectDefaults, QdrantConfig, SearchConfig, ServerConfig, StoreBackend, StoreConfig,
 };
 
 use crate::model::is_bucket_name;

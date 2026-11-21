@@ -86,7 +86,8 @@ pub(crate) enum Command {
         #[arg(long)]
         id: Option<String>,
         /// Extensions to index, comma-separated. Defaults to every
-        /// language the chunkers know: `rs,md,toml,js,mjs,cjs,ts,py,php,json`.
+        /// language the chunkers know:
+        /// `rs,md,toml,js,mjs,cjs,ts,py,php,json,axle,java,kt,kts,go`.
         #[arg(long, value_delimiter = ',')]
         ext: Option<Vec<String>>,
         /// Bucket to hold this project, by name. Defaults to a bucket inside
@@ -439,6 +440,34 @@ mod tests {
     fn the_command_surface_stays_parseable() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    /// The `--ext` help spells the default list out, so it must be the list:
+    /// a language added to the chunkers and not to the help is one a user
+    /// never learns is indexed.
+    #[test]
+    fn the_init_help_lists_every_default_extension() {
+        use clap::CommandFactory;
+        let surface = Cli::command();
+        let init = surface
+            .get_subcommands()
+            .find(|c| c.get_name() == "init")
+            .expect("`init` exists");
+        let ext = init
+            .get_arguments()
+            .find(|a| a.get_id() == "ext")
+            .expect("`init --ext` exists");
+        let help = ext
+            .get_long_help()
+            .or(ext.get_help())
+            .expect("documented")
+            .to_string();
+        let listed = help.split('`').nth(1).expect("the list is quoted");
+        assert_eq!(
+            listed.split(',').collect::<Vec<_>>(),
+            findery_core::config::DEFAULT_EXTENSIONS,
+            "{help}"
+        );
     }
 
     /// The spelling every document uses has to be the spelling that works.
