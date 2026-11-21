@@ -14,8 +14,9 @@ cross-encoder sees the pair (query, passage) in the same forward pass and
 models their interaction — it's structurally more precise than a bi-encoder.
 
 *Family*: `Qwen3-Reranker-0.6B / 4B / 8B`, 32k of context, **instruction-aware
-in the same format as the embedding** — the `QueryTask` plumbing is directly
-reusable. Output = P(yes) on the logits of the `yes`/`no` tokens.
+in the same format as the embedding** — the intent plumbing
+(`findery_core::intent`) is directly reusable. Output = P(yes) on the logits of
+the `yes`/`no` tokens.
 
 *Seam*: a `Reranker` trait in L0, called in `search::search` between the
 `get_chunks` and truncation. ~200 lines.
@@ -88,12 +89,18 @@ in half for near-zero recall cost on normalized vectors.
 
 *Blocker*: a before/after recall number is needed, not a hunch (CONV-035).
 
-### R3 — Context expansion around a hit
+### R3 — Context expansion inside a search
 
-Optionally return the N neighboring lines of a chunk, to avoid the follow-up
-`Read` an agent makes when the excerpt is cut too short.
+`read {locator, context}` (`GET /v1/projects/{id}/chunks`) already returns the
+lines around a hit in one call.
 
-*Likely shape*: `SearchRequest::context_lines`.
+What stays open is doing it inline, for the top hits of a search, so a cut
+excerpt needs no second round trip at all.
+
+*Likely shape*: `SearchRequest::context_lines`, filled by the same `Page` logic
+as `Indexer::read`.
+
+Worth it only with a measured token cost per hit.
 
 ### R4 — Chunkers for the remaining languages
 
@@ -162,6 +169,23 @@ log".
 notice is raised (`AdoptNotice::describe`, `boot::pick_homes`,
 `tombstones::complete`), with `kind` driving the fix and `message` kept for
 older clients.
+
+### R11 — MCP `roots` for project detection
+
+The bridge detects `project` from its own working directory
+(`findery_client::resolve`).
+
+A client that declares the `roots` capability can name its workspace folders
+through `roots/list`, a server→client request, which would let a bridge
+started elsewhere — a container, a client that does not set the cwd — detect
+the project too.
+
+*Shape*:
+
+1. after `notifications/initialized`, send `roots/list` when the client
+   declared `roots`
+2. read its answer in `serve` (a response carries no `method`)
+3. try each `file://` root before the cwd in `Session::project`
 
 ---
 
