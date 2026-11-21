@@ -147,6 +147,9 @@ impl EmbedderConfig {
         if self.concurrency == 0 {
             return Err(bad("concurrency must be > 0".into()));
         }
+        if self.probe_timeout_secs == 0 {
+            return Err(bad("probe_timeout_secs must be > 0".into()));
+        }
         if let Some(weights) = &self.weights
             && (weights.trim().is_empty() || weights.contains('|'))
         {

@@ -150,6 +150,14 @@ pub const ENV_OVERRIDES: &[EnvOverride] = &[
         },
     },
     EnvOverride {
+        var: "FINDERY_EMBED_PROBE_TIMEOUT_SECS",
+        key: "embedder.probe_timeout_secs",
+        apply: |c, v| {
+            c.embedder.probe_timeout_secs = v.num()?;
+            Ok(())
+        },
+    },
+    EnvOverride {
         var: "FINDERY_EMBED_QUERY_INSTRUCTION",
         key: "embedder.query_instruction",
         apply: |c, v| {

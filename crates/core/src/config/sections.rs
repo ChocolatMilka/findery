@@ -152,6 +152,11 @@ pub struct EmbedderConfig {
     pub timeout_secs: u64,
     /// Retries on a timeout, a connection error or a 429/5xx.
     pub max_retries: u32,
+    /// Ceiling of one liveness probe — `findery health`, `doctor`, `model ls`,
+    /// and the boot probe when the width is already known. A probe asks once:
+    /// the retries and `timeout_secs` are for embedding work, and a runtime that
+    /// hangs must not hold a diagnostic for minutes.
+    pub probe_timeout_secs: u64,
     /// Inputs longer than this are truncated before being sent.
     pub max_input_chars: usize,
     /// L2-normalize vectors on arrival so cosine becomes a dot product.
@@ -186,6 +191,7 @@ impl Default for EmbedderConfig {
             concurrency: 2,
             timeout_secs: 120,
             max_retries: 3,
+            probe_timeout_secs: 10,
             max_input_chars: 24_000,
             normalize: true,
             query_instruction: crate::embedding::prompt::DEFAULT_QUERY_INSTRUCTION.into(),

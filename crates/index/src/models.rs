@@ -257,33 +257,38 @@ impl EmbedderPool {
     }
 
     /// Every profile with a liveness probe of the ones already built.
+    ///
+    /// The probes run concurrently: each is bounded by its profile's
+    /// `probe_timeout_secs`, and two runtimes down must not cost twice that.
     pub async fn health(&self) -> Vec<ModelHealth> {
-        let mut out = Vec::with_capacity(self.slots.len());
-        for profile in self.list() {
+        let probes = self.list().into_iter().map(|profile| async move {
             let (ok, detail) = match self.built(&profile.alias) {
                 Some(embedder) => match embedder.health().await {
                     Ok(()) => (true, None),
                     Err(e) => (false, Some(e.to_string())),
                 },
-                None => {
-                    let last = self
-                        .slots
-                        .get(&profile.alias)
-                        .and_then(|slot| slot.last_error.lock().clone());
-                    let why = last.map_or_else(
-                        || "not used yet: built on the first operation that needs it".to_string(),
-                        |e| format!("could not be built: {e}"),
-                    );
-                    (false, Some(why))
-                }
+                None => (false, Some(self.unbuilt_reason(&profile.alias))),
             };
-            out.push(ModelHealth {
+            ModelHealth {
                 profile,
                 ok,
                 detail,
-            });
-        }
-        out
+            }
+        });
+        futures::future::join_all(probes).await
+    }
+
+    /// Why a profile has no embedder yet: never needed, or its last build
+    /// failed.
+    fn unbuilt_reason(&self, alias: &ModelAlias) -> String {
+        let last = self
+            .slots
+            .get(alias)
+            .and_then(|slot| slot.last_error.lock().clone());
+        last.map_or_else(
+            || "not used yet: built on the first operation that needs it".to_string(),
+            |e| format!("could not be built: {e}"),
+        )
     }
 }
 

@@ -39,6 +39,20 @@ pub struct OpenAiCompatEmbedder {
     permits: Arc<Semaphore>,
 }
 
+/// How hard one request tries.
+///
+/// INTENT: a liveness probe and a batch of real work want opposite things. Work
+/// should survive a hiccup, so it is retried; a probe answers "is it up?", and
+/// a runtime that hangs must turn into "down" within seconds, not after every
+/// retry of a two-minute timeout.
+#[derive(Clone, Copy)]
+enum Attempts {
+    /// `max_retries` retries, `timeout_secs` each.
+    Work,
+    /// One attempt within `probe_timeout_secs`.
+    Probe,
+}
+
 impl OpenAiCompatEmbedder {
     /// Builds the client and, unless disabled, probes the runtime once.
     ///
@@ -82,7 +96,15 @@ impl OpenAiCompatEmbedder {
         let mut verified = true;
 
         if me.cfg.dim == 0 || me.cfg.verify_dim {
-            match me.probe_dim().await {
+            // With a width to fall back on, an unreachable runtime is a degraded
+            // start, so the probe asks once; without one, boot depends on the
+            // answer, which earns it the retries of real work.
+            let attempts = if assumed.is_some() {
+                Attempts::Probe
+            } else {
+                Attempts::Work
+            };
+            match me.probe_dim(attempts).await {
                 Ok(probed) => {
                     if me.cfg.dim != 0 && me.cfg.dim != probed {
                         return Err(Error::Config(format!(
@@ -129,8 +151,10 @@ impl OpenAiCompatEmbedder {
     }
 
     /// Sends one throwaway input and reports the width that comes back.
-    async fn probe_dim(&self) -> Result<usize> {
-        let vectors = self.post_batch(&["dimension probe".to_string()]).await?;
+    async fn probe_dim(&self, attempts: Attempts) -> Result<usize> {
+        let vectors = self
+            .post(&["dimension probe".to_string()], attempts)
+            .await?;
         let first = vectors
             .first()
             .ok_or_else(|| Error::Embed("probe returned no vector".into()))?;
@@ -140,8 +164,21 @@ impl OpenAiCompatEmbedder {
         Ok(first.len())
     }
 
-    /// One HTTP round trip, with retries on transient failures.
+    /// One batch of real work: retried on transient failures, within
+    /// `timeout_secs` per attempt.
     async fn post_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.post(inputs, Attempts::Work).await
+    }
+
+    /// One HTTP round trip, retried as `attempts` allows.
+    async fn post(&self, inputs: &[String], attempts: Attempts) -> Result<Vec<Vec<f32>>> {
+        let (max_retries, timeout) = match attempts {
+            Attempts::Work => (self.cfg.max_retries, None),
+            Attempts::Probe => (
+                0,
+                Some(Duration::from_secs(self.cfg.probe_timeout_secs.max(1))),
+            ),
+        };
         let truncated: Vec<&str> = inputs
             .iter()
             .map(|s| truncate_chars(s, self.cfg.max_input_chars))
@@ -159,6 +196,9 @@ impl OpenAiCompatEmbedder {
         let mut attempt = 0u32;
         loop {
             let mut req = self.http.post(&self.endpoint).json(&body);
+            if let Some(timeout) = timeout {
+                req = req.timeout(timeout);
+            }
             if let Some(key) = &self.cfg.api_key {
                 req = req.header(
                     &self.cfg.auth_header,
@@ -193,7 +233,7 @@ impl OpenAiCompatEmbedder {
                     e.to_string(),
                 ),
             };
-            if !retryable || attempt >= self.cfg.max_retries {
+            if !retryable || attempt >= max_retries {
                 return Err(Error::upstream(SERVICE, detail));
             }
             let backoff = Duration::from_millis((200u64 << attempt.min(5)).min(5_000));
@@ -300,7 +340,9 @@ impl Embedder for OpenAiCompatEmbedder {
     }
 
     async fn health(&self) -> Result<()> {
-        self.post_batch(&["health".to_string()]).await.map(|_| ())
+        self.post(&["health".to_string()], Attempts::Probe)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -407,5 +449,52 @@ mod tests {
         let t = truncate_chars(s, 2);
         assert!(s.starts_with(t));
         assert!(t.len() <= 2);
+    }
+
+    /// A runtime that accepts the connection and never answers: what a hung
+    /// LM Studio looks like from here.
+    fn silent_runtime() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("address");
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// The bug this locks: a probe used the retries and the two-minute timeout
+    /// of real work, so `findery doctor` and `model ls` sat silent while a hung
+    /// runtime was asked four times.
+    #[tokio::test]
+    async fn a_probe_of_a_hung_runtime_answers_down_within_its_own_timeout() {
+        let cfg = EmbedderConfig {
+            base_url: silent_runtime(),
+            model: "m".into(),
+            dim: 16,
+            timeout_secs: 120,
+            max_retries: 3,
+            probe_timeout_secs: 1,
+            ..EmbedderConfig::default()
+        };
+        let started = std::time::Instant::now();
+        let embedder = OpenAiCompatEmbedder::connect(cfg, None)
+            .await
+            .expect("a known width is a degraded start, not a failure");
+        let booted = started.elapsed();
+        let probed = std::time::Instant::now();
+        let err = embedder
+            .health()
+            .await
+            .expect_err("a silent runtime is down");
+        assert_eq!(err.code(), "upstream", "{err}");
+        assert!(booted < Duration::from_secs(5), "boot took {booted:?}");
+        assert!(
+            probed.elapsed() < Duration::from_secs(5),
+            "probe took {:?}",
+            probed.elapsed()
+        );
     }
 }
