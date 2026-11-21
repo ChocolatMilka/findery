@@ -93,6 +93,24 @@ impl Bucket {
         .await
     }
 
+    /// The chunks of one file, in file order — what resolves a `path:L…`
+    /// locator to the chunk it names.
+    pub async fn chunks_of_file(&self, project: &ProjectId, path: &str) -> Result<Vec<Chunk>> {
+        let (pid, path) = (project.to_string(), path.to_string());
+        self.with_conn(move |c| {
+            let query =
+                format!("{CHUNK_SELECT} WHERE project_id = ?1 AND path = ?2 ORDER BY ordinal");
+            let mut stmt = c.prepare(&query).map_err(sql)?;
+            let mut rows = stmt.query(params![pid, path]).map_err(sql)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().map_err(sql)? {
+                out.push(read_chunk(row)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     /// Every chunk of a project, streamed in batches. Used by the exporter and
     /// by a cold rebuild of the in-memory vector matrix.
     pub async fn all_chunks(&self, project: &ProjectId) -> Result<Vec<Chunk>> {
@@ -331,6 +349,29 @@ mod tests {
         .expect("project");
         let _ = Origin::File;
         (cat, id)
+    }
+
+    #[tokio::test]
+    async fn the_chunks_of_one_file_come_back_in_file_order_and_others_stay_out() {
+        let (cat, id) = bucket().await;
+        let (a, b) = (
+            chunk(0, "src/a.rs", "fn a() {}"),
+            chunk(1, "src/a.rs", "fn b() {}"),
+        );
+        cat.replace_file_chunks(&id, "src/a.rs", vec![b.clone(), a.clone()])
+            .await
+            .expect("a.rs");
+        cat.replace_file_chunks(&id, "src/z.rs", vec![chunk(0, "src/z.rs", "fn z() {}")])
+            .await
+            .expect("z.rs");
+        let got = cat.chunks_of_file(&id, "src/a.rs").await.expect("read");
+        assert_eq!(got.iter().map(|c| c.ordinal).collect::<Vec<_>>(), [0, 1]);
+        assert!(
+            cat.chunks_of_file(&id, "nope.rs")
+                .await
+                .expect("read")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

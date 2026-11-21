@@ -1,6 +1,6 @@
-//! Prompt formats: the default instruction, the named retrieval intents, and
-//! the two templates that turn a query or a document into the text a model is
-//! actually handed.
+//! Prompt formats: the default instruction, and the two templates that turn a
+//! query or a document into the text a model is actually handed. The named
+//! instructions are intents, in [`crate::intent`].
 //!
 //! Instruction-aware models (Qwen3-Embedding, Harrier, qwen3.7-text-embedding)
 //! are **asymmetric**: the QUERY carries an instruction, the DOCUMENT never
@@ -36,110 +36,9 @@ use crate::{Error, Result};
 pub const DEFAULT_QUERY_INSTRUCTION: &str = "Given a developer question about a codebase, retrieve the source code or \
      documentation passages that answer it.";
 
-/// Named retrieval intents.
-///
-/// INTENT: a preset is what an agent can actually pick correctly. Asking a model
-/// to invent a good instruction on every call gets you a paraphrase of the query
-/// — which is worse than the default, because it duplicates the signal the query
-/// already carries instead of describing the TASK.
-///
-/// Free-form instructions remain available and take precedence; these are the
-/// paved road, not a fence.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum QueryTask {
-    /// General "where is this handled" question. The default.
-    #[default]
-    Code,
-    /// A symbol name, looking for its definition.
-    Symbol,
-    /// An API, looking for how it is called.
-    Usage,
-    /// Design rationale and prose rather than implementation.
-    Docs,
-    /// The tests that pin a behaviour down.
-    Test,
-    /// A configuration key, flag or environment variable.
-    Config,
-    /// An error message, a panic or a diagnostic code.
-    Error,
-}
-
-impl QueryTask {
-    /// The instruction sent to the model for this intent.
-    ///
-    /// Each one describes the TASK and the shape of the wanted passage; none of
-    /// them restates the query, and none names a language.
-    pub fn instruction(&self) -> &'static str {
-        match self {
-            Self::Code => DEFAULT_QUERY_INSTRUCTION,
-            Self::Symbol => {
-                "Given the name of a symbol in a codebase, retrieve the passage that \
-                 defines it: its declaration, its type, and its documentation comment."
-            }
-            Self::Usage => {
-                "Given an API, a function or a type, retrieve passages that CALL or \
-                 INSTANTIATE it, showing how it is used in practice."
-            }
-            Self::Docs => {
-                "Given a question about a project, retrieve documentation, design notes \
-                 and rationale that explain how and why it works, rather than \
-                 implementation code."
-            }
-            Self::Test => {
-                "Given a described behaviour, retrieve the tests that exercise and \
-                 assert it."
-            }
-            Self::Config => {
-                "Given a setting, flag or environment variable, retrieve the passages \
-                 that declare it, give its default, and read it."
-            }
-            Self::Error => {
-                "Given an error message, a panic or a diagnostic, retrieve the code that \
-                 produces it and the code that handles it."
-            }
-        }
-    }
-
-    /// The name this intent goes by on the wire and on the command line.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Code => "code",
-            Self::Symbol => "symbol",
-            Self::Usage => "usage",
-            Self::Docs => "docs",
-            Self::Test => "test",
-            Self::Config => "config",
-            Self::Error => "error",
-        }
-    }
-
-    /// Reads a task name or one of the aliases the wire has always accepted.
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "code" => Some(Self::Code),
-            "symbol" | "definition" => Some(Self::Symbol),
-            "usage" | "callers" => Some(Self::Usage),
-            "docs" | "doc" => Some(Self::Docs),
-            "test" | "tests" => Some(Self::Test),
-            "config" | "configuration" => Some(Self::Config),
-            "error" | "diagnostic" => Some(Self::Error),
-            _ => None,
-        }
-    }
-
-    /// Every preset, for a CLI `--help` or an MCP enum.
-    pub const ALL: [Self; 7] = [
-        Self::Code,
-        Self::Symbol,
-        Self::Usage,
-        Self::Docs,
-        Self::Test,
-        Self::Config,
-        Self::Error,
-    ];
-}
-
-crate::serde_via_parse!(QueryTask, option);
+/// The legacy intent names, kept here so `findery_core::embedding::prompt::QueryTask`
+/// still names them. Their sentences live in the intent library.
+pub use crate::intent::QueryTask;
 
 /// The query template every profile gets unless it names another — the
 /// Qwen3 / Harrier format.
@@ -302,6 +201,8 @@ pub enum QueryPrompt<'a> {
     Default,
     /// This instruction, in the profile's template.
     Instruct(&'a str),
+    /// The query exactly as written: no instruction, no template.
+    Raw,
 }
 
 /// Renders a query the way `prompt` says, `default_instruction` being what
@@ -313,6 +214,7 @@ pub fn render_query(
     prompt: QueryPrompt<'_>,
 ) -> String {
     match prompt {
+        QueryPrompt::Raw => query.to_string(),
         QueryPrompt::Default => format_query(template, default_instruction, query),
         QueryPrompt::Instruct(instruction) => format_query(template, instruction, query),
     }
@@ -475,7 +377,9 @@ mod tests {
     }
 
     #[test]
-    fn the_default_and_an_explicit_instruction_both_fill_the_template() {
+    fn a_raw_query_bypasses_every_template_and_the_others_fill_it() {
+        let nomic = QueryTemplate::parse("search_query: {query}").expect("parses");
+        assert_eq!(render_query(&nomic, "d", "q", QueryPrompt::Raw), "q");
         let qwen = QueryTemplate::default();
         assert_eq!(
             render_query(&qwen, "d", "q", QueryPrompt::Default),
@@ -491,60 +395,5 @@ mod tests {
     fn the_default_instruction_names_no_language() {
         assert!(!DEFAULT_QUERY_INSTRUCTION.contains("Rust"));
         assert!(DEFAULT_QUERY_INSTRUCTION.starts_with("Given "));
-    }
-
-    #[test]
-    fn every_preset_round_trips_and_describes_a_task() {
-        for task in QueryTask::ALL {
-            assert_eq!(QueryTask::parse(task.as_str()), Some(task), "{task:?}");
-            let text = task.instruction();
-            assert!(
-                text.len() > 40,
-                "{task:?}: an instruction must describe the task"
-            );
-            assert!(
-                text.starts_with("Given "),
-                "{task:?}: Qwen's format states the input, then what to retrieve"
-            );
-        }
-    }
-
-    #[test]
-    fn presets_are_distinct() {
-        let mut seen = std::collections::HashSet::new();
-        for task in QueryTask::ALL {
-            assert!(
-                seen.insert(task.instruction()),
-                "{task:?} duplicates another preset"
-            );
-        }
-    }
-
-    #[test]
-    fn aliases_are_accepted_and_the_unknown_is_refused() {
-        assert_eq!(QueryTask::parse("DEFINITION"), Some(QueryTask::Symbol));
-        assert_eq!(QueryTask::parse("callers"), Some(QueryTask::Usage));
-        assert_eq!(QueryTask::parse("magic"), None);
-    }
-
-    #[test]
-    fn preset_aliases_work_over_the_wire_too() {
-        // `--task definition` on the CLI and `{"task":"definition"}` over HTTP
-        // must mean the same thing.
-        let task: QueryTask = serde_json::from_str("\"definition\"").expect("alias accepted");
-        assert_eq!(task, QueryTask::Symbol);
-        assert_eq!(
-            serde_json::to_string(&task).expect("serialize"),
-            "\"symbol\""
-        );
-        assert!(serde_json::from_str::<QueryTask>("\"telepathy\"").is_err());
-    }
-
-    #[test]
-    fn the_default_preset_is_the_default_instruction() {
-        assert_eq!(
-            QueryTask::default().instruction(),
-            DEFAULT_QUERY_INSTRUCTION
-        );
     }
 }

@@ -1,11 +1,13 @@
 //! A targeted sync — `add_document` without text, a watcher's touched paths —
 //! admits exactly what the project's walk admits.
 
+use findery_core::api::ReadQuery;
+
 use super::*;
 
 /// The bug this locks: a named path bypassed every walk rule, so
-/// `add_document(".env")` indexed the secrets, and the bucket's own files
-/// could be indexed into themselves.
+/// `add_document(".env")` indexed the secrets and `read` served them from
+/// disk, and the bucket's own files could be indexed into themselves.
 #[tokio::test]
 async fn a_targeted_sync_never_indexes_what_the_walk_excludes() {
     let (data, proj) = (tempfile::tempdir().expect("data"), project_dir());
@@ -41,8 +43,21 @@ async fn a_targeted_sync_never_indexes_what_the_walk_excludes() {
     let escaping = error_of(idx.add_document(&id, "src/../.env", None).await);
     assert_eq!(escaping.code(), "invalid");
 
-    let status = idx.stats(&id).await.expect("stats");
-    assert_eq!(status.files, 3, "only the fixture's own files: {status:?}");
+    let err = error_of(idx.read(&id, &ReadQuery::at(".env:L1", 0)).await);
+    assert_eq!(err.code(), "not_found");
+    let indexed: Vec<String> = idx
+        .files(&id, None)
+        .await
+        .expect("files")
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert!(
+        indexed
+            .iter()
+            .all(|p| !p.starts_with(".findery") && p != ".env"),
+        "{indexed:?}"
+    );
 }
 
 /// What the walk admits, a targeted sync indexes — the rules narrow it, they

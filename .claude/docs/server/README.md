@@ -83,7 +83,9 @@ down daemon.
 | `POST`           | `/v1/projects/{id}/watch`           | the project's watcher                            |
 | `POST`           | `/v1/projects/{id}/export`          | an export to a host directory                    |
 | `POST`           | `/v1/search`                        | hybrid search                                    |
+| `GET`            | `/v1/intents`                       | the intent library                               |
 | `GET`            | `/v1/projects/{id}/files`           | the manifest a pushing client diffs against      |
+| `GET`            | `/v1/projects/{id}/chunks`          | the lines a locator or a chunk id names          |
 | `POST`           | `/v1/projects/{id}/documents/batch` | documents a client walked and read itself        |
 | `POST`           | `/v1/projects/{id}/prune`           | deletes pushed files outside the `keep` list     |
 | `GET`            | `/v1/jobs`, `/v1/jobs/{id}`         | jobs, with `progress` while running              |
@@ -199,7 +201,7 @@ current value — `bucket` included, so a re-post never moves a project it does
 not name a bucket for — and only an explicitly empty value clears one:
 
 - `[]` for `include`/`exclude`/`extensions`
-- `{}` for `scopes`
+- `{}` for `scopes`/`intents`
 - `""` for `instruction` and `model` (unpinning)
 
 `{"root": "…"}` alone, which is what the MCP bridge and most scripts send,
@@ -317,7 +319,11 @@ configuration is what the next start uses.
 
 ### `GET /v1/projects/{id}/stats`
 
-Counters, model, backend, last sync, bucket size.
+Counters, model, backend, last sync, bucket size, and the language mix.
+
+**Response** — the language mix is
+`"langs": [{ "lang": "rust", "chunks": 812 }, …]`, most chunks first, absent
+when nothing is indexed under the project's model.
 
 ### `GET /v1/buckets` · `POST /v1/buckets` · `DELETE /v1/buckets/{name}[?model=<alias>]`
 
@@ -512,10 +518,13 @@ Hybrid search.
 ```jsonc
 { "project": "axle",
   "query": "where is retry backoff handled",
-  "k": 8,                           // absent: search.default_k
+  "k": 8,                           // per list; absent: search.default_k, or each leg's own
   "mode": "hybrid",                 // "vector" | "keyword" | "hybrid"
-  "task": "symbol",                 // a named retrieval intent
-  "instruction": "Given …",         // free-form, overrides `task`
+  "intent": "usage",                // a library intent, by name or alias — see embed/README.md
+  "task": "symbol",                 // legacy intent name; same namespace as `intent`
+  "instruction": "Given …",         // free-form, replaces the intent's sentence
+  "raw_query": false,               // true: the query verbatim, no instruction, no template
+  "like": "src/net.rs:L12-L48",     // a chunk (or chunk id): search by its stored vector
   "scope": "api",                   // a restriction the project declared, by name
   "filter": { "paths": ["crates/**"], "langs": ["rust"],
               "kinds": ["function", "method"], "symbol_contains": "retry" },
@@ -531,11 +540,16 @@ the scope's value for the dimensions it names, and keeps the scope's for the
 rest.
 
 `instruction` and `query` are the two halves of what the model reads
-(`Instruct: …` / `Query: …`). The precedence is `instruction` > `task` > the
-project's manifest > the daemon's configured default, resolved in L0
-(`SearchRequest::resolve`), so no transport can invent its own ordering.
+(`Instruct: …` / `Query: …`). The precedence is `raw_query` > `instruction` >
+`intent` / `task` > `like` (runs `similar`) > the project's manifest > the
+daemon's configured default, resolved in L0 (`SearchRequest::resolve_plan`), so
+no transport can invent its own ordering.
 
-`task` is one of `code symbol usage docs test config error` (or an alias).
+- `task` is one of `code symbol usage docs test config error` (or an alias).
+- `intent` is any intent of the library.
+- `like` is a locator (`path:L12-L48`, `path:12-48`, `path:L12`) or a chunk id.
+  It embeds nothing; the chunk itself is never in the answer.
+- The body is `deny_unknown_fields`.
 
 **Response** — a `SearchResponse`.
 
@@ -545,18 +559,47 @@ project's manifest > the daemon's configured default, resolved in L0
                         "breadcrumb": "Client > retry_with_backoff", "lang": "rust", "text": "…" },
              "score": 0.031, "vector_score": 0.842, "keyword_score": 7.1,
              "host_path": "C:/Users/users/RustroverProjects/axle/crates/net/src/retry.rs" }],
+  "resolved": { "intent": "usage", "model": "harrier",
+                "legs": [{ "label": "usage", "instruction": "Given an API, … of a Rust codebase, …" }] },
   "warnings": [] }
 ```
+
+A **workflow intent** (`review`, `refactor`, `doc-sync`, `divergence`,
+`onboard`, `security`) answers one list per leg, and `hits` repeats the first
+leg for a client that predates `legs`:
+
+```jsonc
+{ "hits": [ …legs[0].hits… ],
+  "legs": [ { "label": "docs", "instruction": "Given …", "hits": [ … ] },
+            { "label": "code", "instruction": "Given …", "hits": [ … ] } ],
+  "pairs": [ { "left": { "leg": 0, "hit": 0 },
+               "matches": [ { "right": { "leg": 1, "hit": 2 }, "similarity": 0.71 } ] },
+             { "left": { "leg": 0, "hit": 1 }, "matches": [ … ], "drifted": true } ],
+  "duplicates": [ { "a": { "leg": 1, "hit": 0 }, "b": { "leg": 2, "hit": 3 }, "similarity": 0.91 } ],
+  "resolved": { "intent": "doc-sync", "legs": [ { "label": "docs", … }, { "label": "code", … } ] },
+  "warnings": [] }
+```
+
+- `pairs` (`doc-sync`, `divergence`) match each hit of the first leg with its
+  nearest hits of the second, by the cosine of their stored vectors; `drifted`
+  flags a best match below `search.drift_below`.
+- `duplicates` (`divergence`) are code hits of different files within
+  `[search.duplicate_min, search.duplicate_max]`.
+
+Both point into `legs` by position; `legs`, `pairs`, `duplicates` and
+`resolved` are absent from the wire when empty. `resolved.model` is the model
+profile the search ran under (absent from an older daemon).
 
 In `hybrid` mode (the default), a vector list that cannot be had — no vectors
 under the project's model yet, its runtime down, a file holding another model's
 vectors — does not fail the search: the keyword hits come back with one
 warning naming the model and the repair (`keyword results only: … run
 `findery sync -p axle` …`). `"mode": "vector"` returns the error instead
-(`409 vectors_unavailable`, `502 upstream`, `409 recipe_mismatch`).
+(`409 vectors_unavailable`, `502 upstream`, `409 recipe_mismatch`), and so does
+`like`.
 
 A daemon older than `warnings` answered the bare array; `findery-client`
-decodes both shapes (`SearchWire`), so a newer CLI keeps working against it.
+decodes every shape (`SearchWire`), so a newer CLI keeps working against it.
 
 `host_path` is absolute **on the host side**: a hit that cites a container
 path is a hit nobody can open.
@@ -567,15 +610,78 @@ path is a hit nobody can open.
 |---|---|
 | an unknown `scope` name | a 400 that lists the ones that exist |
 | an unknown `task` value | a 422 |
+| an unknown `intent`, or two different intents named through `intent` and `task` | a 400 that lists the known names |
+| a `like` locator no chunk covers | a 404 |
+| `like` with an intent with no `similar` leg | a 400 |
+| a misspelled key (`instructions`) | a 422, not a search that silently ignored it |
 
-### `GET /v1/projects/{id}/files`
+### `GET /v1/intents`
+
+The intent library, in library order.
+
+**Request** — `?project=<id>` lists that project's library: the daemon's with
+the project's manifest layer on top.
+
+**Response** — `[{ "name", "aliases", "kind": "locate" | "workflow", "summary", "legs": ["callers", …] }]`.
+
+**Errors** — an unknown project is a 404.
+
+### `GET /v1/projects/{id}/files[?glob=<glob>]`
 
 The manifest a pushing client diffs against.
 
 Without it a client would have to send the whole project on every sync.
 
+**Request** — `?glob=crates/**/*.rs` narrows it to the files a path glob names
+— the same matcher as a search's `filter.paths`
+(`CompiledFilter::matches_file`).
+
 **Response** — every known file with its `content_hash`, `size`, `origin` and
 chunk count.
+
+**Errors** — a broken glob is `400 invalid`, a misspelled parameter
+(`?globb=`) a 400 too.
+
+### `GET /v1/projects/{id}/chunks?locator=…|id=…[&context=N]`
+
+What a search pointed at.
+
+**Request**
+
+- `locator` — the lines it names (`src/net.rs:L12-L48`, `src/net.rs:12-48`,
+  `src/net.rs:L12`)
+- `id` — one chunk
+- `context` — lines on each side (capped by `search.max_read_context`, 200)
+
+At most `search.max_read_lines` (1000) lines in all.
+
+**Response**
+
+```jsonc
+{ "project": "axle", "path": "src/net.rs",
+  "host_path": "C:/Users/users/RustroverProjects/axle/src/net.rs",
+  "lang": "rust", "start_line": 3, "end_line": 5, "total_lines": 12,
+  "text": "/// Retries …\npub fn retry_with_backoff(…) -> bool {\n    attempts < 5",
+  "source": "disk",                        // or "index"
+  "chunk": { "id": "…", "kind": "function", "symbol": "retry_with_backoff",
+             "start_line": 3, "end_line": 6 },
+  "warnings": [] }
+```
+
+`source: "disk"` is a file the daemon walked, read as it is now (a warning says
+when it changed since it was indexed); `"index"` is a pushed or inline document
+— or a file the disk can no longer give — rebuilt from its stored chunks, with
+a line no chunk holds left empty and reported. A file is read from disk only
+when the bucket lists it.
+
+**Errors**
+
+| Case | Answer |
+|---|---|
+| neither or both of `locator` / `id`, or a locator passed as `id` | `400 invalid` |
+| a path with a `..` segment | `400 invalid` |
+| a line past the end of the file | `400 invalid`, naming its length |
+| a file no chunk of the project covers, an unknown chunk id | `404 not_found` |
 
 ### `POST /v1/projects/{id}/documents/batch`
 

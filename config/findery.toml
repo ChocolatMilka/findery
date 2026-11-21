@@ -163,6 +163,24 @@ rrf_k = 60.0
 candidate_multiplier = 4
 # Per-hit text budget. The single most effective token lever for MCP clients.
 max_snippet_chars = 2400
+# Ceiling of a rendered intent instruction, in bytes. The sentence is always
+# kept whole; per-language hints are appended, most important language first,
+# while they fit. 0 appends none.
+max_instruction_chars = 640
+# Pairing (`doc-sync`, `divergence`): each doc hit is matched with its
+# `pair_matches` nearest code hits by stored-vector cosine — no new embedding —
+# and flagged drifted when even the best is below `drift_below`.
+drift_below = 0.5
+pair_matches = 2
+# `divergence` reports two hits of different files as near-duplicates when
+# their cosine falls in this band: above the max they are plain copies.
+duplicate_min = 0.85
+duplicate_max = 0.98
+# A read (`GET /v1/projects/{id}/chunks`, the MCP `read` tool) adds at most
+# `max_read_context` lines on each side of its target and returns at most
+# `max_read_lines` lines in all.
+max_read_context = 200
+max_read_lines = 1000
 
 [project_defaults]
 # One entry per language the chunker registry knows. `.jsx` and `.tsx` are out
@@ -203,3 +221,14 @@ max_file_bytes = 2097152
 # [[mounts]]
 # host = "C:/Users/users/RustroverProjects"
 # container = "/workspaces"
+
+# The intent library (`code`, `usage`, `review`, `doc-sync`…) is built in. A
+# table here overrides any field of an intent — by name or alias — or defines a
+# new one, which then needs a `summary` and an `instruction`. A project manifest
+# layers its own `[intents.<name>]` on top of these.
+# `{codebase}` renders "a Rust and PHP codebase" from the languages searched.
+# [intents.usage.hints]
+# php = ["`new X`", "`X::` static calls", "`use` imports", "Symfony service wiring"]
+# [intents.migration]
+# summary = "Schema migrations."
+# instruction = "Given a schema change in {codebase}, retrieve the migrations that apply it."

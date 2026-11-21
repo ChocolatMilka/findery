@@ -171,11 +171,11 @@ mod tests {
         e.embed_query("q", QueryPrompt::Instruct("t"))
             .await
             .expect("embedded");
-        e.embed_query("plain", QueryPrompt::Instruct(""))
+        e.embed_query("verbatim", QueryPrompt::Raw)
             .await
             .expect("embedded");
         let seen = log.lock().expect("unpoisoned").clone();
-        assert_eq!(seen, ["Instruct: t\nQuery: q", "plain"]);
+        assert_eq!(seen, ["Instruct: t\nQuery: q", "verbatim"]);
     }
 
     #[tokio::test]

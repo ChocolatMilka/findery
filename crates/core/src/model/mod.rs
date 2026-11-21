@@ -6,11 +6,13 @@
 
 use crate::ids::{ChunkId, ContentHash, ProjectId};
 pub mod filter;
+mod locator;
 mod project;
 mod search;
 
+pub use locator::Locator;
 pub use project::{DEFAULT_BUCKET, FileRecord, Origin, Project, ProjectSpec, is_bucket_name};
-pub use search::{Resolved, ScoredChunk, SearchFilter, SearchHit, SearchMode, SearchRequest};
+pub use search::{ScoredChunk, SearchFilter, SearchHit, SearchMode, SearchRequest};
 
 use serde::{Deserialize, Serialize};
 
@@ -359,6 +361,17 @@ pub struct IndexStats {
     pub store_backend: String,
     pub last_sync_at: Option<i64>,
     pub disk_bytes: u64,
+    /// The languages indexed, most chunks first — what an intent's
+    /// `{codebase}` names and what an agent's checklist is built from.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub langs: Vec<LangShare>,
+}
+
+/// One language of a project, and how many chunks it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LangShare {
+    pub lang: Lang,
+    pub chunks: u64,
 }
 
 #[cfg(test)]

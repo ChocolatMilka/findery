@@ -28,3 +28,12 @@ pub struct BucketQuery {
     #[serde(default)]
     pub model: Option<String>,
 }
+
+/// `GET /v1/intents?project=...` — with a project, its manifest layer is
+/// included.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntentsQuery {
+    #[serde(default)]
+    pub project: Option<String>,
+}

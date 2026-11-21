@@ -625,9 +625,65 @@ async fn the_instruction_aware_knobs_reach_the_wire() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
-/// A task is accepted by its name and by its aliases.
+/// A workflow intent answers one list per leg, echoes how it was resolved, and
+/// keeps `hits` for a client that predates the legs.
 #[tokio::test]
-async fn a_task_searches_by_its_name_and_by_its_alias() {
+async fn a_workflow_intent_answers_grouped_by_leg_over_http() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+
+    let (status, body) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(json!({ "project": id, "query": "retry", "intent": "refactor" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let labels: Vec<&str> = body["legs"]
+        .as_array()
+        .expect("legs")
+        .iter()
+        .filter_map(|leg| leg["label"].as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "definition",
+            "usages",
+            "implementations",
+            "tests",
+            "duplicates"
+        ]
+    );
+    assert_eq!(body["resolved"]["intent"], "refactor");
+    assert_eq!(body["hits"], body["legs"][0]["hits"]);
+}
+
+#[tokio::test]
+async fn an_unknown_intent_is_a_400_that_lists_the_known_ones() {
+    let h = harness().await;
+    let id = h.register().await;
+    let (status, body) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(json!({ "project": id, "query": "x", "intent": "telepathy" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("doc-sync") && message.contains("usage"),
+        "{body}"
+    );
+}
+
+/// What clients sent before intents existed keeps working: the legacy `task`,
+/// and its aliases.
+#[tokio::test]
+async fn the_legacy_task_still_searches_and_is_echoed_as_its_intent() {
     let h = harness().await;
     let id = h.register().await;
     h.sync(&id, json!({})).await;
@@ -640,8 +696,46 @@ async fn a_task_searches_by_its_name_and_by_its_alias() {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{task}: {body}");
-        assert!(body["hits"].is_array(), "{task}: {body}");
+        assert_eq!(body["resolved"]["intent"], "usage", "{task}");
+        assert!(body.get("legs").is_none(), "one list, no legs: {body}");
     }
+}
+
+#[tokio::test]
+async fn a_misspelled_search_field_is_a_422_not_an_ignored_knob() {
+    let h = harness().await;
+    let id = h.register().await;
+    let (status, body) = h
+        .call(
+            "POST",
+            "/v1/search",
+            Some(json!({ "project": id, "query": "x", "instructions": "typo" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+#[tokio::test]
+async fn the_intent_library_is_listed_for_the_daemon_and_for_a_project() {
+    let h = harness().await;
+    let id = h.register().await;
+    let (status, body) = h.call("GET", "/v1/intents", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let review = body
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|i| i["name"] == "review")
+        .expect("review is shipped");
+    assert_eq!(review["kind"], "workflow");
+    assert_eq!(review["legs"][0], "callers");
+
+    let (status, body) = h
+        .call("GET", &format!("/v1/intents?project={id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h.call("GET", "/v1/intents?project=ghost", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
 /// The push path end to end: a project fed entirely over HTTP, never read from
@@ -1522,6 +1616,112 @@ async fn detaching_over_http_releases_the_file_and_a_register_attaches_it_again(
     assert_eq!(h.register().await, id);
     let again = h.sync(&id, json!({})).await;
     assert_eq!(again["embeddings_computed"], 0, "{again}");
+}
+
+#[tokio::test]
+async fn a_read_returns_the_lines_of_a_locator_or_a_chunk_with_their_context() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+
+    let uri = format!("/v1/projects/{id}/chunks?locator=src/net.rs:L4&context=1");
+    let (status, read) = h.call("GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(
+        (read["start_line"].clone(), read["end_line"].clone()),
+        (json!(3), json!(5))
+    );
+    assert_eq!(
+        read["source"], "disk",
+        "a walked file is read where it lives"
+    );
+    assert!(
+        read["text"]
+            .as_str()
+            .expect("text")
+            .contains("pub fn retry_with_backoff")
+    );
+
+    let chunk = read["chunk"]["id"]
+        .as_str()
+        .expect("the overlapped chunk")
+        .to_string();
+    let (status, by_id) = h
+        .call("GET", &format!("/v1/projects/{id}/chunks?id={chunk}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{by_id}");
+    assert_eq!(by_id["start_line"], read["chunk"]["start_line"]);
+
+    for (query, wanted) in [
+        (
+            format!("locator=src/net.rs:L1&id={chunk}"),
+            StatusCode::BAD_REQUEST,
+        ),
+        ("context=2".to_string(), StatusCode::BAD_REQUEST),
+        (
+            "locator=src/net.rs:L900".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "locator=src/missing.rs:L1".to_string(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "locator=../etc/passwd:L1".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let (status, body) = h
+            .call("GET", &format!("/v1/projects/{id}/chunks?{query}"), None)
+            .await;
+        assert_eq!(status, wanted, "{query}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn the_file_listing_narrows_to_a_glob_and_refuses_a_broken_one() {
+    let h = harness().await;
+    let id = h.register().await;
+    h.sync(&id, json!({})).await;
+
+    let (status, all) = h
+        .call("GET", &format!("/v1/projects/{id}/files"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(all.as_array().map(Vec::len), Some(2), "{all}");
+
+    let (status, src) = h
+        .call("GET", &format!("/v1/projects/{id}/files?glob=src/**"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{src}");
+    let paths: Vec<&str> = src
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert_eq!(paths, ["src/net.rs"]);
+
+    let (status, _) = h
+        .call(
+            "GET",
+            &format!("/v1/projects/{id}/files?glob=src/%5B"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a broken glob is refused, not ignored"
+    );
+    let (status, _) = h
+        .call("GET", &format!("/v1/projects/{id}/files?globb=x"), None)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a misspelled parameter is refused"
+    );
 }
 
 #[tokio::test]

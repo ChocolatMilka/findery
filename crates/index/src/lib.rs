@@ -52,6 +52,8 @@ pub struct Indexer {
     pub cfg: Config,
     pub chunkers: findery_chunk::Registry,
     pub jobs: JobRegistry,
+    /// The intent library, layered per project.
+    intent_cache: search::intents::IntentCache,
     /// One embedder per model profile, and which profile is the default.
     pool: Arc<EmbedderPool>,
     /// Every bucket family the daemon has open, by name. Rebuilt from the disk
@@ -96,6 +98,7 @@ impl Indexer {
     /// [`Indexer::new`] with the embedder builder swapped, for tests.
     pub(crate) async fn with_builder(cfg: Config, build: models::BuildFn) -> Result<Arc<Self>> {
         cfg.validate()?;
+        let intent_cache = search::intents::IntentCache::new(&cfg)?;
         findery_store::migrate_legacy_layout(&cfg.store)?;
         let (registry, mut broken) = Registry::load(&cfg.store);
         let (unfinished, mut notices) = lifecycle::tombstones::complete(&cfg, &registry).await;
@@ -119,6 +122,7 @@ impl Indexer {
         Ok(Arc::new(Self {
             chunkers: findery_chunk::Registry::new(),
             jobs: JobRegistry::new(cfg.server.job_history, cfg.server.job_concurrency),
+            intent_cache,
             pool,
             families: RwLock::new(opened.families),
             homes: RwLock::new(opened.homes),
@@ -162,7 +166,8 @@ impl Indexer {
 
     // -- querying -----------------------------------------------------------
 
-    /// A search: a vector list and a keyword list, fused by rank. In hybrid
+    /// A search: every leg of the plan the request resolves to — one for a
+    /// plain query, several for a workflow intent — run concurrently. In hybrid
     /// mode a vector list that cannot be had degrades to keyword results and a
     /// warning; see [`search`].
     pub async fn search(&self, req: &SearchRequest) -> Result<findery_core::api::SearchResponse> {

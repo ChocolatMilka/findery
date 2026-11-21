@@ -3,4 +3,5 @@
 
 pub(crate) mod board;
 pub(crate) mod render;
+pub(crate) mod search_view;
 pub(crate) mod style;

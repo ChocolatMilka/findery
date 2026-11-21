@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::intent::{IntentLibrary, IntentOverride};
 use crate::model::is_bucket_name;
 use crate::support::path_map::{Mount, PathMapper};
 use crate::{Error, Result};
@@ -63,6 +64,11 @@ pub struct Config {
     /// Bind mounts used to translate container paths back to host paths.
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    /// `[intents.<name>]`: this daemon's layer over the built-in intent
+    /// library — an override of an intent, or a new one. A project manifest
+    /// layers its own on top.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub intents: BTreeMap<String, IntentOverride>,
 }
 
 impl Config {
@@ -76,6 +82,7 @@ impl Config {
     /// failure is expensive and confusing.
     pub fn validate(&self) -> Result<()> {
         self.validate_profiles()?;
+        self.intent_library()?;
         if self.chunk.max_chars < 200 {
             return Err(Error::Config("chunk.max_chars must be >= 200".into()));
         }
@@ -94,6 +101,7 @@ impl Config {
                 "search.default_k must be <= search.max_k".into(),
             ));
         }
+        self.search.validate_similarities()?;
         self.sync.validate()?;
         if matches!(self.store.backend, StoreBackend::Qdrant) && self.store.qdrant.url.is_empty() {
             return Err(Error::Config(
@@ -108,6 +116,12 @@ impl Config {
             )));
         }
         Ok(())
+    }
+
+    /// The built-in intent library with this daemon's `[intents.<name>]`
+    /// layered on top. A project's manifest layer goes over this one.
+    pub fn intent_library(&self) -> Result<IntentLibrary> {
+        IntentLibrary::builtin()?.merged(&self.intents)
     }
 
     /// Builds the host/container translator declared by `mounts`.
@@ -352,6 +366,49 @@ backend = \"gpt\"
     fn unknown_backend_is_refused_not_ignored() {
         assert!(EmbedderBackend::parse("gpt").is_err());
         assert!(StoreBackend::parse("pinecone").is_err());
+    }
+
+    /// The daemon's `[intents.<name>]` layer is checked at boot: a typo or a
+    /// broken sentence stops `finderyd --check`, not a search a week later.
+    #[test]
+    fn the_daemon_intent_layer_is_validated_with_the_config() {
+        let cfg = Config::from_toml_str(
+            "[search]\nmax_instruction_chars = 300\n\n[intents.usage.hints]\ngo = [\"receivers\"]\n",
+        )
+        .expect("parse");
+        cfg.validate().expect("valid");
+        assert_eq!(cfg.search.max_instruction_chars, 300);
+        let library = cfg.intent_library().expect("layered");
+        let usage = library.get("usage").expect("there");
+        assert!(
+            usage
+                .instruction_for(&[crate::model::Lang::Go], 1_000)
+                .ends_with("; Go: receivers.")
+        );
+        let text = toml::to_string_pretty(&cfg).expect("serialize");
+        let back = Config::from_toml_str(&text).expect("re-parse");
+        assert_eq!(back.intents, cfg.intents);
+
+        assert!(Config::from_toml_str("[intents.usage]\nsumary = \"typo\"\n").is_err());
+        let broken =
+            Config::from_toml_str("[intents.usage]\ninstruction = \"Given {x}, retrieve y.\"\n")
+                .expect("parse");
+        let err = broken.validate().expect_err("bad placeholder");
+        assert!(err.to_string().contains("{x}"), "{err}");
+    }
+
+    #[test]
+    fn a_duplicate_band_that_is_not_a_band_is_refused() {
+        let ok = Config::from_toml_str("[search]\nduplicate_min = 0.8\nduplicate_max = 0.9\n");
+        ok.expect("parse").validate().expect("a band");
+        for src in [
+            "[search]\nduplicate_min = 0.9\nduplicate_max = 0.9\n",
+            "[search]\nduplicate_max = 1.5\n",
+            "[search]\ndrift_below = -2.0\n",
+        ] {
+            let cfg = Config::from_toml_str(src).expect("parse");
+            assert_eq!(cfg.validate().expect_err(src).code(), "config", "{src}");
+        }
     }
 
     #[test]

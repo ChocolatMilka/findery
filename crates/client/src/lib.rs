@@ -23,6 +23,7 @@
 
 mod admin;
 pub mod daemon;
+mod read;
 pub mod resolve;
 mod search;
 

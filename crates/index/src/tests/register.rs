@@ -17,6 +17,10 @@ fn declared() -> RegisterProject {
             },
         )])),
         instruction: Some("Given a question, retrieve the answer.".into()),
+        intents: Some(
+            toml::from_str("[usage]\ninstruction = \"Given an API, retrieve its importers.\"\n")
+                .expect("layer"),
+        ),
         model: Some("other".into()),
         extensions: Some(vec!["rs".into()]),
         ..RegisterProject::default()
@@ -41,6 +45,7 @@ async fn a_registration_that_names_only_the_root_keeps_everything_else() {
         spec.instruction.as_deref(),
         Some("Given a question, retrieve the answer.")
     );
+    assert!(spec.intents.contains_key("usage"));
     assert_eq!(spec.model.as_ref().map(|m| m.as_str()), Some("other"));
     assert_eq!(spec.extensions, ["rs"]);
     assert_eq!(again.bucket, "demo", "the bucket it lives in is kept too");
@@ -58,13 +63,14 @@ async fn an_explicitly_empty_value_clears_what_was_declared() {
             id: Some("demo".into()),
             scopes: Some(BTreeMap::new()),
             instruction: Some(String::new()),
+            intents: Some(BTreeMap::new()),
             model: Some(String::new()),
             ..RegisterProject::new(root_of(proj.path()))
         })
         .await
         .expect("register");
     let spec = cleared.spec;
-    assert!(spec.scopes.is_empty());
+    assert!(spec.scopes.is_empty() && spec.intents.is_empty());
     assert_eq!(spec.instruction, None);
     assert_eq!(spec.model, None, "unpinned: it follows the default again");
 }
