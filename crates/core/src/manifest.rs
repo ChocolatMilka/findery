@@ -12,10 +12,10 @@
 //! Like [`crate::config`], this parses and validates but never opens a file.
 
 use crate::config::{StoreConfig, bucket_path};
-use crate::filter::CompiledFilter;
+use crate::embedding::prompt::QueryTask;
 use crate::ids::ProjectId;
+use crate::model::filter::CompiledFilter;
 use crate::model::{SearchFilter, is_bucket_name};
-use crate::prompt::QueryTask;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

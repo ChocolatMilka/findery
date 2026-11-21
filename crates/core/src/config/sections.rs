@@ -158,7 +158,7 @@ impl Default for EmbedderConfig {
             max_retries: 3,
             max_input_chars: 24_000,
             normalize: true,
-            query_instruction: crate::prompt::DEFAULT_QUERY_INSTRUCTION.into(),
+            query_instruction: crate::embedding::prompt::DEFAULT_QUERY_INSTRUCTION.into(),
         }
     }
 }

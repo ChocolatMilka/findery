@@ -12,14 +12,13 @@
 mod cache;
 mod chunks;
 mod projects;
+pub(crate) mod schema;
 
 use findery_core::{Error, Result};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use crate::schema;
 
 /// Handle on the bucket database.
 #[derive(Clone)]

@@ -8,9 +8,9 @@
 
 use findery_client::Client;
 use findery_core::api::{AddDocument, ExportRequest, RegisterProject, SyncRequest};
+use findery_core::embedding::prompt::QueryTask;
 use findery_core::ids::ProjectId;
 use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchHit, SearchMode, SearchRequest};
-use findery_core::prompt::QueryTask;
 use findery_core::{Error, Result};
 use serde_json::Value;
 

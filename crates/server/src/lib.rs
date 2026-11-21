@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use findery_core::Error;
 use findery_core::config::Config;
 use findery_index::Indexer;
-use findery_index::watch::WatchHandle;
+use findery_index::jobs::watch::WatchHandle;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -9,17 +9,13 @@
 //! here would be an upward dependency in disguise.
 
 pub mod api;
-pub mod clock;
 pub mod config;
+pub mod embedding;
 pub mod error;
-pub mod filter;
 pub mod ids;
+pub mod manifest;
 pub mod model;
-pub mod path_map;
-pub mod project;
-pub mod prompt;
-#[macro_use]
-pub mod serde_str;
+pub mod support;
 pub mod traits;
 
 pub use api::{
@@ -27,8 +23,8 @@ pub use api::{
     RegisterProject, Removed, Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 pub use error::{Error, Result};
-pub use filter::CompiledFilter;
 pub use ids::{ChunkId, ContentHash, ProjectId};
+pub use model::filter::CompiledFilter;
 pub use model::{
     Chunk, ChunkKind, FileRecord, IndexStats, Lang, Origin, Project, ProjectSpec, RawChunk,
     ScoredChunk, SearchFilter, SearchHit, SearchMode, SearchRequest, SyncMode, SyncReport,

@@ -347,7 +347,7 @@ finderyd --check           # the config actually resolved
 | `continue` on unreadable file         | `warnings.push(...)`    | 022  |
 | Magic number                          | `Config` field          | 014  |
 | `chunks` written without `chunks_fts` | same transaction        | 027  |
-| `"Instruct: "` concatenated by hand   | `findery_core::prompt`  | 012  |
+| `"Instruct: "` concatenated by hand   | `findery_core::embedding::prompt`  | 012  |
 | `println!` in `findery-mcp`           | `tracing` on stderr     | —    |
 | File > 450 lines                      | split by responsibility | 029  |
 | `fn test_x()`                         | `fn <behavior>()`       | 033  |

@@ -12,8 +12,8 @@
 //! exclusion is explicit configuration, and the walk reports what it skipped
 //! rather than dropping it in silence.
 
+use findery_core::manifest::MANIFEST_DIR;
 use findery_core::model::{Lang, ProjectSpec};
-use findery_core::project::MANIFEST_DIR;
 use findery_core::{Error, Result};
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};

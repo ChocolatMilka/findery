@@ -115,7 +115,7 @@ pub struct ProjectSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<crate::prompt::QueryTask>,
+    pub task: Option<crate::embedding::prompt::QueryTask>,
 }
 
 impl ProjectSpec {

@@ -239,7 +239,7 @@ async fn set_watch(
         }));
     }
     let project = state.indexer.get_project(&id).await?;
-    let handle = findery_index::watch::spawn(
+    let handle = findery_index::jobs::watch::spawn(
         state.indexer.clone(),
         project,
         Duration::from_millis(body.debounce_ms.clamp(100, 60_000)),

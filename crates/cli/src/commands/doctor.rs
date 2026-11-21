@@ -56,7 +56,7 @@ pub async fn run(client: &Client, json: bool) -> Result<()> {
                 })
             })
             .collect();
-        return crate::render::json(&rows);
+        return crate::ui::render::json(&rows);
     }
 
     for check in &checks {
@@ -181,13 +181,13 @@ async fn collect(client: &Client) -> Vec<Check> {
             "cd into a project and run: findery init",
         )),
         Ok(projects) => {
-            let cwd = crate::scope::cwd().unwrap_or_default();
+            let cwd = crate::workspace::scope::cwd().unwrap_or_default();
             // The deepest match wins, exactly as command dispatch resolves it,
             // so the diagnostic never names a project the commands would not use.
             match projects
                 .iter()
-                .filter(|p| findery_core::path_map::is_within(&p.host_root, &cwd))
-                .max_by_key(|p| findery_core::path_map::normalize(&p.host_root).len())
+                .filter(|p| findery_core::support::path_map::is_within(&p.host_root, &cwd))
+                .max_by_key(|p| findery_core::support::path_map::normalize(&p.host_root).len())
             {
                 Some(project) => checks.push(Check::good(
                     "here",
@@ -242,11 +242,13 @@ async fn collect(client: &Client) -> Vec<Check> {
     // The daemon wins — its answer is which file holds the row — and the fix is
     // the command that rewrites the file from it.
     if let Ok(cwd) = std::env::current_dir()
-        && let Ok(Some(found)) = crate::manifest::discover(&cwd)
+        && let Ok(Some(found)) = crate::workspace::manifest::discover(&cwd)
         && let Ok(projects) = client.list_projects().await
     {
         let root = found.root.display().to_string().replace('\\', "/");
-        let path = crate::manifest::path_of(&found.root).display().to_string();
+        let path = crate::workspace::manifest::path_of(&found.root)
+            .display()
+            .to_string();
         match (
             projects.iter().find(|p| p.host_root == root),
             found.config.bucket.name.as_deref(),

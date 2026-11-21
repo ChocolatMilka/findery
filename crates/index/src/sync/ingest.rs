@@ -8,10 +8,10 @@
 
 use super::Indexer;
 use crate::BucketHandle;
-use crate::progress::ProgressHandle;
-use findery_core::clock::{now_millis, now_unix};
+use crate::jobs::progress::ProgressHandle;
 use findery_core::ids::{ChunkId, ContentHash};
 use findery_core::model::{Chunk, FileRecord, Lang, Origin, Project, RawChunk, SyncReport};
+use findery_core::support::clock::{now_millis, now_unix};
 use findery_core::traits::{VectorPayload, VectorRecord};
 use findery_core::{Error, Result};
 

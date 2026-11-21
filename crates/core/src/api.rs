@@ -6,8 +6,8 @@
 //! — which is exactly the failure mode we want, instead of a client silently
 //! dropping a field the server started sending.
 
+use crate::manifest::BucketRef;
 use crate::model::{SearchFilter, SyncMode, SyncReport};
-use crate::project::BucketRef;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -48,7 +48,7 @@ pub struct RegisterProject {
     /// nobody has to remember which index a directory belongs to. Absent means
     /// the ordinary case — a bucket inside the project, named after it. The
     /// daemon answers with what it actually used, which is not always what was
-    /// asked (see [`crate::project::BucketRef::resolve`]).
+    /// asked (see [`crate::manifest::BucketRef::resolve`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket: Option<BucketRef>,
     /// Named restrictions a search can ask for by name.
@@ -62,7 +62,7 @@ pub struct RegisterProject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<crate::prompt::QueryTask>,
+    pub task: Option<crate::embedding::prompt::QueryTask>,
 }
 
 impl RegisterProject {

@@ -9,7 +9,7 @@
 //! `/v1/embeddings` (OpenAI envelope) and TEI's native `/embed` (bare matrix).
 
 use findery_core::config::EmbedderConfig;
-use findery_core::prompt;
+use findery_core::embedding::prompt;
 use findery_core::traits::Embedder;
 use findery_core::{Error, Result};
 use futures::stream::{self, StreamExt};

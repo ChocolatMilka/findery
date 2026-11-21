@@ -181,7 +181,7 @@ pub(crate) async fn open_all(cfg: &Config, recipe: &str, dim: usize) -> Result<O
     // entry whose file has gone is dropped with a warning: a bucket deleted
     // between two boots is an ordinary event and not a reason to refuse to
     // serve every other project.
-    let (registry, warnings) = findery_store::registry::Registry::load(&cfg.store);
+    let (registry, warnings) = findery_store::files::registry::Registry::load(&cfg.store);
     for warning in warnings {
         broken.push(warning);
     }
@@ -310,7 +310,7 @@ impl Indexer {
         // registry exists for the locations nothing else could find.
         let derived = findery_core::config::bucket_path(&self.cfg.store.data_dir, name);
         if path != Path::new(&derived) {
-            findery_store::registry::Registry::record(
+            findery_store::files::registry::Registry::record(
                 &self.cfg.store,
                 name,
                 &path.display().to_string(),
@@ -402,7 +402,7 @@ impl Indexer {
         let removed = if path == derived {
             findery_store::delete_bucket(&self.cfg.store, name)?
         } else {
-            findery_store::registry::Registry::forget(&self.cfg.store, name)?;
+            findery_store::files::registry::Registry::forget(&self.cfg.store, name)?;
             findery_store::delete_bucket_file(&path)?
         };
         Ok(BucketRemoved {

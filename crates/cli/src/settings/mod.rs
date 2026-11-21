@@ -1,10 +1,11 @@
-//! `findery config` — settings that live in the product, not in a shell.
+//! The settings file: what `findery config` reads and writes, and what the
+//! server reads at boot.
 //!
-//! INTENT: every setting used to be an environment variable. That means a shell
-//! profile the daemon may never read, a value that vanishes with the terminal,
-//! and on Windows a `SetEnvironmentVariable` call plus a new session before
-//! anything takes effect. Four exports to name a model is not configuration, it
-//! is a workaround.
+//! INTENT: a setting lives in the product, not in a shell. An environment
+//! variable is a shell profile the daemon may never read, a value that vanishes
+//! with the terminal, and on Windows a `SetEnvironmentVariable` call plus a new
+//! session before anything takes effect. Four exports to name a model is not
+//! configuration, it is a workaround.
 //!
 //! This writes the file the daemon already reads, and it writes it the only way
 //! that cannot leave a daemon refusing to boot: the whole document is parsed and
@@ -14,6 +15,8 @@
 //! that same file, so a client finds its daemon without a shell involved. It
 //! touches no HTTP. The file is local and so is the edit; the daemon's only part
 //! is being restarted so it reads it.
+
+pub(crate) mod endpoint;
 
 use findery_core::config::{Config, user_config_path};
 use findery_core::{Error, Result};
@@ -50,7 +53,7 @@ const SECRETS: &[&str] = &[
 pub fn path(json: bool) -> Result<()> {
     let path = user_config_path();
     if json {
-        return crate::render::json(&serde_json::json!({ "path": path }));
+        return crate::ui::render::json(&serde_json::json!({ "path": path }));
     }
     println!("{path}");
     Ok(())
@@ -92,7 +95,7 @@ pub fn show(json: bool) -> Result<()> {
             .into_iter()
             .map(|(k, v)| serde_json::json!({ "key": k, "value": mask(&k, &v) }))
             .collect();
-        return crate::render::json(&serde_json::json!({ "path": path, "settings": set }));
+        return crate::ui::render::json(&serde_json::json!({ "path": path, "settings": set }));
     }
 
     let settings = flatten(&document);
@@ -122,7 +125,7 @@ pub fn set(key: &str, value: &str, json: bool) -> Result<Option<&'static str>> {
     write(&path, &document)?;
 
     if json {
-        crate::render::json(&serde_json::json!({
+        crate::ui::render::json(&serde_json::json!({
             "path": path, "key": key, "value": mask(&key, &shown(&document, &key)),
         }))?;
     } else {
@@ -144,7 +147,9 @@ pub fn unset(key: &str, json: bool) -> Result<Option<&'static str>> {
     write(&path, &document)?;
 
     if json {
-        crate::render::json(&serde_json::json!({ "path": path, "key": key, "removed": existed }))?;
+        crate::ui::render::json(
+            &serde_json::json!({ "path": path, "key": key, "removed": existed }),
+        )?;
     } else if existed {
         println!("{key} is back to its default");
     } else {
