@@ -28,7 +28,7 @@ pub(crate) fn split_trivia<'a>(item: &'a str, lex: &Lexicon) -> (&'a str, &'a st
             continue;
         }
         if lex.attributes && starts_with(bytes, i, b"#[") {
-            match balanced_at(bytes, i + 1, lex, ATTRIBUTE_BRACKETS) {
+            match balanced_end(bytes, i + 1, lex, ATTRIBUTE_BRACKETS) {
                 Some(end) => i = end,
                 // An attribute that never closes swallows the rest of the item.
                 None => return (item, &item[item.len()..]),
@@ -36,7 +36,7 @@ pub(crate) fn split_trivia<'a>(item: &'a str, lex: &Lexicon) -> (&'a str, &'a st
             continue;
         }
         if lex.attributes && starts_with(bytes, i, b"#![") {
-            match balanced_at(bytes, i + 2, lex, ATTRIBUTE_BRACKETS) {
+            match balanced_end(bytes, i + 2, lex, ATTRIBUTE_BRACKETS) {
                 Some(end) => i = end,
                 None => return (item, &item[item.len()..]),
             }
@@ -83,13 +83,25 @@ const ATTRIBUTE_BRACKETS: &[(u8, u8)] = &[(b'[', b']')];
 /// The pairs a decorator's argument list is written with.
 const DECORATOR_BRACKETS: &[(u8, u8)] = &[(b'(', b')'), (b'[', b']'), (b'{', b'}')];
 
+/// A body's braces.
+pub(crate) const BRACES: &[(u8, u8)] = &[(b'{', b'}')];
+
+/// A parameter or a group list.
+pub(crate) const PARENS: &[(u8, u8)] = &[(b'(', b')')];
+
 /// The offset just past the construct opened at `start`, or `None` when it
 /// never closes before the end of the input.
 ///
-/// INTENT: the count runs through [`crate::scanner::skip_opaque`], so a bracket
-/// inside a string — `@Route('/', methods: ['GET'])`, `#[doc = "a ] b"]` — is
-/// not a bracket at all, and a list may span several lines.
-fn balanced_at(bytes: &[u8], start: usize, lex: &Lexicon, pairs: &[(u8, u8)]) -> Option<usize> {
+/// INTENT: the one bracket matcher of the crate. The count runs through
+/// [`crate::scanner::skip_opaque`], so a bracket inside a string —
+/// `@Route('/', methods: ['GET'])`, `#[doc = "a ] b"]` — is not a bracket at
+/// all, and a list may span several lines.
+pub(crate) fn balanced_end(
+    bytes: &[u8],
+    start: usize,
+    lex: &Lexicon,
+    pairs: &[(u8, u8)],
+) -> Option<usize> {
     let mut i = start;
     let mut depth = 0isize;
     while i < bytes.len() {
@@ -145,7 +157,7 @@ pub(crate) fn decorator_end(bytes: &[u8], i: usize, lex: &Lexicon) -> usize {
     }
     match bytes.get(args) {
         Some(b'(' | b'[' | b'{') => {
-            balanced_at(bytes, args, lex, DECORATOR_BRACKETS).unwrap_or(bytes.len())
+            balanced_end(bytes, args, lex, DECORATOR_BRACKETS).unwrap_or(bytes.len())
         }
         _ => name,
     }
@@ -259,7 +271,7 @@ pub(crate) fn strip_annotations(header: &str, lex: &Lexicon) -> String {
             continue;
         }
         if bytes.get(end) == Some(&b'(') {
-            end = balanced_at(bytes, end, lex, &[(b'(', b')')]).unwrap_or(bytes.len());
+            end = balanced_end(bytes, end, lex, PARENS).unwrap_or(bytes.len());
         }
         out.push_str(&header[from..i]);
         out.push(' ');
@@ -270,11 +282,76 @@ pub(crate) fn strip_annotations(header: &str, lex: &Lexicon) -> String {
     out
 }
 
-/// Whether an annotation marks a test: JUnit's `@Test`, `@ParameterizedTest`,
-/// `@RepeatedTest`, `@TestFactory`, `@TestTemplate`, and the framework test
-/// slices — `@SpringBootTest`, `@WebMvcTest` — that make a whole class one.
+/// The simple names of the annotations that mark a test method: JUnit 4 and 5,
+/// TestNG, jqwik.
+const TEST_MARKERS: &[&str] = &[
+    "Test",
+    "ParameterizedTest",
+    "RepeatedTest",
+    "TestFactory",
+    "TestTemplate",
+    "Theory",
+    "Property",
+];
+
+/// The framework test slices that make a whole class a test.
+const TEST_SLICES: &[&str] = &[
+    "SpringBootTest",
+    "WebMvcTest",
+    "WebFluxTest",
+    "DataJpaTest",
+    "DataJdbcTest",
+    "DataMongoTest",
+    "DataRedisTest",
+    "JdbcTest",
+    "JsonTest",
+    "RestClientTest",
+    "GraphQlTest",
+    "QuarkusTest",
+    "MicronautTest",
+    "HiltAndroidTest",
+];
+
+/// Whether an annotation marks a test.
+///
+/// INTENT: an exact set, not a suffix: TestNG's `@BeforeTest` and `@AfterTest`
+/// set a test up, they are not one, and `include_tests = false` must keep them.
 pub(crate) fn is_test_annotation(name: &str) -> bool {
-    name.ends_with("Test") || matches!(name, "TestFactory" | "TestTemplate")
+    TEST_MARKERS.contains(&name) || TEST_SLICES.contains(&name)
+}
+
+/// What a Java or Kotlin item says once its annotations are read.
+pub(crate) struct Annotated<'a> {
+    /// One of its annotations marks a test.
+    pub is_test: bool,
+    /// Its header, up to the first of the stops, annotations stripped.
+    pub header: String,
+    /// The code after the header: `{…}`, `= …`, `;`, or nothing.
+    pub rest: &'a str,
+}
+
+/// Reads an annotated item: its test flag, its header, and what follows it.
+pub(crate) fn annotated_header<'a>(item: &'a str, lex: &Lexicon, stops: &[u8]) -> Annotated<'a> {
+    let (trivia, code) = split_trivia(item, lex);
+    let is_test = annotation_names(trivia, lex)
+        .into_iter()
+        .any(is_test_annotation);
+    let raw = header_of(code, lex, stops);
+    Annotated {
+        is_test,
+        header: strip_annotations(raw, lex),
+        rest: &code[raw.len()..],
+    }
+}
+
+/// Whether `rest` opens on `token` — on the whole word, when `token` is a word.
+pub(crate) fn opens_on(rest: &[u8], token: &str) -> bool {
+    let token = token.as_bytes();
+    let is_word = token.first().is_some_and(u8::is_ascii_alphabetic);
+    let glued = rest
+        .get(token.len())
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+    rest.starts_with(token) && !(is_word && glued)
 }
 
 #[cfg(test)]

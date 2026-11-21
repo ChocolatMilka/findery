@@ -2,16 +2,18 @@
 //! interface or field group of a struct big enough to be split.
 //!
 //! INTENT: Go rides the shared pipeline of [`crate::brace`] with a lexicon
-//! that ends a statement at the newline exactly where the Go lexer inserts its
+//! that ends a statement at the newline where the Go lexer inserts its
 //! semicolons, and reads `` `raw` `` strings and `'r'` runes as opaque. What
 //! is Go's own is said here: a method is declared at the top level, with its
-//! receiver, so `func (s *Server) Handle(…)` is found as `Server.Handle`; and
-//! a test is a NAMING convention of `_test.go` files — `TestXxx`,
-//! `BenchmarkXxx`, `FuzzXxx`, `ExampleXxx` — not an attribute, which is why
-//! the profile knows the path it chunks.
+//! receiver, so `func (s *Server) Handle(…)` is found as `Server.Handle`; a
+//! `type ( … )` group declares types one by one; and a test is a NAMING
+//! convention of `_test.go` files — `TestXxx`, `BenchmarkXxx`, `FuzzXxx`,
+//! `ExampleXxx` — not an attribute, which is why the profile knows the path
+//! it chunks.
 
 use crate::brace::{ItemMeta, Profile, chunk_with};
-use crate::header::{header_of, next_ident, split_trivia};
+use crate::header::{PARENS, balanced_end, header_of, next_ident, opens_on, split_trivia};
+use crate::items::Span;
 use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
@@ -28,7 +30,8 @@ impl Chunker for GoChunker {
 
     fn chunk(&self, path: &str, text: &str, cfg: &ChunkConfig) -> Result<Vec<RawChunk>> {
         let profile = GoProfile {
-            test_file: path.ends_with("_test.go"),
+            // `Lang::from_path` routes `main_test.GO` here: so does this.
+            test_file: path.to_ascii_lowercase().ends_with("_test.go"),
         };
         chunk_with(&profile, path, text, cfg)
     }
@@ -48,7 +51,7 @@ impl Profile for GoProfile {
         &Lexicon::GO
     }
 
-    fn classify(&self, item: &str, nested: bool) -> ItemMeta {
+    fn classify(&self, item: &str, parent: Option<ChunkKind>) -> ItemMeta {
         let lex = self.lexicon();
         let (_, code) = split_trivia(item, lex);
         let header = header_of(code, lex, b"{=;").trim_start();
@@ -58,8 +61,10 @@ impl Profile for GoProfile {
             "func" => func_header(rest),
             "type" => type_header(rest),
             "const" | "var" => (ChunkKind::Const, group_or_name(rest)),
+            // A spec of a `type ( … )` group: `A struct{…}`, `ID = string`.
+            _ if parent == Some(ChunkKind::Const) => type_header(header),
             // An interface's method set: `Read(p []byte) (n int, err error)`.
-            _ if nested => match member_name(header) {
+            _ if parent.is_some() => match member_name(header) {
                 Some(name) => (ChunkKind::Method, Some(name)),
                 None => (ChunkKind::Text, None),
             },
@@ -74,51 +79,77 @@ impl Profile for GoProfile {
             is_test,
         }
     }
+
+    /// INTENT: a `type ( … )` group declares several types — a struct, an
+    /// interface — and as one chunk it was named after the first only, every
+    /// other type's name and kind gone from the index.
+    fn group_body(&self, src: &str, item: Span) -> Option<Span> {
+        let lex = self.lexicon();
+        let (trivia, code) = split_trivia(item.slice(src), lex);
+        if !opens_on(code.as_bytes(), "type") {
+            return None;
+        }
+        let after_keyword = &code["type".len()..];
+        let rest = after_keyword.trim_start();
+        if !rest.starts_with('(') {
+            return None;
+        }
+        let open = item.start + trivia.len() + (code.len() - rest.len());
+        let past_close = balanced_end(&src.as_bytes()[..item.end], open, lex, PARENS)?;
+        Some(Span {
+            start: open + 1,
+            end: past_close - 1,
+        })
+    }
 }
 
 /// `Name(…)`, `Name[T any](…)` → `Function Name`; `(s *Server) Handle(…)` →
 /// `Method Server.Handle`.
 fn func_header(rest: &str) -> (ChunkKind, Option<String>) {
     let rest = rest.trim_start();
-    if !rest.starts_with('(') {
-        return (
-            ChunkKind::Function,
-            next_ident(rest.split_whitespace().next()),
-        );
+    let first_word = || next_ident(rest.split_whitespace().next());
+    match rest.starts_with('(') {
+        false => (ChunkKind::Function, first_word()),
+        true => match balanced_end(rest.as_bytes(), 0, &Lexicon::GO, PARENS) {
+            None => (ChunkKind::Function, None),
+            Some(past_receiver) => (ChunkKind::Method, method_name(rest, past_receiver)),
+        },
     }
-    let Some(close) = matching_paren(rest) else {
-        return (ChunkKind::Function, None);
-    };
-    // The type parameters go before the last word is read: `(m *Map[K, V])`
-    // is a `Map` receiver, not a `V` one.
-    let receiver = rest[1..close]
-        .split('[')
-        .next()
-        .unwrap_or_default()
-        .split_whitespace()
-        .last()
-        .map(|t| t.trim_start_matches('*'))
-        .and_then(|t| next_ident(Some(t)));
-    let name = next_ident(rest[close + 1..].split_whitespace().next());
-    let symbol = match (receiver, name) {
+}
+
+/// `Server.Handle`, from `(s *Server) Handle(…)` whose receiver list ends
+/// just before `past_receiver`.
+fn method_name(rest: &str, past_receiver: usize) -> Option<String> {
+    let receiver = receiver_type(&rest[1..past_receiver - 1]);
+    let name = next_ident(rest[past_receiver..].split_whitespace().next());
+    match (receiver, name) {
         (Some(r), Some(n)) => Some(format!("{r}.{n}")),
         (None, n) => n,
         (Some(_), None) => None,
-    };
-    (ChunkKind::Method, symbol)
+    }
+}
+
+/// The type a receiver is declared on: `s *Server` → `Server`, `Engine` →
+/// `Engine`, `m *Map[K, V]` → `Map`.
+fn receiver_type(receiver: &str) -> Option<String> {
+    // The type parameters go first, so `V` is not read as the type.
+    let without_type_params = receiver.split('[').next().unwrap_or_default();
+    let type_word = without_type_params.split_whitespace().last()?;
+    next_ident(Some(type_word.trim_start_matches('*')))
 }
 
 /// `X struct` → `Struct`, `X interface` → `Trait`, `X = Y` and `X Y` → `Const`;
-/// a `type ( … )` group is a `Const` named after its first type.
+/// a `type ( … )` group is an anonymous `Const`, split into its types.
 fn type_header(rest: &str) -> (ChunkKind, Option<String>) {
     let rest = rest.trim_start();
     if rest.starts_with('(') {
-        return (ChunkKind::Const, group_or_name(rest));
+        return (ChunkKind::Const, None);
     }
-    let name_len = rest
-        .bytes()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_')
-        .count();
+    let name_len: usize = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .map(char::len_utf8)
+        .sum();
     if name_len == 0 {
         return (ChunkKind::Const, None);
     }
@@ -127,17 +158,14 @@ fn type_header(rest: &str) -> (ChunkKind, Option<String>) {
     // Type parameters sit glued to the name — `List[T any] struct` — while a
     // slice type is set apart by a space: `type IDs []int`.
     if after.starts_with('[')
-        && let Some(close) = matching_bracket(after)
+        && let Some(past) = balanced_end(after.as_bytes(), 0, &Lexicon::GO, &[(b'[', b']')])
     {
-        after = &after[close + 1..];
+        after = &after[past..];
     }
-    let after = after.trim_start();
-    let kind = if starts_with_word(after, "struct") {
-        ChunkKind::Struct
-    } else if starts_with_word(after, "interface") {
-        ChunkKind::Trait
-    } else {
-        ChunkKind::Const
+    let kind = match after.trim_start().as_bytes() {
+        after if opens_on(after, "struct") => ChunkKind::Struct,
+        after if opens_on(after, "interface") => ChunkKind::Trait,
+        _ => ChunkKind::Const,
     };
     (kind, name)
 }
@@ -185,38 +213,6 @@ fn is_test_name(name: &str) -> bool {
         name.strip_prefix(prefix)
             .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
     })
-}
-
-/// Whether `s` opens on the word `w`, not on a longer identifier.
-fn starts_with_word(s: &str, w: &str) -> bool {
-    s.strip_prefix(w).is_some_and(|rest| {
-        !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.')
-    })
-}
-
-/// The offset of the `)` matching the `(` that opens `s`.
-fn matching_paren(s: &str) -> Option<usize> {
-    matching(s, b'(', b')')
-}
-
-/// The offset of the `]` matching the `[` that opens `s`.
-fn matching_bracket(s: &str) -> Option<usize> {
-    matching(s, b'[', b']')
-}
-
-fn matching(s: &str, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, b) in s.bytes().enumerate() {
-        if b == open {
-            depth += 1;
-        } else if b == close {
-            depth = depth.checked_sub(1)?;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -367,6 +363,73 @@ mod tests {
         for c in &out {
             assert!(c.end_line >= c.start_line, "got {c:?}");
         }
+    }
+
+    #[test]
+    fn a_brace_closing_a_type_literal_does_not_end_the_function() {
+        let shapes = [
+            "func Get(key string) interface{} {\n\treturn nil\n}\n",
+            "func Get() <-chan struct{} {\n\treturn nil\n}\n",
+            "func Get() map[string]interface{} {\n\treturn nil\n}\n",
+        ];
+        for src in shapes {
+            let out = chunk(&format!("{src}\nfunc after() {{}}\n"));
+            assert_eq!(
+                kinds(&out),
+                vec![
+                    (ChunkKind::Function, Some("Get")),
+                    (ChunkKind::Function, Some("after"))
+                ],
+                "{src:?} gave {out:#?}"
+            );
+            assert_eq!((out[0].start_line, out[0].end_line), (1, 3), "{src:?}");
+        }
+        let out = chunk("var cfg = struct{ A int }{A: 1}\n\nfunc after() {}\n");
+        assert_eq!(out[0].symbol.as_deref(), Some("cfg"), "got {out:#?}");
+        assert!(out[0].text.ends_with("{A: 1}"), "got {out:#?}");
+    }
+
+    #[test]
+    fn a_type_group_declares_each_of_its_types() {
+        let src =
+            "// The shapes.\ntype (\n\tA struct{ x int }\n\tB interface{ M() }\n\tID = string\n)\n";
+        let out = chunk(src);
+        let typed: Vec<_> = kinds(&out)
+            .into_iter()
+            .filter(|(_, s)| s.is_some())
+            .collect();
+        assert_eq!(
+            typed,
+            vec![
+                (ChunkKind::Struct, Some("A")),
+                (ChunkKind::Trait, Some("B")),
+                (ChunkKind::Const, Some("ID")),
+            ],
+            "got {out:#?}"
+        );
+        assert_eq!(named_chunk(&out, "B").breadcrumb.as_deref(), Some("B"));
+        assert!(
+            out[0].text.starts_with("// The shapes.\ntype ("),
+            "got {out:#?}"
+        );
+    }
+
+    #[test]
+    fn a_unicode_type_name_is_read_whole() {
+        let out = chunk("type Größe struct {\n\tv int\n}\n");
+        assert_eq!(kinds(&out), vec![(ChunkKind::Struct, Some("Größe"))]);
+    }
+
+    #[test]
+    fn a_test_file_is_one_whatever_the_case_of_its_extension() {
+        let out = chunk_at("cmd/main_test.GO", "func TestMain(t *testing.T) {}\n", 2400);
+        assert_eq!(out[0].kind, ChunkKind::Test);
+    }
+
+    fn named_chunk<'a>(out: &'a [RawChunk], symbol: &str) -> &'a RawChunk {
+        out.iter()
+            .find(|c| c.symbol.as_deref() == Some(symbol))
+            .unwrap_or_else(|| panic!("no `{symbol}` in {out:#?}"))
     }
 
     #[test]

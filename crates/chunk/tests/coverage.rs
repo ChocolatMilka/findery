@@ -1,25 +1,34 @@
-//! The coverage invariant: chunking loses no content.
+//! The chunking invariants, over every language: no content is lost, no chunk
+//! outgrows its budget, and a name is carried by the chunk that bears it.
 //!
 //! INTENT: a chunker that splits wrongly usually fails LOUDLY — a wrong name, a
 //! wrong kind, a test asserting on it. A chunker that DROPS text fails in
 //! silence: the file is indexed, every chunk looks sane, and a function nobody
-//! will ever find again is simply not there. This invariant is what makes that
+//! will ever find again is simply not there. These invariants make that
 //! failure loud, for every language at once: every word of every source line
-//! is carried by a chunk whose line range covers that line.
+//! is carried, as a whole word, by a chunk whose line range covers that line.
 
 mod fixtures;
 
 use findery_chunk::Registry;
 use findery_core::config::ChunkConfig;
-use findery_core::model::{Lang, RawChunk};
+use findery_core::model::{ChunkKind, Lang, RawChunk};
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 /// A budget that forces every container to be split, and the default one.
 const BUDGETS: &[usize] = &[120, 2400];
 
+/// How far a chunk may outgrow `max_chars`: a budget narrower than one UTF-8
+/// character still takes that character whole.
+const SIZE_MARGIN: usize = 3;
+
 /// Lines a chunker drops on purpose, as `.claude/docs/chunk/README.md` says it
 /// does: a JavaScript shebang and a PHP opening tag say nothing.
-fn dropped_on_purpose(line_no: usize, line: &str) -> bool {
-    (line_no == 1 && line.starts_with("#!")) || line.trim() == "<?php"
+fn dropped_on_purpose(path: &str, line_no: usize, line: &str) -> bool {
+    let shebang =
+        line_no == 1 && line.starts_with("#!") && Lang::from_path(path) == Lang::JavaScript;
+    shebang || line.trim() == "<?php"
 }
 
 /// The words of a line: what a search could look for in it.
@@ -28,44 +37,119 @@ fn words(line: &str) -> impl Iterator<Item = &str> {
         .filter(|w| !w.is_empty())
 }
 
-/// Fails when a word of `src` is carried by no chunk covering its line.
-fn assert_nothing_is_dropped(path: &str, src: &str) {
-    let registry = Registry::new();
+fn chunk(path: &str, src: &str, max_chars: usize) -> Vec<RawChunk> {
+    let cfg = ChunkConfig {
+        max_chars,
+        include_tests: true,
+        ..ChunkConfig::default()
+    };
+    Registry::new()
+        .chunk(path, Lang::from_path(path), src, &cfg)
+        .expect("chunking succeeds")
+}
+
+/// Fails when a chunk of `src` breaks an invariant, at every budget.
+fn assert_invariants(path: &str, src: &str) {
     for &max_chars in BUDGETS {
-        let cfg = ChunkConfig {
-            max_chars,
-            include_tests: true,
-            ..ChunkConfig::default()
-        };
-        let out = registry
-            .chunk(path, Lang::from_path(path), src, &cfg)
-            .expect("chunking succeeds");
-        for (k, line) in src.lines().enumerate() {
-            let line_no = k + 1;
-            if dropped_on_purpose(line_no, line) {
-                continue;
-            }
-            for word in words(line) {
-                assert!(
-                    carried(&out, line_no, word),
-                    "{path} at max_chars = {max_chars}: line {line_no} `{line}` lost `{word}`\n{out:#?}"
-                );
-            }
+        let out = chunk(path, src, max_chars);
+        assert_nothing_is_dropped(path, src, max_chars, &out);
+        assert_within_budget(path, max_chars, &out);
+        assert_symbols_are_carried(path, max_chars, &out);
+    }
+}
+
+/// Every word of every line is carried, whole, by a chunk covering its line.
+fn assert_nothing_is_dropped(path: &str, src: &str, max_chars: usize, out: &[RawChunk]) {
+    let lines: Vec<&str> = src.lines().collect();
+    let carried: Vec<HashSet<&str>> = out.iter().map(|c| words(&c.text).collect()).collect();
+    let mut covering: Vec<Vec<usize>> = vec![Vec::new(); lines.len() + 1];
+    for (k, c) in out.iter().enumerate() {
+        let last = (c.end_line as usize).min(lines.len());
+        for chunks in &mut covering[c.start_line as usize..=last] {
+            chunks.push(k);
+        }
+    }
+    for (k, line) in lines.iter().enumerate() {
+        let line_no = k + 1;
+        if dropped_on_purpose(path, line_no, line) {
+            continue;
+        }
+        for word in words(line) {
+            let found = covering[line_no].iter().any(|&c| carried[c].contains(word));
+            assert!(
+                found,
+                "{path} at max_chars = {max_chars}: line {line_no} `{line}` lost `{word}`\n{out:#?}"
+            );
         }
     }
 }
 
-/// Whether a chunk whose range covers `line_no` holds `word`.
-fn carried(out: &[RawChunk], line_no: usize, word: &str) -> bool {
-    out.iter().any(|c| {
-        (c.start_line as usize..=c.end_line as usize).contains(&line_no) && c.text.contains(word)
-    })
+/// No chunk outgrows the budget.
+fn assert_within_budget(path: &str, max_chars: usize, out: &[RawChunk]) {
+    for c in out {
+        assert!(
+            c.text.len() <= max_chars + SIZE_MARGIN,
+            "{path} at max_chars = {max_chars}: a chunk of {} bytes\n{c:#?}",
+            c.text.len()
+        );
+    }
+}
+
+/// The name an item bears is in its text: a symbol pointing at chunks that do
+/// not hold its declaration is a split in the wrong place. The windows of one
+/// item all bear its name, so they are read together. A name taken from the
+/// path (a module) or given by the language (`Companion`) is in no text.
+fn assert_symbols_are_carried(path: &str, max_chars: usize, out: &[RawChunk]) {
+    for item in out
+        .chunk_by(|a, b| (a.kind, &a.symbol, &a.breadcrumb) == (b.kind, &b.symbol, &b.breadcrumb))
+    {
+        let Some(symbol) = &item[0].symbol else {
+            continue;
+        };
+        let from_path = item[0].kind == ChunkKind::Module
+            && item[0].breadcrumb.as_deref() == Some(&format!("module {symbol}"));
+        if from_path || symbol == "Companion" {
+            continue;
+        }
+        let text: HashSet<&str> = item.iter().flat_map(|c| words(&c.text)).collect();
+        for word in words(symbol) {
+            assert!(
+                text.contains(word),
+                "{path} at max_chars = {max_chars}: `{symbol}` is not in its chunks\n{item:#?}"
+            );
+        }
+    }
+}
+
+/// Fails unless a chunk bearing `symbol` covers `line` once every container
+/// is split: a declaration's line read into the wrong item is caught here.
+fn assert_declared(path: &str, src: &str, declarations: &[(usize, &str)]) {
+    let max_chars = BUDGETS[0];
+    let out = chunk(path, src, max_chars);
+    for &(line, symbol) in declarations {
+        let found = out.iter().any(|c| {
+            c.symbol.as_deref() == Some(symbol)
+                && (c.start_line as usize..=c.end_line as usize).contains(&line)
+        });
+        assert!(
+            found,
+            "{path} at max_chars = {max_chars}: no chunk named `{symbol}` covers line {line}\n{out:#?}"
+        );
+    }
+}
+
+/// The line of `src` that holds `needle`.
+fn line_of(src: &str, needle: &str) -> usize {
+    1 + src
+        .lines()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no `{needle}` in {src}"))
 }
 
 #[test]
 fn every_fixture_keeps_every_word_of_every_line() {
     for (path, src) in fixtures::ALL {
-        assert_nothing_is_dropped(path, src);
+        assert_invariants(path, src);
     }
 }
 
@@ -87,7 +171,7 @@ fn the_crate_own_sources_keep_every_word_of_every_line() {
         ),
     ];
     for (path, src) in sources {
-        assert_nothing_is_dropped(path, src);
+        assert_invariants(path, src);
     }
 }
 
@@ -110,12 +194,17 @@ fn a_brace_in_a_header_does_not_drop_the_body_it_precedes() {
             format!("class Button(val onClick: () -> Unit = {{ log(\"x\") }}) {{\n{funs}}}\n"),
         ),
         (
+            "a.kt",
+            format!("class Gate(val ok: Boolean = x < 1) {{\n{funs}}}\n"),
+        ),
+        (
             "a.ts",
             format!("@Component({{\n  selector: 'x'\n}})\nexport class W {{\n{members}}}\n"),
         ),
     ];
     for (path, src) in &cases {
-        assert_nothing_is_dropped(path, src);
+        assert_invariants(path, src);
+        assert_declared(path, src, &[(line_of(src, " b()"), "b")]);
     }
 }
 
@@ -202,8 +291,160 @@ fn the_shapes_that_once_misled_a_chunker_keep_every_word() {
             "a.rs",
             format!("/// Docs.\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    fn a() {{\n{}    }}\n}}\n", "        let x = 1; // padding padding padding\n".repeat(6)),
         ),
+        (
+            "a.rs",
+            format!("#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    fn a() {{\n{}    }}\n}}\n", "        let x = 1; // padding padding padding\n".repeat(6)),
+        ),
+        ("a.rs", "fn f(x: u8) {\n    match x {\n        _ => {}\n    }\n}\n".into()),
     ];
     for (path, src) in &cases {
-        assert_nothing_is_dropped(path, src);
+        assert_invariants(path, src);
+    }
+}
+
+/// The line a declaration sits on, and the symbol its chunk must bear.
+type Declared = Vec<(usize, &'static str)>;
+
+/// The shapes real repositories hold that a chunker once misread, each with
+/// the declarations it must still name.
+#[test]
+fn the_real_world_shapes_keep_their_words_and_their_names() {
+    let kbody = format!(
+        "{{\n    fun x() = 1\n{}}}\n",
+        "    fun pad() = println(\"padding padding padding padding\")\n".repeat(3)
+    );
+    let cases: Vec<(&str, String, Declared)> = vec![
+        (
+            "a.kt",
+            format!("class A\n    internal actual constructor(val b: B) {kbody}"),
+            vec![(2, "A")],
+        ),
+        (
+            "a.kt",
+            format!("class A\n/** KDoc on the constructor. */\n@Inject constructor(val b: B) {kbody}"),
+            vec![(3, "A")],
+        ),
+        (
+            "a.kt",
+            format!("class A\n    @Inject\n    constructor(val b: B) {kbody}"),
+            vec![(3, "A")],
+        ),
+        (
+            "a.kt",
+            format!("class A private\nconstructor(val b: B) {kbody}"),
+            vec![(2, "A")],
+        ),
+        (
+            "a.kt",
+            format!("class `My Class` {kbody}\ninterface `-Iface` {{\n    fun a()\n}}\n"),
+            vec![(1, "My Class")],
+        ),
+        (
+            "a.kt",
+            "val Int.isSurrogate: Boolean\n    inline get() = this > 1\nval handle: Long\n    external get\n".into(),
+            vec![(2, "Int.isSurrogate"), (4, "handle")],
+        ),
+        (
+            "tsconfig.json",
+            "{\n  \"extends\": \"./base.json\",\n  \"compilerOptions\": {\n    \"allowJs\": true,\n    \"checkJs\": false,\n    \"moduleResolution\": \"bundler\"\n  }\n  // Path aliases are handled by the kit configuration.\n  //\n  // If you want to overwrite includes, copy them over.\n}\n".into(),
+            vec![(3, "compilerOptions")],
+        ),
+        (
+            "a.json",
+            "{\n  \"a\": \"first value of the document\",\n  // between\n  \"b\": \"second value of the document\",\n  \"c\": \"third value of the document\"\n}\n".into(),
+            vec![(4, "b")],
+        ),
+        ("a.py", "# Licence: MIT\n# Nothing but comments.\n".into(), vec![]),
+        ("a.py", "#!/usr/bin/env python3".into(), vec![]),
+        (
+            "a.py",
+            format!("@dataclass(\n    frozen=True,\n)\nclass Widget:\n    x = 1\n{}", "    y = 2 # padding padding padding padding\n".repeat(4)),
+            vec![(4, "Widget")],
+        ),
+        (
+            "a.py",
+            format!("class T:\n    @pytest.mark.parametrize(\n        \"x\", [1, 2],\n    )\n    def test_a(self, x):\n{}", "        assert x # padding padding padding\n".repeat(4)),
+            vec![(5, "test_a")],
+        ),
+        (
+            "src/lib.rs",
+            format!("{}\npub fn a() {{}}\n", "//! A line of the crate's documentation, long enough.\n".repeat(12)),
+            vec![(14, "a")],
+        ),
+        (
+            "app.min.js",
+            format!("{}\n", "var a=function(b){return b+1};".repeat(200)),
+            vec![],
+        ),
+        (
+            "Point.java",
+            "public record Point(int x, int y) {\n    public Point {\n        if (x < 0) throw new IllegalArgumentException(\"x\");\n    }\n\n    public int sum() { return x + y; }\n}\n".into(),
+            vec![(1, "Point")],
+        ),
+        (
+            "shapes.go",
+            "type (\n\tA struct{ x int }\n\tB interface{ M() }\n)\n".into(),
+            vec![(2, "A"), (3, "B")],
+        ),
+        (
+            "get.go",
+            "func Get(key string) interface{} {\n\treturn nil\n}\n\nfunc after() {}\n".into(),
+            vec![(1, "Get"), (3, "Get")],
+        ),
+        (
+            "a.kt",
+            "fun a() {\n    println(\"${x\")\n}\n\nfun b() {}\n\nfun c() {}\n".into(),
+            vec![(5, "b"), (7, "c")],
+        ),
+    ];
+    for (path, src, declarations) in &cases {
+        assert_invariants(path, src);
+        assert_declared(path, src, declarations);
+    }
+}
+
+/// How deep the pesticide nests: far past any recursion a 256 KiB stack
+/// survives.
+const DEEP: usize = 20_000;
+
+/// One file of `DEEP` nested containers, per language that nests them.
+fn deeply_nested(path: &str) -> String {
+    let body = "int x = 1; // padding padding padding padding padding\n";
+    let (open, close) = match Lang::from_path(path) {
+        Lang::Rust => ("mod a {\n", "}\n"),
+        Lang::Go => ("type A interface {\n", "}\n"),
+        Lang::Json => ("{\"a\": ", "}"),
+        _ => ("class A {\n", "}\n"),
+    };
+    match Lang::from_path(path) {
+        Lang::Python => (0..DEEP)
+            .map(|d| format!("{}class A:\n", " ".repeat(d.min(256))))
+            .collect(),
+        _ => format!("{}{body}{}", open.repeat(DEEP), close.repeat(DEEP)),
+    }
+}
+
+#[test]
+fn deeply_nested_containers_cost_a_bounded_stack_and_time() {
+    // Chunking runs inline in the daemon's sync: a stack overflow there aborts
+    // the process, and catch_unwind cannot catch it.
+    let paths = [
+        "a.rs", "a.js", "a.ts", "a.php", "a.axle", "A.java", "a.kt", "a.go", "a.py", "a.json",
+    ];
+    for path in paths {
+        let src = deeply_nested(path);
+        let worker = std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(move || {
+                let started = Instant::now();
+                assert_invariants(path, &src);
+                started.elapsed()
+            })
+            .expect("spawn a worker");
+        let elapsed = worker.join().expect("the worker survives");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "{path}: {DEEP} nested containers took {elapsed:?}"
+        );
     }
 }

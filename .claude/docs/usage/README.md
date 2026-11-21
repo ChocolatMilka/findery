@@ -457,6 +457,12 @@ real chunker for a language is a `Profile` in `findery-chunk` — its lexicon, i
 keyword table — one line in `Registry`, one entry in the default `extensions`,
 and one arm in `Lang`: see [`../chunk/README.md`](../chunk/README.md).
 
+**Line endings do not matter.** A `\r\n` is read as `\n` before chunking, so a
+Windows checkout and a Linux one of the same commit give the same chunks and
+the same content hashes: cloning a repository on the other OS costs no
+embedding. A file indexed before this rule re-embeds its chunks once, the next
+time it is chunked again (an edit, or `findery sync --full`).
+
 Global defaults for every project: `FINDERY_EXTENSIONS=rs,md,js,py` and
 `FINDERY_INCLUDE_HIDDEN=false`.
 
@@ -520,7 +526,7 @@ Disk: about 10.7 kB per chunk at 1024 dims, so ~535 MB for a 500k-line codebase.
 
 | Key | Default | Raising it means |
 |-----|---------|------------------|
-| `FINDERY_CHUNK_MAX_CHARS` | 2400 | fewer, larger excerpts: better context, less precision, more tokens per hit |
+| `FINDERY_CHUNK_MAX_CHARS` | 2400 | fewer, larger excerpts: better context, less precision, more tokens per hit. A hard ceiling in bytes: even a one-line minified file is cut to it |
 | `FINDERY_CHUNK_MIN_CHARS` | 120 | more aggressive merging of tiny neighbours |
 | `FINDERY_CHUNK_OVERLAP_CHARS` | 200 | more redundancy across window boundaries |
 

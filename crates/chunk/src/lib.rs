@@ -30,6 +30,7 @@ use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{Lang, RawChunk};
 use findery_core::traits::Chunker;
+use std::borrow::Cow;
 
 /// Routes a file to the chunker registered for its language.
 pub struct Registry {
@@ -89,6 +90,8 @@ impl Registry {
 
     /// Splits one file. `lang` is passed explicitly rather than re-derived from
     /// `path`, so a caller can force a chunker for an inline document.
+    ///
+    /// A `\r\n` line ending is read as `\n`, here and only here.
     pub fn chunk(
         &self,
         path: &str,
@@ -96,7 +99,23 @@ impl Registry {
         text: &str,
         cfg: &ChunkConfig,
     ) -> Result<Vec<RawChunk>> {
-        self.chunker_for(lang).chunk(path, text, cfg)
+        self.chunker_for(lang)
+            .chunk(path, &unix_line_endings(text), cfg)
+    }
+}
+
+/// `text` with every `\r\n` read as `\n`.
+///
+/// INTENT: a Windows checkout (`core.autocrlf`) and a Linux one of the same
+/// commit must give the same chunks: same boundaries — `max_chars` counted the
+/// `\r`s — and same text, hence the same content hashes and no re-embedding of
+/// a repository because it was cloned elsewhere. Every line keeps its number,
+/// since only the `\r` before a `\n` goes. A lone `\r` is no line ending to
+/// `str::lines`, git or the line index, and stays content.
+fn unix_line_endings(text: &str) -> Cow<'_, str> {
+    match text.contains("\r\n") {
+        true => Cow::Owned(text.replace("\r\n", "\n")),
+        false => Cow::Borrowed(text),
     }
 }
 
@@ -171,11 +190,31 @@ mod tests {
         let src = include_str!("langs/kotlin.rs");
         let other = include_str!("langs/go.rs");
         for lang in ALL {
-            let first = Registry::new().chunk("a", *lang, src, &cfg);
+            let first = Registry::new()
+                .chunk("a", *lang, src, &cfg)
+                .expect("chunking succeeds");
+            assert!(!first.is_empty(), "{lang:?}");
             let r = Registry::new();
             r.chunk("b", *lang, other, &cfg).expect("chunking succeeds");
-            let again = r.chunk("a", *lang, src, &cfg);
-            assert_eq!(first.ok(), again.ok(), "{lang:?}");
+            let again = r.chunk("a", *lang, src, &cfg).expect("chunking succeeds");
+            assert_eq!(first, again, "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn a_crlf_checkout_chunks_exactly_like_an_lf_one() {
+        let cfg = ChunkConfig {
+            max_chars: 300,
+            ..ChunkConfig::default()
+        };
+        let lf = include_str!("langs/go.rs").replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        let r = Registry::new();
+        for lang in ALL {
+            let from_lf = r.chunk("a", *lang, &lf, &cfg).expect("chunking succeeds");
+            let from_crlf = r.chunk("a", *lang, &crlf, &cfg).expect("chunking succeeds");
+            assert_eq!(from_lf, from_crlf, "{lang:?}");
+            assert!(from_crlf.iter().all(|c| !c.text.contains('\r')), "{lang:?}");
         }
     }
 

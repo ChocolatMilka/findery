@@ -7,7 +7,7 @@
 //! "dependencies" or "scripts" is found by name and not only by vector.
 
 use crate::items::{LineIndex, Span};
-use crate::scanner::{Lexicon, skip_opaque};
+use crate::scanner::{Lexicon, is_comment_at, skip_opaque};
 use crate::sizing::{drop_empty, merge_small, split_windows};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
@@ -60,19 +60,26 @@ fn emit(
 ) {
     if span.slice(src).trim().len() > cfg.max_chars
         && depth < MAX_DEPTH
-        && let Some((open, members)) = members(src, span)
-        && members.len() > 1
+        && let Some(container) = members(src, span)
+        && container.members.len() > 1
     {
         // The member's own key — `"dependencies": {` — is in none of its
         // entries: it gets its chunk. The root's lone `{` is dropped as empty.
         let head = Span {
             start: span.start,
-            end: open,
+            end: container.open,
         };
         leaf(src, head, key, depth, index, cfg, out);
-        for (member, member_key) in members {
+        for (member, member_key) in container.members {
             emit(src, member, member_key, index, cfg, depth + 1, out);
         }
+        // What follows the closing bracket — a jsonc comment after the last
+        // member — is in no member either. A lone `}` is dropped as empty.
+        let tail = Span {
+            start: container.close,
+            end: span.end,
+        };
+        leaf(src, tail, None, depth + 1, index, cfg, out);
         return;
     }
     leaf(src, span, key, depth, index, cfg, out);
@@ -117,9 +124,17 @@ fn leaf(
 /// One member of a container, with its key when the container is an object.
 type Member = (Span, Option<String>);
 
-/// The offset just past the bracket that opens the container in `span`, and
-/// its top-level members.
-fn members(src: &str, span: Span) -> Option<(usize, Vec<Member>)> {
+/// A container read into its members.
+struct Container {
+    /// The offset just past its opening bracket.
+    open: usize,
+    /// The offset of its closing bracket.
+    close: usize,
+    members: Vec<Member>,
+}
+
+/// The container in `span`, and its top-level members.
+fn members(src: &str, span: Span) -> Option<Container> {
     let bytes = src.as_bytes();
     let mut i = span.start;
     let mut root = false;
@@ -147,7 +162,11 @@ fn members(src: &str, span: Span) -> Option<(usize, Vec<Member>)> {
                 depth = depth.saturating_sub(1);
                 if depth == 0 && root {
                     push_member(&mut out, src, start, i, object);
-                    return Some((open, out));
+                    return Some(Container {
+                        open,
+                        close: i,
+                        members: out,
+                    });
                 }
             }
             b',' if depth == 1 && root => {
@@ -178,19 +197,38 @@ fn push_member(out: &mut Vec<Member>, src: &str, from: usize, to: usize, object:
     out.push((Span { start, end: to }, key));
 }
 
-/// The key of an object member: the string before its `:`.
+/// The key of an object member: the string before its `:`, past the jsonc
+/// comments above it. An empty key `""` names nothing.
 fn member_key(member: &str) -> Option<String> {
-    let rest = member.trim_start().strip_prefix('"')?;
+    let rest = past_comments(member).strip_prefix('"')?;
     let mut out = String::new();
     let mut chars = rest.chars();
     while let Some(c) = chars.next() {
         match c {
             '\\' => out.push(chars.next()?),
-            '"' => return Some(out),
+            '"' => return Some(out).filter(|key| !key.is_empty()),
             _ => out.push(c),
         }
     }
     None
+}
+
+/// `text` past its leading whitespace and comments.
+fn past_comments(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    loop {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        match (
+            is_comment_at(bytes, i, &Lexicon::JSON),
+            skip_opaque(bytes, i, &Lexicon::JSON),
+        ) {
+            (true, Some(next)) => i = next.max(i + 1),
+            _ => return &text[i.min(text.len())..],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -269,6 +307,34 @@ mod tests {
         assert_eq!(head.text, "\"dependencies\": {");
         assert_eq!((head.start_line, head.end_line), (2, 2));
         assert!(out.iter().any(|c| c.symbol.as_deref() == Some("lodash")));
+    }
+
+    #[test]
+    fn a_comment_after_the_closing_bracket_of_a_split_member_is_kept() {
+        let src = "{\n  \"extends\": \"base.json\",\n  \"compilerOptions\": {\n    \"allowJs\": true,\n    \"checkJs\": false\n  }\n  // Path aliases are handled elsewhere.\n}\n";
+        let out = under(60, src);
+        let tail = out
+            .iter()
+            .find(|c| c.text.contains("Path aliases"))
+            .unwrap_or_else(|| panic!("the comment is lost: {out:#?}"));
+        assert_eq!((tail.start_line, tail.end_line), (6, 7), "got {out:#?}");
+    }
+
+    #[test]
+    fn a_comment_above_a_member_does_not_hide_its_key() {
+        let src = "{\n  \"a\": 1,\n  // between\n  \"b\": 2\n}\n";
+        let out = under(20, src);
+        let keys: Vec<_> = out.iter().filter_map(|c| c.symbol.clone()).collect();
+        assert_eq!(keys, vec!["a".to_string(), "b".to_string()], "got {out:#?}");
+    }
+
+    #[test]
+    fn an_empty_key_names_nothing() {
+        let out = under(10, "{\n  \"\": 1,\n  \"b\": 2\n}\n");
+        assert!(
+            !out.iter().any(|c| c.symbol.as_deref() == Some("")),
+            "got {out:#?}"
+        );
     }
 
     #[test]

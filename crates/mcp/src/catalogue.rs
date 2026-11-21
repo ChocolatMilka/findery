@@ -4,6 +4,7 @@
 //! reader and an implementation for the compiler, and mixing the two is how a
 //! tool ends up documented as something it no longer does.
 
+use findery_core::model::Lang;
 use serde_json::{Value, json};
 
 /// The tool catalogue, as `tools/list` returns it.
@@ -22,7 +23,7 @@ pub fn catalogue() -> Value {
                     "k": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Number of excerpts (default 8)." },
                     "mode": { "type": "string", "enum": ["hybrid", "vector", "keyword"], "description": "Default hybrid. Use keyword for an exact identifier, vector for a fuzzy concept." },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Path globs, e.g. crates/core/**." },
-                    "langs": { "type": "array", "items": { "type": "string", "enum": ["rust", "markdown", "toml", "javascript", "python", "php", "json", "axle", "java", "kotlin", "go", "other"] } },
+                    "langs": { "type": "array", "items": { "type": "string", "enum": languages() } },
                     "kinds": { "type": "array", "items": { "type": "string" }, "description": "function, method, struct (a class too), enum, trait, impl, module, test, const, doc_section…" },
                     "symbol_contains": { "type": "string", "description": "Restrict to symbols containing this substring." },
                     "task": {
@@ -139,6 +140,15 @@ pub fn catalogue() -> Value {
     ]})
 }
 
+/// Every language a search can filter on, as the server spells it.
+///
+/// INTENT: read from `Lang::ALL`, never written out: a language added to the
+/// chunkers is a language an agent may ask for, without a second list to
+/// forget.
+fn languages() -> Vec<&'static str> {
+    Lang::ALL.iter().map(Lang::as_str).collect()
+}
+
 fn tool(name: &str, description: &str, schema: Value) -> Value {
     json!({ "name": name, "description": description, "inputSchema": schema })
 }
@@ -159,6 +169,25 @@ mod tests {
                 "{t}"
             );
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
+        }
+    }
+
+    #[test]
+    fn the_search_tool_offers_every_language_and_parses_each_one() {
+        let cat = catalogue();
+        let search = &cat["tools"][0];
+        let offered: Vec<&str> = search["inputSchema"]["properties"]["langs"]["items"]["enum"]
+            .as_array()
+            .expect("an enum")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(offered.len(), Lang::ALL.len());
+        for lang in Lang::ALL {
+            assert!(offered.contains(&lang.as_str()), "{lang:?}");
+        }
+        for name in offered {
+            assert!(Lang::parse(name).is_some(), "{name}");
         }
     }
 }

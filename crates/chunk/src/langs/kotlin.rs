@@ -11,9 +11,7 @@
 //! found as `String.slug`.
 
 use crate::brace::{ItemMeta, Profile, chunk_with};
-use crate::header::{
-    annotation_names, header_of, is_test_annotation, next_ident, split_trivia, strip_annotations,
-};
+use crate::header::annotated_header;
 use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
@@ -43,18 +41,13 @@ impl Profile for KotlinProfile {
         &Lexicon::KOTLIN
     }
 
-    fn classify(&self, item: &str, nested: bool) -> ItemMeta {
-        let lex = self.lexicon();
-        let (trivia, code) = split_trivia(item, lex);
-        let is_test = annotation_names(trivia, lex)
-            .into_iter()
-            .any(is_test_annotation);
-        let header = strip_annotations(header_of(code, lex, b"{=;"), lex);
-        let (kind, symbol) = parse_header(&header, nested);
+    fn classify(&self, item: &str, parent: Option<ChunkKind>) -> ItemMeta {
+        let read = annotated_header(item, self.lexicon(), b"{=;");
+        let (kind, symbol) = parse_header(&read.header, parent.is_some());
         ItemMeta {
             kind,
             symbol,
-            is_test,
+            is_test: read.is_test,
         }
     }
 
@@ -67,41 +60,36 @@ impl Profile for KotlinProfile {
 /// `data`, `sealed`, `inline`, `suspend`, `override`… — are walked past: the
 /// keyword after them names the item.
 fn parse_header(header: &str, nested: bool) -> (ChunkKind, Option<String>) {
-    let spans = word_spans(header);
-    let words: Vec<&str> = spans.iter().map(|(_, w)| *w).collect();
-    for (k, &(at, word)) in spans.iter().enumerate() {
-        let next = words.get(k + 1).copied();
-        let before = &words[..k];
-        // What follows the keyword, read from the header itself: a receiver,
-        // a backticked name or a `:` mean nothing once split into words.
-        let after = || &header[at + word.len()..];
+    let words = word_spans(header);
+    for (k, &(at, word)) in words.iter().enumerate() {
+        let follows = |modifier: &str| words[..k].iter().any(|(_, w)| *w == modifier);
+        // The name is read from the header itself, not from the words: a
+        // receiver, a backticked name or a `:` mean nothing once split.
+        let name = || receiver_name(&header[at + word.len()..]);
         match word {
-            "fun" if next == Some("interface") => {
-                return (ChunkKind::Trait, next_ident(words.get(k + 2).copied()));
-            }
-            "fun" => return (ChunkKind::Function, receiver_name(after())),
-            "class" if before.contains(&"enum") => return (ChunkKind::Enum, next_ident(next)),
-            "class" => return (ChunkKind::Struct, next_ident(next)),
-            "interface" => return (ChunkKind::Trait, next_ident(next)),
-            "object" => {
-                // `companion object : Factory` names nothing: what follows the
-                // `:` is a supertype, not the object.
-                let named = next_ident(Some(after().trim_start()));
-                let symbol = match named {
-                    None if before.contains(&"companion") => Some(DEFAULT_COMPANION.to_string()),
-                    other => other,
-                };
-                return (ChunkKind::Struct, symbol);
-            }
-            "typealias" => return (ChunkKind::Const, next_ident(next)),
-            "val" | "var" => {
-                // A property of a class is a field, not a constant — unless it
-                // is a `const val`, which is exactly what someone searches for.
-                if nested && !before.contains(&"const") {
-                    return (ChunkKind::Text, None);
+            "fun" => match words.get(k + 1) {
+                Some(&(next, keyword @ "interface")) => {
+                    let after = &header[next + keyword.len()..];
+                    return (ChunkKind::Trait, receiver_name(after));
                 }
-                return (ChunkKind::Const, receiver_name(after()));
-            }
+                _ => return (ChunkKind::Function, name()),
+            },
+            "class" if follows("enum") => return (ChunkKind::Enum, name()),
+            "class" => return (ChunkKind::Struct, name()),
+            "interface" => return (ChunkKind::Trait, name()),
+            // `companion object : Factory` names nothing: what follows the `:`
+            // is a supertype, not the object.
+            "object" => match name() {
+                None if follows("companion") => {
+                    return (ChunkKind::Struct, Some(DEFAULT_COMPANION.to_string()));
+                }
+                symbol => return (ChunkKind::Struct, symbol),
+            },
+            "typealias" => return (ChunkKind::Const, name()),
+            // A property of a class is a field, not a constant — unless it is
+            // a `const val`, which is exactly what someone searches for.
+            "val" | "var" if nested && !follows("const") => return (ChunkKind::Text, None),
+            "val" | "var" => return (ChunkKind::Const, name()),
             "constructor" => return (ChunkKind::Function, Some("constructor".into())),
             _ => {}
         }
@@ -109,10 +97,10 @@ fn parse_header(header: &str, nested: bool) -> (ChunkKind, Option<String>) {
     (ChunkKind::Text, None)
 }
 
-/// The words of a header with their byte offsets, cut at whitespace, `(`, `)`
-/// and `:`.
+/// The words of a header with their byte offsets, cut at whitespace, `(`,
+/// `)`, `:` and `<` — so `fun<T>` is the keyword `fun`.
 fn word_spans(header: &str) -> Vec<(usize, &str)> {
-    let cut = |c: char| c.is_whitespace() || matches!(c, '(' | ')' | ':');
+    let cut = |c: char| c.is_whitespace() || matches!(c, '(' | ')' | ':' | '<');
     let mut out = Vec::new();
     let mut start = None;
     for (i, c) in header.char_indices() {
@@ -131,9 +119,11 @@ fn word_spans(header: &str) -> Vec<(usize, &str)> {
     out
 }
 
-/// The name of a function or a property, receiver included: `<T> List<T>.second()`
-/// → `List.second`, `` `adds two numbers`() `` → `adds two numbers`,
-/// `String?.orBlank` → `String.orBlank`.
+/// The name a declaration gives, read from the text after its keyword,
+/// receiver included: `<T> List<T>.second()` → `List.second`,
+/// `String?.orBlank` → `String.orBlank`, and a backticked name keeps its
+/// words: `` `adds two numbers`() `` → `adds two numbers`, `` class `My Class` ``
+/// → `My Class`.
 ///
 /// INTENT: an extension is searched for by its receiver as much as by its
 /// name, so the receiver stays in the symbol; type arguments and nullability
@@ -344,6 +334,133 @@ mod tests {
     }
 
     #[test]
+    fn a_primary_constructor_on_the_next_line_stays_with_its_class() {
+        let body = "{\n    fun x() = 1\n}\nval after = 1\n";
+        let headers = [
+            "class A\n    internal actual constructor(val b: B) ",
+            "expect class A\n    expect constructor(val b: B) ",
+            "class A\n/** KDoc on the constructor. */\n@Inject constructor(val b: B) ",
+            "class A\n    // why it is injected\n    @Inject constructor(val b: B) ",
+            "class A\n    @Inject\n    constructor(val b: B) ",
+            "class A private\nconstructor(val b: B) ",
+            "class A\npublic constructor(val b: B) ",
+        ];
+        for header in headers {
+            let out = chunk(&format!("{header}{body}"));
+            assert_eq!(
+                kinds(&out),
+                vec![
+                    (ChunkKind::Struct, Some("A")),
+                    (ChunkKind::Const, Some("after"))
+                ],
+                "{header:?} gave {out:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_backticked_type_name_names_its_type() {
+        let src = "class `My Class` {\n    fun `do it`() = 1\n}\n\ninterface `-Iface` {\n    fun a()\n}\n";
+        let out = chunk(src);
+        assert_eq!(
+            kinds(&out),
+            vec![
+                (ChunkKind::Struct, Some("My Class")),
+                (ChunkKind::Trait, Some("-Iface"))
+            ],
+            "got {out:#?}"
+        );
+        let split = chunk_under(src, 30);
+        assert_eq!(
+            named(&split, "do it").breadcrumb.as_deref(),
+            Some("My Class > do it")
+        );
+    }
+
+    #[test]
+    fn an_inline_or_external_accessor_stays_with_its_property() {
+        let src = "val Int.isSurrogate: Boolean\n    inline get() = this > 1\n\nval handle: Long\n    external get\n\nfun after() = 1\n";
+        assert_eq!(
+            kinds(&chunk(src)),
+            vec![
+                (ChunkKind::Const, Some("Int.isSurrogate")),
+                (ChunkKind::Const, Some("handle")),
+                (ChunkKind::Function, Some("after")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_secondary_constructor_is_a_member_of_its_own() {
+        let src = "class Sink {\n    private val mac: Mac?\n\n    internal constructor(a: A) : super(a) {\n        this.mac = null\n    }\n\n    internal constructor(b: B) : this(b)\n}\n";
+        let out = chunk_under(src, 120);
+        let constructors = out
+            .iter()
+            .filter(|c| c.symbol.as_deref() == Some("constructor"))
+            .count();
+        assert_eq!(constructors, 2, "got {out:#?}");
+    }
+
+    #[test]
+    fn a_modifier_word_inside_a_qualified_name_ends_nothing() {
+        let out = chunk(
+            "package okio.internal\n\nimport okio.Buffer\n\ninternal val Int.isSurrogate: Boolean\n    inline get() = this > 1\n",
+        );
+        let named = out
+            .iter()
+            .find(|c| c.symbol.is_some())
+            .expect("a named chunk");
+        assert_eq!(named.symbol.as_deref(), Some("Int.isSurrogate"));
+        assert_eq!(named.start_line, 5, "got {out:#?}");
+    }
+
+    #[test]
+    fn a_type_parameter_glued_to_fun_does_not_hide_the_function() {
+        let out = chunk("fun<T> id(x: T): T = x\n");
+        assert_eq!(kinds(&out), vec![(ChunkKind::Function, Some("id"))]);
+    }
+
+    #[test]
+    fn a_catch_or_an_else_on_the_next_line_continues_the_statement() {
+        let src = "val x = try {\n    f()\n}\ncatch (e: E) {\n    0\n}\nval y = if (a) 1 else\n    2\nfun z() = 3\n";
+        let out = chunk(src);
+        assert_eq!(
+            kinds(&out),
+            vec![
+                (ChunkKind::Const, Some("x")),
+                (ChunkKind::Const, Some("y")),
+                (ChunkKind::Function, Some("z")),
+            ],
+            "got {out:#?}"
+        );
+        assert!(named(&out, "x").text.contains("catch"));
+    }
+
+    #[test]
+    fn a_half_typed_template_swallows_nothing_below_its_line() {
+        let out = chunk("fun a() {\n    println(\"${x\")\n}\n\nfun b() {}\n\nfun c() {}\n");
+        let names: Vec<_> = out.iter().filter_map(|c| c.symbol.as_deref()).collect();
+        assert_eq!(names, vec!["a", "b", "c"], "got {out:#?}");
+    }
+
+    #[test]
+    fn unclosed_templates_cost_linear_time() {
+        // Every enclosing template used to rescan what the inner one had
+        // already read: thirty of these lines took longer than twenty seconds.
+        for line in ["\"${x\n", "\"${(x\n"] {
+            let src = line.repeat(40_000);
+            let started = std::time::Instant::now();
+            let out = chunk(&src);
+            assert!(!out.is_empty());
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "{line:?} took {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
     fn a_use_site_target_is_part_of_the_annotation() {
         // `@field:Json(…)` is one annotation: read as `@field` it left
         // `:Json(…)` behind as code, in front of the declaration.
@@ -351,7 +468,8 @@ mod tests {
         let out = chunk(src);
         let q = named(&out, "q");
         assert!(q.text.starts_with("@field:Json"), "got {q:?}");
-        let (trivia, code) = split_trivia("@field:Json(name = \"x\") val q = 1", &Lexicon::KOTLIN);
+        let (trivia, code) =
+            crate::header::split_trivia("@field:Json(name = \"x\") val q = 1", &Lexicon::KOTLIN);
         assert_eq!(trivia.trim_end(), "@field:Json(name = \"x\")");
         assert_eq!(code, "val q = 1");
     }

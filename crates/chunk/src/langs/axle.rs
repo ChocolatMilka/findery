@@ -9,7 +9,7 @@
 //! below, nothing structural.
 
 use crate::brace::{ItemMeta, Profile, chunk_with};
-use crate::header::{next_ident, split_trivia};
+use crate::header::{header_of, next_ident, split_trivia};
 use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
@@ -57,12 +57,13 @@ impl Profile for AxleProfile {
         &Lexicon::AXLE
     }
 
-    fn classify(&self, item: &str, _nested: bool) -> ItemMeta {
-        let (_, code) = split_trivia(item, self.lexicon());
+    fn classify(&self, item: &str, _parent: Option<ChunkKind>) -> ItemMeta {
+        let lex = self.lexicon();
+        let (_, code) = split_trivia(item, lex);
         // `=` ends the header too: `const N : i32 = 4;` names `N`, and what
-        // follows the `=` is a value that may spell any keyword.
-        let header_end = code.find(['{', ';', '=']).unwrap_or(code.len());
-        let (kind, symbol) = parse_header(&code[..header_end]);
+        // follows the `=` is a value that may spell any keyword. A parameter's
+        // default (`fn f(x : i32 = 4)`) does not.
+        let (kind, symbol) = parse_header(header_of(code, lex, b"{;="));
         ItemMeta {
             kind,
             symbol,
@@ -237,6 +238,13 @@ mod tests {
     fn a_value_spelling_a_keyword_does_not_rename_the_constant() {
         let out = chunk("const FN_NAME : string = \"fn other\";\n");
         assert_eq!(out[0].symbol.as_deref(), Some("FN_NAME"));
+    }
+
+    #[test]
+    fn a_stop_byte_inside_a_string_does_not_cut_the_header() {
+        let out = chunk("extern \"C\" from \"lib{x}=1\" {\n    fn f() : i32;\n}\n");
+        assert_eq!(out[0].kind, ChunkKind::Module, "got {out:#?}");
+        assert_eq!(out[0].symbol.as_deref(), Some("lib{x}=1"));
     }
 
     #[test]

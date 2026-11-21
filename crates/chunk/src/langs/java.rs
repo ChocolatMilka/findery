@@ -11,9 +11,7 @@
 //! item a test.
 
 use crate::brace::{ItemMeta, Profile, chunk_with};
-use crate::header::{
-    annotation_names, header_of, is_test_annotation, next_ident, split_trivia, strip_annotations,
-};
+use crate::header::{annotated_header, next_ident};
 use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
@@ -51,19 +49,17 @@ impl Profile for JavaProfile {
         &Lexicon::JAVA
     }
 
-    fn classify(&self, item: &str, nested: bool) -> ItemMeta {
-        let lex = self.lexicon();
-        let (trivia, code) = split_trivia(item, lex);
-        let is_test = annotation_names(trivia, lex)
-            .into_iter()
-            .any(is_test_annotation);
-        let header = header_of(code, lex, b"{;=");
-        let has_body = code[header.len()..].starts_with('{');
-        let (kind, symbol) = parse_header(&strip_annotations(header, lex), nested, has_body);
+    fn classify(&self, item: &str, parent: Option<ChunkKind>) -> ItemMeta {
+        let read = annotated_header(item, self.lexicon(), b"{;=");
+        let header = Header::read(&read.header, read.rest.starts_with('{'));
+        let (kind, symbol) = match type_declaration(&header) {
+            Some(declared) => declared,
+            None => member_declaration(&header, parent),
+        };
         ItemMeta {
             kind,
             symbol,
-            is_test,
+            is_test: read.is_test,
         }
     }
 
@@ -72,41 +68,88 @@ impl Profile for JavaProfile {
     }
 }
 
-/// Reads the kind and the symbol out of a header (annotations stripped, no
-/// body, no initializer). `has_body` says a `{` follows it.
-fn parse_header(header: &str, nested: bool, has_body: bool) -> (ChunkKind, Option<String>) {
-    let has_params = header.contains('(');
-    // Only what precedes the parameter list can declare: in `void save(Record
-    // record)` the `record` is a parameter, not a record.
-    let before = header.split('(').next().unwrap_or(header);
-    let cleaned = before.replace(['<', '>', ',', '[', ']', '?', '&'], " ");
-    let toks: Vec<&str> = cleaned.split_whitespace().collect();
-    for (k, tok) in toks.iter().enumerate() {
-        let Some((_, kind)) = TYPE_KEYWORDS.iter().find(|(kw, _)| kw == tok) else {
-            continue;
-        };
-        let name = next_ident(toks.get(k + 1).copied());
-        // `record` is a contextual keyword: a field may be named `record`,
-        // while a real record always carries its component list.
-        if *tok == "record" && (name.is_none() || !has_params) {
-            break;
+/// A header (annotations stripped, no body, no initializer), as its readers
+/// need it.
+struct Header<'a> {
+    /// The words before its parameter list, if it has one: in `void
+    /// save(Record record)` the `record` is a parameter, not a record.
+    words: Vec<&'a str>,
+    has_params: bool,
+    /// A `{` follows it.
+    has_body: bool,
+}
+
+impl<'a> Header<'a> {
+    fn read(header: &'a str, has_body: bool) -> Self {
+        let before = header.split('(').next().unwrap_or(header);
+        let cut =
+            |c: char| c.is_whitespace() || matches!(c, '<' | '>' | ',' | '[' | ']' | '?' | '&');
+        Self {
+            words: before.split(cut).filter(|w| !w.is_empty()).collect(),
+            has_params: header.contains('('),
+            has_body,
         }
-        return (*kind, name);
     }
-    let name = toks.last().and_then(|t| next_ident(Some(t)));
-    if has_params {
-        // A member with a parameter list is a method or a constructor. An enum
-        // constant — `RED("r"),`, `Mercury(3.3e23),` — has the same bare shape:
-        // it is told apart by having no body (a constructor always has one),
-        // or, when it carries a body of its own, by its SCREAMING name.
-        let bare = toks.len() == 1;
-        let constant = bare && (!has_body || name.as_deref().is_some_and(is_screaming));
-        if nested && !constant {
+
+    /// The last word: what names a member.
+    fn name(&self) -> Option<String> {
+        next_ident(self.words.last().copied())
+    }
+
+    /// Only its name and access modifiers: `Point`, `public Point`.
+    fn is_bare(&self) -> bool {
+        let (_, modifiers) = self.words.split_last().unwrap_or((&"", &[]));
+        modifiers
+            .iter()
+            .all(|w| matches!(*w, "public" | "protected" | "private"))
+    }
+}
+
+/// `class X`, `interface X`, `@interface X`, `enum X`, `record X(…)`.
+fn type_declaration(header: &Header<'_>) -> Option<(ChunkKind, Option<String>)> {
+    let words = &header.words;
+    let k = words
+        .iter()
+        .position(|w| TYPE_KEYWORDS.iter().any(|(kw, _)| kw == w))?;
+    let (keyword, kind) = TYPE_KEYWORDS.iter().find(|(kw, _)| *kw == words[k])?;
+    let name = next_ident(words.get(k + 1).copied());
+    // `record` is a contextual keyword: a field may be named `record`, while a
+    // real record always carries its component list.
+    if *keyword == "record" && (name.is_none() || !header.has_params) {
+        return None;
+    }
+    Some((*kind, name))
+}
+
+/// A member of a type, which no keyword announces: a method or a constructor
+/// by its parameter list, a `static final` constant, or an enum constant.
+///
+/// INTENT: an enum constant — `RED("r"),`, `PLUS("+") { … }` — has the bare
+/// shape of a constructor, and only inside an enum can it be one: there it is
+/// told apart by having no body (a constructor always has one), or by its
+/// SCREAMING name. In a class, `URL(String s) {}` is a constructor, and a
+/// record's compact constructor `public Point { … }` has no list at all.
+fn member_declaration(
+    header: &Header<'_>,
+    parent: Option<ChunkKind>,
+) -> (ChunkKind, Option<String>) {
+    let name = header.name();
+    let in_enum = parent == Some(ChunkKind::Enum);
+    let constant =
+        header.is_bare() && (!header.has_body || name.as_deref().is_some_and(is_screaming));
+    if header.has_params {
+        if parent.is_some() && !(in_enum && constant) {
             return (ChunkKind::Method, name);
         }
         return (ChunkKind::Text, None);
     }
-    if toks.contains(&"static") && toks.contains(&"final") {
+    // `static { … }` and `{ … }` are initializers, not constructors.
+    let initializer = matches!(name.as_deref(), None | Some("static"));
+    let compact_constructor = header.has_body && header.is_bare() && !initializer;
+    if parent.is_some() && compact_constructor && !(in_enum && constant) {
+        return (ChunkKind::Method, name);
+    }
+    if header.words.contains(&"static") && header.words.contains(&"final") {
         return (ChunkKind::Const, name);
     }
     (ChunkKind::Text, None)
@@ -293,6 +336,33 @@ mod tests {
             "got {out:#?}"
         );
         assert_eq!(member(&out, "Planet").kind, ChunkKind::Method);
+    }
+
+    #[test]
+    fn a_constructor_with_a_screaming_name_is_a_constructor_outside_an_enum() {
+        let out = chunk_under(
+            "class URL {\n    URL(String s) {}\n\n    URL() {}\n}\n\nenum Op {\n    IDENTITY() {\n        int f() { return 1; }\n    };\n}\n",
+            30,
+        );
+        let ctors = out
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Method && c.symbol.as_deref() == Some("URL"))
+            .count();
+        assert_eq!(ctors, 2, "got {out:#?}");
+        assert!(!out.iter().any(|c| c.symbol.as_deref() == Some("IDENTITY")));
+    }
+
+    #[test]
+    fn a_compact_record_constructor_is_a_constructor() {
+        let out = chunk_under(
+            "public record Point(int x, int y) {\n    public Point {\n        if (x < 0) throw new IllegalArgumentException();\n    }\n\n    static { init(); }\n}\n",
+            60,
+        );
+        assert_eq!(
+            member(&out, "Point").breadcrumb.as_deref(),
+            Some("Point > Point")
+        );
+        assert!(!out.iter().any(|c| c.symbol.as_deref() == Some("static")));
     }
 
     #[test]

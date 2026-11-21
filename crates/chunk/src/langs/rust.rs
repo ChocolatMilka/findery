@@ -1,6 +1,7 @@
 //! Rust chunker: one chunk per item, one chunk per method inside a large
 //! `impl`, doc comments and attributes riding along with the item they document.
 
+use super::module_name;
 use crate::brace::{ItemMeta, Profile, chunk_with, inner_doc_preamble_end};
 use crate::header::{next_ident, split_trivia};
 use crate::items::LineIndex;
@@ -30,7 +31,7 @@ impl Profile for RustProfile {
         &Lexicon::RUST
     }
 
-    fn classify(&self, item: &str, _nested: bool) -> ItemMeta {
+    fn classify(&self, item: &str, _parent: Option<ChunkKind>) -> ItemMeta {
         let (trivia, code) = split_trivia(item, self.lexicon());
         // `#[cfg(test)]` and `#[test]` tag the item; the `::test]` and
         // `cfg(all(test` forms catch a test attribute that carries arguments.
@@ -56,7 +57,7 @@ impl Profile for RustProfile {
         if end == 0 || !head.trim().chars().any(|c| c.is_alphanumeric()) {
             return (end, None);
         }
-        let name = module_name(path);
+        let name = module_name(path, ".rs", DIRECTORY_FILES);
         let chunk = RawChunk {
             kind: ChunkKind::Module,
             symbol: Some(name.clone()),
@@ -73,14 +74,9 @@ impl Profile for RustProfile {
     }
 }
 
-/// `crates/core/src/path_map.rs` -> `path_map`.
-fn module_name(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .trim_end_matches(".rs")
-        .to_string()
-}
+/// The files that stand for their directory: `src/langs/mod.rs` is `langs`,
+/// `crates/core/src/lib.rs` is `core`.
+const DIRECTORY_FILES: &[&str] = &["mod", "lib", "main"];
 
 /// Reads the kind and the symbol out of an item header (no braces, no body).
 fn parse_header(header: &str) -> (ChunkKind, Option<String>) {
@@ -166,6 +162,77 @@ mod tests {
         assert_eq!(out[0].kind, ChunkKind::Module);
         assert_eq!(out[0].symbol.as_deref(), Some("thing"));
         assert!(out[0].text.contains("Module docs"));
+    }
+
+    #[test]
+    fn a_file_standing_for_its_directory_takes_the_directory_name() {
+        let src = "//! Docs.\n\nfn a() {}\n";
+        let name = |path: &str| {
+            RustChunker
+                .chunk(path, src, &cfg())
+                .expect("chunking succeeds")[0]
+                .symbol
+                .clone()
+        };
+        assert_eq!(
+            name("crates/chunk/src/langs/mod.rs").as_deref(),
+            Some("langs")
+        );
+        assert_eq!(name("crates/core/src/lib.rs").as_deref(), Some("core"));
+        assert_eq!(name("src/bin/tool/main.rs").as_deref(), Some("tool"));
+        assert_eq!(name("src/path_map.rs").as_deref(), Some("path_map"));
+        // Nothing above it: the stem is all there is.
+        assert_eq!(name("lib.rs").as_deref(), Some("lib"));
+    }
+
+    #[test]
+    fn a_long_module_preamble_is_windowed_within_the_budget() {
+        let src = format!(
+            "{}\nfn a() {{}}\n",
+            "//! A line of module docs, long enough.\n".repeat(12)
+        );
+        let tight = ChunkConfig {
+            max_chars: 120,
+            ..cfg()
+        };
+        let out = RustChunker
+            .chunk("src/a.rs", &src, &tight)
+            .expect("chunking succeeds");
+        let module: Vec<_> = out.iter().filter(|c| c.kind == ChunkKind::Module).collect();
+        assert!(module.len() > 1, "got {out:#?}");
+        assert!(
+            module.iter().all(|c| c.text.len() <= 120),
+            "got {module:#?}"
+        );
+        assert!(module.iter().all(|c| c.symbol.as_deref() == Some("a")));
+    }
+
+    #[test]
+    fn an_undocumented_test_module_header_rides_with_its_first_member() {
+        let filler = "        let x = 1; // padding padding padding padding\n".repeat(8);
+        let src = format!(
+            "#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn works() {{\n{filler}    }}\n}}\n"
+        );
+        let tight = ChunkConfig {
+            max_chars: 200,
+            ..cfg()
+        };
+        let out = RustChunker
+            .chunk("src/a.rs", &src, &tight)
+            .expect("chunking succeeds");
+        let first = &out[0];
+        assert!(
+            first
+                .text
+                .starts_with("#[cfg(test)]\nmod tests {\nuse super::*;"),
+            "got {out:#?}"
+        );
+        assert_eq!(first.symbol.as_deref(), Some("tests"));
+        assert!(
+            !out.iter()
+                .any(|c| c.text.trim_end().ends_with("mod tests {"))
+        );
+        assert!(out.iter().any(|c| c.symbol.as_deref() == Some("works")));
     }
 
     #[test]

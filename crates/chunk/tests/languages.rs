@@ -327,6 +327,14 @@ fn every_language_keeps_a_brace_inside_a_literal_out_of_its_counting() {
             &["a", "b", "c"],
         ),
         (
+            // A half-typed template is text of its string: the `)` after it
+            // still closes the call, and nothing below is swallowed.
+            "c.kt",
+            "fun a() {\n    println(\"${x\")\n}\n\nfun b() {}\n\nfun c() {}\n",
+            2400,
+            &["a", "b", "c"],
+        ),
+        (
             "a.go",
             "func a() string { return `}` + string('}') }\n\nfunc keep() {}\n",
             2400,

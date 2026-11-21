@@ -7,7 +7,7 @@
 //! lexers turn into one. That is enough for every brace-delimited language in
 //! the registry, which is why there is one splitter and not eight.
 
-use crate::header::{decorator_end, split_trivia};
+use crate::header::{BRACES, balanced_end, decorator_end, opens_on, split_trivia};
 use crate::scanner::{Lexicon, Statements, is_comment_at, skip_opaque};
 
 /// Byte span of one top-level item, leading trivia included.
@@ -20,6 +20,7 @@ pub struct Span {
 }
 
 impl Span {
+    /// The text of the span in `src`.
     pub fn slice<'a>(&self, src: &'a str) -> &'a str {
         &src[self.start..self.end]
     }
@@ -35,6 +36,8 @@ struct Open {
     has_code: bool,
     /// Its last token is one a statement can end on.
     can_end: bool,
+    /// Offset just past its last token of code.
+    code_end: usize,
     /// A `{` was seen, so a `}` back at depth zero may close it.
     saw_brace: bool,
 }
@@ -48,19 +51,33 @@ impl Open {
         *self = Self::default();
     }
 
-    /// Records a token of code; `can_end` says whether a statement may end on it.
-    fn code(&mut self, can_end: bool) {
+    /// Records a token of code ending at `end`; `can_end` says whether a
+    /// statement may end on it.
+    fn code(&mut self, can_end: bool, end: usize) {
         self.has_code = true;
         self.can_end = can_end;
+        self.code_end = end;
     }
 
     /// Whether the newline at `i` ends this item, as the Go and Kotlin lexers
     /// would insert a `;` there.
     fn ends_at_newline(&self, bytes: &[u8], i: usize, end: usize, lex: &Lexicon) -> bool {
+        let class_header = || self.is_class_header(&bytes[..i]);
         lex.ends_statements_at_newline()
             && self.has_code
             && self.can_end
-            && !continues_on_next_line(bytes, i + 1, end, lex)
+            && !ends_on_dangling_word(bytes, self.code_end, lex)
+            && !continues_on_next_line(bytes, i + 1, end, lex, class_header)
+    }
+
+    /// Whether this item, read up to the end of `bytes`, is a class header
+    /// still waiting for its body: what a primary constructor may continue.
+    fn is_class_header(&self, bytes: &[u8]) -> bool {
+        let Some(start) = self.start else {
+            return false;
+        };
+        let mut words = bytes[start..].split(|b| !is_word_byte(*b));
+        !self.saw_brace && words.any(|word| word == b"class")
     }
 }
 
@@ -105,20 +122,19 @@ pub fn split_items(src: &str, range: Span, lex: &Lexicon) -> Vec<Span> {
             continue;
         }
         if let Some(next) = skip_opaque(bytes, i, lex) {
+            let next = next.max(i + 1);
             if !is_comment_at(bytes, i, lex) {
-                open.code(true);
+                open.code(true, next);
             }
-            i = next.max(i + 1);
+            i = next;
             continue;
         }
-        // An annotation alone on its line is the item's trivia, not a
-        // statement of its own: `@Test` above `fun works()`.
         if b == b'@' && lex.decorators && lex.ends_statements_at_newline() && depth.is_top() {
-            i = decorator_end(bytes, i, lex);
+            i = skip_annotation(bytes, i, lex, &mut open);
             continue;
         }
         if !b.is_ascii_whitespace() {
-            open.code(ends_a_statement(bytes, i));
+            open.code(ends_a_statement(bytes, i, lex), i + 1);
         }
         match b {
             b'{' => {
@@ -127,16 +143,7 @@ pub fn split_items(src: &str, range: Span, lex: &Lexicon) -> Vec<Span> {
             }
             b'}' => {
                 depth.brace = depth.brace.saturating_sub(1);
-                // A brace back at depth zero closes the item — unless a `(`/`[`
-                // is still open, as in `Lazy::new(|| { … });`, or the statement
-                // runs on after it: `import { a } from 'x'`, `<const N: usize
-                // = { 3 }>`.
-                if depth.is_top() && open.saw_brace && !continues_after_brace(bytes, i + 1) {
-                    let end = if bytes.get(i + 1) == Some(&b';') {
-                        i + 2
-                    } else {
-                        i + 1
-                    };
+                if let Some(end) = brace_closes_item(bytes, i, &open, &depth, lex) {
                     open.close(end, &mut items);
                     i = end;
                     continue;
@@ -154,6 +161,50 @@ pub fn split_items(src: &str, range: Span, lex: &Lexicon) -> Vec<Span> {
     // Trailing text with no terminator: a truncated file, trailing comments.
     open.close(range.end, &mut items);
     items
+}
+
+/// Skips the annotation whose `@` sits at `i`, as trivia of the item it
+/// annotates: `@Test` alone above `fun works()` is no statement of its own.
+///
+/// INTENT: an annotation annotates what FOLLOWS it, so no statement ends on
+/// one — `class A` / `@Inject` / `constructor(…)` is one class. A label glued
+/// to a word (`this@A`, `return@forEach`) is no annotation and changes nothing.
+fn skip_annotation(bytes: &[u8], i: usize, lex: &Lexicon, open: &mut Open) -> usize {
+    let glued = i > 0 && is_word_byte(bytes[i - 1]);
+    if open.has_code && !glued {
+        open.can_end = false;
+    }
+    decorator_end(bytes, i, lex)
+}
+
+/// The end of the item a `}` at `i` closes, if it closes one.
+///
+/// INTENT: a brace back at depth zero closes the item — unless a `(`/`[` is
+/// still open, as in `Lazy::new(|| { … });`, or the statement runs on after it:
+/// `import { a } from 'x'`, `<const N: usize = { 3 }>`. In Go and Kotlin a `}`
+/// closes nothing: it may close a type literal (`interface{} {`,
+/// `struct{}{…}`), and the newline after it ends the statement anyway.
+fn brace_closes_item(
+    bytes: &[u8],
+    i: usize,
+    open: &Open,
+    depth: &Depth,
+    lex: &Lexicon,
+) -> Option<usize> {
+    let closes = !lex.ends_statements_at_newline()
+        && depth.is_top()
+        && open.saw_brace
+        && !continues_after_brace(bytes, i + 1);
+    match (closes, bytes.get(i + 1)) {
+        (false, _) => None,
+        (true, Some(b';')) => Some(i + 2),
+        (true, _) => Some(i + 1),
+    }
+}
+
+/// Whether `b` can be part of an identifier.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Whether the statement goes on after a `}` that closed at depth zero.
@@ -191,28 +242,71 @@ fn continues_after_brace(bytes: &[u8], mut i: usize) -> bool {
 ///
 /// INTENT: Go's semicolon-insertion rule, which Kotlin's newline rule agrees
 /// with at the top of a file: an identifier, a literal, a closing bracket,
-/// `++`/`--`, and — for Kotlin — a type's closing `>`, `?` and `!!`, or a
-/// `.*` import. Anything else is an operator waiting for its right side.
-fn ends_a_statement(bytes: &[u8], i: usize) -> bool {
+/// `++`/`--`. Kotlin adds a type's closing `>`, `?` and `!!`, and a `.*`
+/// import — in Go those are operators. Anything else is an operator waiting
+/// for its right side.
+fn ends_a_statement(bytes: &[u8], i: usize, lex: &Lexicon) -> bool {
     let prev = i.checked_sub(1).and_then(|p| bytes.get(p)).copied();
+    let type_suffixes = matches!(
+        lex.statements,
+        Statements::Newline {
+            type_suffixes: true,
+            ..
+        }
+    );
     match bytes[i] {
-        c if c.is_ascii_alphanumeric() || c == b'_' => true,
-        b')' | b']' | b'}' | b'?' | b'!' => true,
-        b'>' => prev != Some(b'-'),
+        c if is_word_byte(c) => true,
+        b')' | b']' | b'}' => true,
+        b'?' | b'!' => type_suffixes,
+        b'>' => type_suffixes && prev != Some(b'-'),
         b'+' | b'-' => prev == Some(bytes[i]),
-        b'*' => prev == Some(b'.'),
+        b'*' => type_suffixes && prev == Some(b'.'),
+        _ => false,
+    }
+}
+
+/// Whether the code ends, at `end`, on a word no statement ends on: a
+/// modifier waiting for its declaration (`class A private` over
+/// `constructor(…)`), an `else` waiting for its branch. A word after a `.` is
+/// part of a name: `package okio.internal` ends where it stands.
+fn ends_on_dangling_word(bytes: &[u8], end: usize, lex: &Lexicon) -> bool {
+    let Statements::Newline {
+        modifiers,
+        dangling,
+        ..
+    } = &lex.statements
+    else {
+        return false;
+    };
+    let start = bytes[..end]
+        .iter()
+        .rposition(|b| !is_word_byte(*b))
+        .map_or(0, |p| p + 1);
+    let qualified = start > 0 && bytes[start - 1] == b'.';
+    match (qualified, std::str::from_utf8(&bytes[start..end])) {
+        (false, Ok(word)) => modifiers.contains(&word) || dangling.contains(&word),
         _ => false,
     }
 }
 
 /// Whether the line that opens at `i` continues the statement above it:
 /// `.map { … }` under a call, `: Base()` under a class header, `private set`
-/// under a property, `@Inject constructor(…)` under a class name.
-fn continues_on_next_line(bytes: &[u8], mut i: usize, end: usize, lex: &Lexicon) -> bool {
+/// under a property, `@Inject constructor(…)` under a class name — and only
+/// there: `class_header` says the statement is one, since a `constructor` under
+/// anything else opens a secondary constructor of its own. A comment between
+/// the two lines is read past, and is no prefix.
+fn continues_on_next_line(
+    bytes: &[u8],
+    mut i: usize,
+    end: usize,
+    lex: &Lexicon,
+    class_header: impl Fn() -> bool,
+) -> bool {
     let Statements::Newline {
         continuations,
         modifiers,
         guarded,
+        ..
     } = &lex.statements
     else {
         return false;
@@ -224,6 +318,10 @@ fn continues_on_next_line(bytes: &[u8], mut i: usize, end: usize, lex: &Lexicon)
             i += 1;
         }
         let rest = &bytes[i..];
+        if is_comment_at(bytes, i, lex) {
+            i = skip_opaque(bytes, i, lex).map_or(end, |next| next.max(i + 1));
+            continue;
+        }
         if lex.decorators && rest.first() == Some(&b'@') {
             i = decorator_end(bytes, i, lex);
         } else if let Some(word) = modifiers.iter().find(|m| opens_on(rest, m)) {
@@ -234,18 +332,9 @@ fn continues_on_next_line(bytes: &[u8], mut i: usize, end: usize, lex: &Lexicon)
         behind_a_prefix = true;
     }
     let rest = &bytes[i..];
-    continuations.iter().any(|c| opens_on(rest, c))
-        || (behind_a_prefix && guarded.iter().any(|g| opens_on(rest, g)))
-}
-
-/// Whether `rest` opens on `token` — on the whole word, when `token` is a word.
-fn opens_on(rest: &[u8], token: &str) -> bool {
-    let token = token.as_bytes();
-    let is_word = token.first().is_some_and(u8::is_ascii_alphabetic);
-    let glued = rest
-        .get(token.len())
-        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
-    rest.starts_with(token) && !(is_word && glued)
+    let guarded_continues =
+        || behind_a_prefix && guarded.iter().any(|g| opens_on(rest, g)) && class_header();
+    continuations.iter().any(|c| opens_on(rest, c)) || guarded_continues()
 }
 
 /// Returns the span between the `{` that opens `item`'s body and its matching
@@ -260,17 +349,19 @@ pub fn body_span(src: &str, item: Span, lex: &Lexicon) -> Option<Span> {
     let bytes = &src.as_bytes()[..item.end];
     let (trivia, _) = split_trivia(item.slice(src), lex);
     let open = header_brace(bytes, item.start + trivia.len(), lex)?;
-    let close = matching_brace(bytes, open, lex)?;
+    let past_close = balanced_end(bytes, open, lex, BRACES)?;
     Some(Span {
         start: open + 1,
-        end: close,
+        end: past_close - 1,
     })
 }
 
 /// The offset of the `{` that ends the header starting at `i`.
 ///
 /// INTENT: a type argument may hold a brace too — `impl Foo<{ N }>` — so `<…>`
-/// nests like `(…)`, the `>` of `->` and `=>` aside. A `<` that never closes
+/// nests like `(…)`, the `>` of `->` and `=>` aside. Only a `<` glued to a
+/// name opens type arguments: the `<` of `x < 1` or of `1 << 4` compares, and
+/// counting it hid the body of every class it sat in. A `<` that never closes
 /// finds no body, and the item is windowed whole: a misread costs the split,
 /// never the text.
 fn header_brace(bytes: &[u8], mut i: usize, lex: &Lexicon) -> Option<usize> {
@@ -282,7 +373,8 @@ fn header_brace(bytes: &[u8], mut i: usize, lex: &Lexicon) -> Option<usize> {
         }
         let arrow = i > 0 && matches!(bytes[i - 1], b'-' | b'=');
         match bytes[i] {
-            b'(' | b'[' | b'<' => nesting += 1,
+            b'(' | b'[' => nesting += 1,
+            b'<' if opens_type_arguments(bytes, i) => nesting += 1,
             b')' | b']' => nesting = nesting.saturating_sub(1),
             b'>' if !arrow => nesting = nesting.saturating_sub(1),
             b'{' if nesting == 0 => return Some(i),
@@ -296,28 +388,18 @@ fn header_brace(bytes: &[u8], mut i: usize, lex: &Lexicon) -> Option<usize> {
     None
 }
 
-/// The offset of the `}` matching the `{` at `open`.
-fn matching_brace(bytes: &[u8], open: usize, lex: &Lexicon) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        if let Some(next) = skip_opaque(bytes, i, lex) {
-            i = next.max(i + 1);
-            continue;
-        }
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
+/// Whether the `<` at `i` follows a name (`Vec<`, `impl<`) or a turbofish
+/// (`::<`), rather than an operand it compares.
+fn opens_type_arguments(bytes: &[u8], i: usize) -> bool {
+    let word_start = bytes[..i]
+        .iter()
+        .rposition(|b| !is_word_byte(*b))
+        .map_or(0, |p| p + 1);
+    match bytes[..i].last() {
+        Some(b':') => true,
+        Some(_) if word_start < i => !bytes[word_start].is_ascii_digit(),
+        _ => false,
     }
-    None
 }
 
 /// Precomputed line index, so line numbers cost a binary search instead of a
@@ -327,6 +409,7 @@ pub struct LineIndex {
 }
 
 impl LineIndex {
+    /// Indexes the line starts of `src`.
     pub fn new(src: &str) -> Self {
         let mut starts = vec![0usize];
         starts.extend(
@@ -366,10 +449,7 @@ mod tests {
 
     #[test]
     fn braces_inside_strings_do_not_close_an_item() {
-        // `\u{7d}` is a closing brace, spelled as an escape so this file's
-        // own braces balance for `check_file_size.sh`, which finds the end of
-        // a test module by counting them.
-        let src = "fn a() { let s = \"\u{7d}\"; let t = '\u{7d}'; }\nfn b() {}\n";
+        let src = "fn a() { let s = \"}\"; let t = '}'; }\nfn b() {}\n";
         let items = split(src);
         assert_eq!(items.len(), 2, "got {items:?}");
         assert!(items[0].slice(src).starts_with("fn a"));
@@ -380,7 +460,7 @@ mod tests {
     fn a_non_ascii_char_literal_does_not_fuse_two_items() {
         // The literal is 4 bytes: read as 3, its closing quote becomes the
         // opening quote of the next one and the `{` of `fn b` stops counting.
-        let src = "fn a(c: char) -> bool { matches!(c, 'é'|'\u{7b}') }\nfn b() {}\n";
+        let src = "fn a(c: char) -> bool { matches!(c, 'é'|'{') }\nfn b() {}\n";
         let items = split(src);
         assert_eq!(items.len(), 2, "got {items:?}");
         assert!(items[1].slice(src).starts_with("fn b"));
@@ -388,7 +468,7 @@ mod tests {
 
     #[test]
     fn an_escaped_quote_in_a_literal_does_not_fuse_two_items() {
-        let src = "fn a(c: char) -> bool { matches!(c, '\\''|'\u{7b}') }\nfn b() {}\n";
+        let src = "fn a(c: char) -> bool { matches!(c, '\\''|'{') }\nfn b() {}\n";
         let items = split(src);
         assert_eq!(items.len(), 2, "got {items:?}");
         assert!(items[1].slice(src).starts_with("fn b"));
@@ -396,8 +476,7 @@ mod tests {
 
     #[test]
     fn raw_strings_and_nested_block_comments_are_opaque() {
-        let src =
-            "fn a() { let r = r#\"\u{7d} not a brace \"#; /* /* \u{7d}\u{7d} */ */ }\nfn b() {}\n";
+        let src = "fn a() { let r = r#\"} not a brace \"#; /* /* }} */ */ }\nfn b() {}\n";
         assert_eq!(split(src).len(), 2);
     }
 
@@ -444,7 +523,7 @@ mod tests {
     fn a_stray_closing_brace_has_no_body_to_isolate() {
         // A malformed file can put a closing brace before the item's own. It
         // must answer "no body", not subtract past zero.
-        let src = "\u{7d}\nfn a() { 1 }\n";
+        let src = "}\nfn a() { 1 }\n";
         let item = Span {
             start: 0,
             end: src.len(),
@@ -507,7 +586,7 @@ mod tests {
         let src = "@Test\n// why\n@Suppress(\"x\")\nfun works() {\n}\nval after = 1\n";
         let items = split_in(src, &Lexicon::KOTLIN);
         assert_eq!(items.len(), 2, "got {items:?}");
-        assert!(items[0].starts_with("@Test") && items[0].ends_with('\u{7d}'));
+        assert!(items[0].starts_with("@Test") && items[0].ends_with('}'));
         assert_eq!(items[1], "val after = 1");
     }
 
@@ -591,6 +670,35 @@ mod tests {
         let src = "val x = if (a) 1\nelse 2\nfun y() = 2\n";
         let items = split_in(src, &Lexicon::KOTLIN);
         assert_eq!(items, vec!["val x = if (a) 1\nelse 2", "fun y() = 2"]);
+    }
+
+    #[test]
+    fn a_comparison_in_a_parameter_list_does_not_hide_the_body() {
+        let cases: &[(&str, &Lexicon)] = &[
+            (
+                "class A(val ok: Boolean = x < 1) {\n    fun a() {}\n}",
+                &Lexicon::KOTLIN,
+            ),
+            ("impl Foo for [u8; 1 << 4] {\n    fn a() {}\n}", RUST),
+        ];
+        for (src, lex) in cases {
+            let body = body_span(src, whole(src), lex).expect("has a body");
+            assert_eq!(
+                body.slice(src).trim(),
+                src.lines().nth(1).expect("member").trim()
+            );
+        }
+    }
+
+    #[test]
+    fn a_brace_ends_no_newline_statement_before_its_line_does() {
+        let src = "class A {\n} // end\nval b = 1\n";
+        assert_eq!(
+            split_in(src, &Lexicon::KOTLIN),
+            vec!["class A {\n} // end", "val b = 1"]
+        );
+        let src = "func Get() interface{} {\n\treturn nil\n}\nfunc b() {}\n";
+        assert_eq!(split_in(src, &Lexicon::GO).len(), 2);
     }
 
     #[test]

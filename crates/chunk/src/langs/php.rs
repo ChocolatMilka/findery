@@ -47,7 +47,7 @@ impl Profile for PhpProfile {
         &Lexicon::PHP
     }
 
-    fn classify(&self, item: &str, _nested: bool) -> ItemMeta {
+    fn classify(&self, item: &str, _parent: Option<ChunkKind>) -> ItemMeta {
         let (_, code) = split_trivia(item, self.lexicon());
         let header_end = code.find(['{', ';', '=']).unwrap_or(code.len());
         let (kind, symbol) = keyword_header(&code[..header_end], PHP_KEYWORDS);

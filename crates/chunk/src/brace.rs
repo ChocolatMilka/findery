@@ -7,17 +7,21 @@
 //! every language at once (CONV-024: the chunker splits, and nothing else).
 //! Reading one item's header is [`crate::header`]'s job.
 
+use crate::header::split_trivia;
 use crate::items::{LineIndex, Span, body_span, split_items};
-use crate::scanner::Lexicon;
-use crate::sizing::{drop_empty, merge_small, split_windows};
+use crate::scanner::{Lexicon, is_comment_at, skip_opaque};
+use crate::sizing::{MAX_NESTING, drop_empty, merge_small, split_windows, within_budget};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, RawChunk};
 
 /// What the header of an item says about it.
 pub(crate) struct ItemMeta {
+    /// What the item declares.
     pub kind: ChunkKind,
+    /// The name it declares, when it names one.
     pub symbol: Option<String>,
+    /// It is a test, or holds only tests.
     pub is_test: bool,
 }
 
@@ -26,9 +30,11 @@ pub(crate) trait Profile {
     /// The language's lexical trivia.
     fn lexicon(&self) -> &'static Lexicon;
 
-    /// Reads the kind and the symbol out of one item's text. `nested` says the
-    /// item sits inside a container, which is what makes a `Method` a method.
-    fn classify(&self, item: &str, nested: bool) -> ItemMeta;
+    /// Reads the kind and the symbol out of one item's text. `parent` is the
+    /// kind of the container the item sits in, which is what makes a
+    /// `Method` a method — and a Java `URL(String s) {}` a constructor in a
+    /// class but a constant in an enum.
+    fn classify(&self, item: &str, parent: Option<ChunkKind>) -> ItemMeta;
 
     /// The file preamble — module docs, a shebang, `<?php` — and the chunk it
     /// becomes. Returns where the items start, and the chunk, if any.
@@ -52,6 +58,12 @@ pub(crate) trait Profile {
         false
     }
 
+    /// The members of a declaration group that is split at any size — Go's
+    /// `type ( … )` — or `None` when `item` is no such group.
+    fn group_body(&self, _src: &str, _item: Span) -> Option<Span> {
+        None
+    }
+
     /// The kind a member takes once it sits inside a parent.
     fn nested_kind(&self, kind: ChunkKind) -> ChunkKind {
         if kind == ChunkKind::Function {
@@ -60,6 +72,25 @@ pub(crate) trait Profile {
             kind
         }
     }
+}
+
+/// The container a member is emitted from.
+struct Parent {
+    /// Its breadcrumb, which prefixes its members'. A group adds none: the
+    /// types of a `type ( … )` are named as if declared one by one.
+    label: Option<String>,
+    kind: ChunkKind,
+    is_test: bool,
+    /// How many containers enclose its members: 1 for a top-level parent.
+    depth: usize,
+}
+
+/// One item, classified: what its chunks will carry.
+struct Classified {
+    kind: ChunkKind,
+    symbol: Option<String>,
+    breadcrumb: Option<String>,
+    is_test: bool,
 }
 
 /// The fixed inputs of one chunking pass, carried together so a recursive call
@@ -86,7 +117,9 @@ pub(crate) fn chunk_with(
     let lex = profile.lexicon();
     let mut out = Vec::new();
     let (start, head) = profile.preamble(src, path, &index);
-    out.extend(head);
+    if let Some(head) = head {
+        out.extend(within_budget(head, cfg));
+    }
     let emitter = Emitter {
         src,
         index: &index,
@@ -94,102 +127,186 @@ pub(crate) fn chunk_with(
         profile,
         lex,
     };
-    for item in split_items(
-        src,
-        Span {
-            start,
-            end: src.len(),
-        },
-        lex,
-    ) {
-        emitter.emit_item(item, None, false, &mut out);
+    let file = Span {
+        start,
+        end: src.len(),
+    };
+    for item in split_items(src, file, lex) {
+        emitter.emit_item(item, None, &mut out);
     }
     Ok(merge_small(drop_empty(out), cfg))
 }
 
 impl Emitter<'_> {
     /// Emits one item, recursing into a container body that exceeds the budget.
-    fn emit_item(
-        &self,
-        item: Span,
-        parent: Option<&str>,
-        parent_is_test: bool,
-        out: &mut Vec<RawChunk>,
-    ) {
+    fn emit_item(&self, item: Span, parent: Option<&Parent>, out: &mut Vec<RawChunk>) {
         let item_text = item.slice(self.src);
         if item_text.trim().is_empty() {
             return;
         }
-        let meta = self.profile.classify(item_text, parent.is_some());
-        let is_test = parent_is_test || meta.is_test;
-        if is_test && !self.cfg.include_tests {
+        let meta = self.profile.classify(item_text, parent.map(|p| p.kind));
+        let item_kind = meta.kind;
+        let this = self.classified(meta, parent);
+        if this.is_test && !self.cfg.include_tests {
             return;
         }
-
-        let kind = if is_test {
-            ChunkKind::Test
-        } else if parent.is_some() {
-            self.profile.nested_kind(meta.kind)
-        } else {
-            meta.kind
-        };
-        let breadcrumb = match (parent, &meta.symbol) {
-            (Some(p), Some(s)) => Some(format!("{p} > {s}")),
-            (Some(p), None) => Some(p.to_string()),
-            (None, Some(s)) => Some(s.clone()),
-            (None, None) => None,
-        };
-        let oversized = item_text.len() > self.cfg.max_chars;
-        let group = parent.is_some() && self.profile.splits_with_parent(meta.kind);
-        if self.profile.recursable(meta.kind)
-            && (oversized || group)
-            && let Some(body) = body_span(self.src, item, self.lex)
-        {
+        if let Some((body, is_group)) = self.body_to_split(item, item_kind, parent) {
             let children = split_items(self.src, body, self.lex);
             if !children.is_empty() {
-                let label = breadcrumb.clone().unwrap_or_else(|| "?".into());
+                let label = match is_group {
+                    true => parent.and_then(|p| p.label.clone()),
+                    false => Some(this.breadcrumb.clone().unwrap_or_else(|| "?".into())),
+                };
+                let container = Parent {
+                    label,
+                    kind: item_kind,
+                    is_test: this.is_test,
+                    depth: parent.map_or(1, |p| p.depth + 1),
+                };
                 // The header — doc comment, annotations, supertypes, up to the
                 // `{` — is content no member carries: it gets its chunk.
                 let header = Span {
                     start: item.start,
                     end: body.start,
                 };
-                self.emit_leaf(header, kind, meta.symbol, breadcrumb, out);
-                for child in children {
-                    self.emit_item(child, Some(&label), is_test, out);
-                }
+                self.emit_container(header, &children, this, &container, out);
                 return;
             }
         }
-        self.emit_leaf(item, kind, meta.symbol, breadcrumb, out);
+        self.emit_leaf(item, this, out);
+    }
+
+    /// Stamps the item's kind and breadcrumb from what its parent is.
+    fn classified(&self, meta: ItemMeta, parent: Option<&Parent>) -> Classified {
+        let is_test = parent.is_some_and(|p| p.is_test) || meta.is_test;
+        let kind = match (is_test, parent) {
+            (true, _) => ChunkKind::Test,
+            (false, Some(_)) => self.profile.nested_kind(meta.kind),
+            (false, None) => meta.kind,
+        };
+        let label = parent.and_then(|p| p.label.as_deref());
+        let breadcrumb = match (label, &meta.symbol) {
+            (Some(label), Some(s)) => Some(format!("{label} > {s}")),
+            (Some(label), None) => Some(label.to_string()),
+            (None, Some(s)) => Some(s.clone()),
+            (None, None) => None,
+        };
+        Classified {
+            kind,
+            symbol: meta.symbol,
+            breadcrumb,
+            is_test,
+        }
+    }
+
+    /// The body to split `item` into, and whether it is a group: a group is
+    /// split at any size, any other container once it is too big — and none
+    /// past [`MAX_NESTING`], where what is left is windowed as one leaf.
+    fn body_to_split(
+        &self,
+        item: Span,
+        kind: ChunkKind,
+        parent: Option<&Parent>,
+    ) -> Option<(Span, bool)> {
+        if parent.is_some_and(|p| p.depth >= MAX_NESTING) {
+            return None;
+        }
+        if let Some(group) = self.profile.group_body(self.src, item) {
+            return Some((group, true));
+        }
+        let oversized = item.slice(self.src).len() > self.cfg.max_chars;
+        let with_parent = parent.is_some() && self.profile.splits_with_parent(kind);
+        let wanted = self.profile.recursable(kind) && (oversized || with_parent);
+        let body = wanted
+            .then(|| body_span(self.src, item, self.lex))
+            .flatten()?;
+        Some((body, false))
+    }
+
+    /// Emits a split container: its header, then each member below it.
+    fn emit_container(
+        &self,
+        header: Span,
+        children: &[Span],
+        this: Classified,
+        container: &Parent,
+        out: &mut Vec<RawChunk>,
+    ) {
+        let bare_test = this.is_test && !self.documents(header);
+        let first = out.len();
+        self.emit_leaf(header, this, out);
+        let header_is_one_chunk = out.len() == first + 1;
+        for child in children {
+            self.emit_item(*child, Some(container), out);
+        }
+        if bare_test && header_is_one_chunk {
+            fold_next_into_header(out, first, self.cfg);
+        }
+    }
+
+    /// Whether the trivia of `span` holds a comment — a doc worth a chunk.
+    fn documents(&self, span: Span) -> bool {
+        let (trivia, _) = split_trivia(span.slice(self.src), self.lex);
+        let bytes = trivia.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if is_comment_at(bytes, i, self.lex) {
+                return true;
+            }
+            i = skip_opaque(bytes, i, self.lex).map_or(i + 1, |next| next.max(i + 1));
+        }
+        false
     }
 
     /// Emits `span` as one chunk, or as line windows when it is too big.
-    fn emit_leaf(
-        &self,
-        span: Span,
-        kind: ChunkKind,
-        symbol: Option<String>,
-        breadcrumb: Option<String>,
-        out: &mut Vec<RawChunk>,
-    ) {
+    fn emit_leaf(&self, span: Span, this: Classified, out: &mut Vec<RawChunk>) {
         let text = span.slice(self.src);
         let start_line = self.index.line_of(span.start);
-        if text.len() <= self.cfg.max_chars {
-            out.push(RawChunk {
-                kind,
-                symbol,
-                breadcrumb,
+        match text.len() <= self.cfg.max_chars {
+            true => out.push(RawChunk {
+                kind: this.kind,
+                symbol: this.symbol,
+                breadcrumb: this.breadcrumb,
                 start_line,
                 end_line: self.index.line_of(span.end.saturating_sub(1)),
                 text: text.trim_end().to_string(),
-            });
-        } else {
-            out.extend(split_windows(
-                text, start_line, kind, symbol, breadcrumb, self.cfg,
-            ));
+            }),
+            false => out.extend(split_windows(
+                text,
+                start_line,
+                this.kind,
+                this.symbol,
+                this.breadcrumb,
+                self.cfg,
+            )),
         }
     }
+}
+
+/// Folds the anonymous member chunk after the header at `at` into it — the
+/// `use super::*;` a test module opens on.
+///
+/// INTENT: the header of an undocumented test module — `#[cfg(test)]` over
+/// `mod tests {` — carries nothing a search wants on its own, and as a chunk
+/// of its own it is a 25-byte hit that answers nothing. Joined to its first
+/// member it keeps every word and costs no chunk. A member that names
+/// something is left alone: folding would drop one of the two names, and a
+/// name is never merged away.
+fn fold_next_into_header(out: &mut Vec<RawChunk>, at: usize, cfg: &ChunkConfig) {
+    let foldable = match (out.get(at), out.get(at + 1)) {
+        (Some(header), Some(next)) => {
+            next.symbol.is_none() && header.text.len() + 1 + next.text.len() <= cfg.max_chars
+        }
+        _ => false,
+    };
+    if !foldable {
+        return;
+    }
+    let next = out.remove(at + 1);
+    let header = &mut out[at];
+    header.text.push('\n');
+    header.text.push_str(&next.text);
+    header.end_line = next.end_line;
 }
 
 /// The line offset where a leading `//!` / `#![…]` preamble ends.

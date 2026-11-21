@@ -81,12 +81,18 @@ pub enum Statements {
         /// `.` for a call chain, `:` for a supertype list, `where` for bounds.
         continuations: &'static [&'static str],
         /// Words a continuation may sit behind, as an annotation may:
-        /// `private set`, `@JvmName("x") get`.
+        /// `private set`, `@JvmName("x") get`. A line ending on one runs on:
+        /// it waits for the declaration it modifies.
         modifiers: &'static [&'static str],
         /// What continues the statement only behind an annotation or a
         /// modifier: `@Inject constructor(…)` under `class Foo`. Bare, it opens
         /// a statement of its own — a secondary `constructor(…)`.
         guarded: &'static [&'static str],
+        /// Words no statement ends on: `else` waits for its branch.
+        dangling: &'static [&'static str],
+        /// A type's closing `>`, `?` and `!!`, and an import's `.*`, end a
+        /// statement (Kotlin). In Go they are operators.
+        type_suffixes: bool,
     },
 }
 
@@ -190,10 +196,22 @@ impl Lexicon {
         decorators: true,
         statements: Statements::Newline {
             continuations: &[
-                ".", "?", ":", "=", "{", "&", "|", "where", "get", "set", "else",
+                ".", "?", ":", "=", "{", "&", "|", "where", "get", "set", "else", "catch",
+                "finally",
             ],
-            modifiers: &["private", "protected", "internal", "public"],
+            modifiers: &[
+                "private",
+                "protected",
+                "internal",
+                "public",
+                "actual",
+                "expect",
+                "inline",
+                "external",
+            ],
             guarded: &["constructor"],
+            dangling: &["else"],
+            type_suffixes: true,
         },
         ..Self::C_LIKE
     };
@@ -209,6 +227,8 @@ impl Lexicon {
             continuations: &[],
             modifiers: &[],
             guarded: &[],
+            dangling: &[],
+            type_suffixes: false,
         },
         ..Self::C_LIKE
     };
