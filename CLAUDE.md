@@ -29,7 +29,7 @@ carries **open** work, and fixing an entry **deletes** it.
 
 ## 🏛️ The map — five layers, one contract, three seams
 
-```
+```text
  L4   findery-mcp (MCP stdio)      findery-cli (`findery`)        the edges — they speak HTTP
  L3   findery-server (axum)                              validate → 1 call → serialize
  L2   findery-index                                      THE ENGINE: sync, search, jobs, watch
@@ -38,8 +38,8 @@ carries **open** work, and fixing an entry **deletes** it.
 ```
 
 **The contract**: *L0 names, the layers execute.* Any type that crosses a
-boundary is defined once, in `findery-core::model` or `findery-core::api`. A transport
-decides nothing.
+boundary is defined once, in `findery-core::model` or `findery-core::api`.
+A transport decides nothing.
 
 **The three seams** — the only points where an implementation gets swapped:
 
@@ -91,8 +91,10 @@ run the exit checklist on Windows.
 
 **`rust-toolchain.toml` floats on stable, so a local toolchain drifts behind
 CI's** — and a lint that does not exist yet on your machine exists on the
-runner. `make check` green is then not the same claim as CI green. Before
-trusting a green run, `rustup update stable`, or see what the runner sees:
+runner. `make check` green is then not the same claim as CI green.
+
+Before trusting a green run, `rustup update stable`, or see what the runner
+sees:
 
 ```bash
 cargo +1.99.0 clippy --workspace --all-targets -- -D warnings
@@ -146,15 +148,15 @@ finderyd --check                # the config as actually resolved
 
 ## 🧭 Where to put what
 
-| What you're adding | Where |
-|-------------------|-----|
-| A field visible to a client | `findery-core::model` / `findery-core::api` |
-| A language to chunk | `findery-chunk` + one line in `Registry` |
-| An embeddings provider | often **zero code**: it's config |
-| A vector database | `findery-store`, `VectorStore` impl |
-| A sync or ranking rule | `findery-index` — **never** in a handler |
-| An HTTP route | `findery-server::routes` + `findery-client` method + MCP tool |
-| A tool for Claude Code | `findery-mcp::tools` |
+| What you're adding          | Where                                                         |
+|-----------------------------|---------------------------------------------------------------|
+| A field visible to a client | `findery-core::model` / `findery-core::api`                   |
+| A language to chunk         | `findery-chunk` + one line in `Registry`                      |
+| An embeddings provider      | often **zero code**: it's config                              |
+| A vector database           | `findery-store`, `VectorStore` impl                           |
+| A sync or ranking rule      | `findery-index` — **never** in a handler                      |
+| An HTTP route               | `findery-server::routes` + `findery-client` method + MCP tool |
+| A tool for Claude Code      | `findery-mcp::tools`                                          |
 
 ---
 
@@ -180,13 +182,13 @@ finderyd --check                # the config as actually resolved
 
 ## 👥 The squad — `.claude/agents/`
 
-| Agent | When |
-|-------|------|
-| `@planner` | a feature to spec end to end |
-| `@architect` | internal layout, placement, complexity |
-| `@dev` | implementation |
-| `@reviewer` | ruthless review of a diff |
+| Agent         | When                                         |
+|---------------|----------------------------------------------|
+| `@planner`    | a feature to spec end to end                 |
+| `@architect`  | internal layout, placement, complexity       |
+| `@dev`        | implementation                               |
+| `@reviewer`   | ruthless review of a diff                    |
 | `@bug-hunter` | proactive sweep for what crashes or corrupts |
-| `@debugger` | ONE precise bug, reproduced and sealed |
-| `@coherence` | structural audit, placement, layers |
-| `@perf` | latency, throughput, memory — measured |
+| `@debugger`   | ONE precise bug, reproduced and sealed       |
+| `@coherence`  | structural audit, placement, layers          |
+| `@perf`       | latency, throughput, memory — measured       |

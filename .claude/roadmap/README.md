@@ -18,16 +18,20 @@ in the same format as the embedding** — the `QueryTask` plumbing is directly
 reusable. Output = P(yes) on the logits of the `yes`/`no` tokens.
 
 *Seam*: a `Reranker` trait in L0, called in `search::search` between the
-`get_chunks` and truncation. **No storage impact**: it's pure query-time, so
-no re-sync, no cache invalidation — unlike an embedding model change.
-~200 lines.
+`get_chunks` and truncation. ~200 lines.
+
+**No storage impact**: it's pure query-time, so no re-sync, no cache
+invalidation — unlike an embedding model change.
 
 *The real argument isn't quality, it's token budget.* The agent reads the 8
 excerpts anyway; moving the right one from rank 5 to rank 1 gains it nothing
-by itself. What would gain something is dropping to `k=3` at a constant
-success rate — roughly ~2,500 tokens saved per search.
+by itself.
+
+What would gain something is dropping to `k=3` at a constant success rate —
+roughly ~2,500 tokens saved per search.
 
 *Measured blockers*:
+
 - **GPU mandatory.** 20 candidates × ~400 tokens = ~8k tokens of prefill per
   search. On GPU: ~150-250 ms. On CPU: tens of seconds. Dead.
 - **Service.** The model card documents Sentence Transformers, Transformers
@@ -36,29 +40,33 @@ success rate — roughly ~2,500 tokens saved per search.
   on the one we already have.
 
 *To do BEFORE writing a line* (CONV-035): a set of 30 real questions, and
-measure how often the right answer is present in the current top-3. If it's
-already ≥ 85%, the reranker buys nothing.
+measure how often the right answer is present in the current top-3.
+
+If it's already ≥ 85%, the reranker buys nothing.
 
 ### R0 — Client-side metadata cache for push mode
 
 A pushing client has no bucket row to compare `(size, mtime)` against, so it
-reads and hashes every candidate on every sync. Locally that is fast — 76 files
-in 11 ms on this repository — but it scales with the project, not with the
-change.
+reads and hashes every candidate on every sync.
+
+Locally that is fast — 76 files in 11 ms on this repository — but it scales
+with the project, not with the change.
 
 *Fix*: a small local file next to the project recording `path → (size, mtime,
 hash)` from the last successful push, restoring gate 1 on the client side.
 
-*To measure first*: the read-and-hash cost on a 500k-line repository. If it
-stays under a second, the cache is complexity for nothing.
+*To measure first*: the read-and-hash cost on a 500k-line repository.
+
+If it stays under a second, the cache is complexity for nothing.
 
 ### R2b — Deduplicate `embeddings` and `vectors` on the `sqlite` side
 
 Measured on a real bucket: `embeddings` and `vectors` carry **exactly the
-same bytes** (1055 rows, 540 160 B on each side at 128 dims). Every vector is
-therefore written to disk twice — once in the content-addressed cache, once
-in the project's live set. At 1024 dims and 50k chunks, that's **205 MB
-duplicated**.
+same bytes** (1055 rows, 540 160 B on each side at 128 dims).
+
+Every vector is therefore written to disk twice — once in the content-addressed
+cache, once in the project's live set. At 1024 dims and 50k chunks, that's
+**205 MB duplicated**.
 
 *Why it's like this*: `vectors` makes `SqliteVectorStore` self-contained — it
 carries the payload (path, lang, kind, symbol) the cache doesn't have, and
@@ -69,55 +77,78 @@ matrix fills in by joining on `embeddings` at warm-up. `SqliteVectorStore`
 already holds the `Bucket`, so no layer moves.
 
 *To measure before*: the cost of the join on a cold start, against the
-205 MB saved. If warm-up goes from 200 ms to 2 s, the trade-off is bad.
+205 MB saved.
+
+If warm-up goes from 200 ms to 2 s, the trade-off is bad.
 
 ### R2 — Quantizing stored vectors (f16 / int8) on the `sqlite` side
+
 The matrix is in `f32`: 819 MB at 200k chunks × 1024 dims. f16 would cut it
 in half for near-zero recall cost on normalized vectors.
+
 *Blocker*: a before/after recall number is needed, not a hunch (CONV-035).
 
 ### R3 — Context expansion around a hit
+
 Optionally return the N neighboring lines of a chunk, to avoid the follow-up
-`Read` the agent does today when the excerpt is cut too short.
+`Read` an agent makes when the excerpt is cut too short.
+
 *Likely shape*: `SearchRequest::context_lines`.
 
 ### R4 — Chunkers for the remaining languages
-Rust, JavaScript/TypeScript, Python, PHP, Markdown, JSON, Axle, Java, Kotlin
-and Go split syntactically. `.toml` is walked by default but still goes through
-the generic chunker — line windows, no symbol, no kind, no breadcrumb — and so
-do `.jsx`/`.tsx`, on purpose (see `docs/chunk`). Nothing else is walked by
-default: `.yaml`, `.sql`, C/C++, C#, Swift, Ruby or shell indexed through
-`findery init --ext` get the same windows.
 
-The cheapest wins: `.toml` split per `[table]` with the table name as symbol,
-which is a line pass like Markdown's; then C#, Swift and C/C++, which are
-brace-delimited and are a `Profile` each over `brace.rs`. A language whose
-blocks are not braces — Ruby's `end`, YAML's indentation — needs its own
-splitter, as Python has. The full list of what a language touches is in
-`.claude/docs/chunk/README.md` (*The fallback*); `tests/coverage.rs` takes one
-fixture per language and proves the new chunker drops nothing.
+Rust, JavaScript/TypeScript, Python, PHP, Markdown, JSON, Axle, Java, Kotlin
+and Go split syntactically.
+
+`.toml` is walked by default but still goes through the generic chunker — line
+windows, no symbol, no kind, no breadcrumb — and so do `.jsx`/`.tsx`, on
+purpose (see `docs/chunk`).
+
+Nothing else is walked by default: `.yaml`, `.sql`, C/C++, C#, Swift, Ruby or
+shell indexed through `findery init --ext` get the same windows.
+
+The cheapest wins:
+
+1. `.toml` split per `[table]` with the table name as symbol, which is a line
+   pass like Markdown's
+2. then C#, Swift and C/C++, which are brace-delimited and are a `Profile` each
+   over `brace.rs`
+
+A language whose blocks are not braces — Ruby's `end`, YAML's indentation —
+needs its own splitter, as Python has.
+
+The full list of what a language touches is in `.claude/docs/chunk/README.md`
+(*The fallback*); `tests/coverage.rs` takes one fixture per language and proves
+the new chunker drops nothing.
 
 ### R5 — Persistent watch
+
 Watchers live in the server's memory: a restart loses them. Store them in
 the bucket and relaunch them at boot.
 
-Worth more now than when it was written: the daemon starts itself and is
-expected to come and go, so "until the next restart" is a shorter promise
-than it used to be.
+Worth it because the daemon starts itself and is expected to come and go:
+"until the next restart" is a short promise.
 
 ### R6 — Prometheus metrics
-`/metrics`: search latency, embeddings computed vs cached, index size. Today
-observability lives in the logs and `SyncReport`.
+
+`/metrics`: search latency, embeddings computed vs cached, index size.
+Observability lives in the logs and `SyncReport` alone.
 
 ### R7 — Vector cache purge
-`gc_embeddings()` exists but is exposed nowhere (not CLI, not API). Decide on
-a policy (by age? by dead recipe?) before exposing it — the cache is
+
+`gc_embeddings()` exists but is exposed nowhere (not CLI, not API).
+
+Decide on a policy (by age? by dead recipe?) before exposing it — the cache is
 precisely what makes a moved file free.
 
 ### R8 — Real load test
+
 `findery-bench` measures the isolated scan core. What's missing is an end-to-end
-measurement: time to first-index a 500k-line workspace, CPU versus GPU, and
-the search latency curve as the corpus grows.
+measurement:
+
+- time to first-index a 500k-line workspace
+- CPU versus GPU
+- the search latency curve as the corpus grows
 
 ---
 
