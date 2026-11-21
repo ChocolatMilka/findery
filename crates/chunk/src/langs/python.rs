@@ -195,15 +195,16 @@ fn emit(
         (None, Some(s)) => Some(s.clone()),
         (None, None) => None,
     };
-    let start_line = (range.start + 1) as u32;
-    let end_line = end_line_of(lines, &range);
-
     if meta.kind == ChunkKind::Struct && text.len() > cfg.max_chars {
-        let body_start = range.start + 1;
+        let body_start = header_end(lines, &range);
         if let Some(indent) = body_indent(lines, body_start..range.end) {
             let children = python_items(lines, body_start..range.end, indent);
             if !children.is_empty() {
                 let label = breadcrumb.clone().unwrap_or_else(|| "?".into());
+                // The header — comments, decorators, bases — is content no
+                // method carries: it gets its chunk.
+                let header = range.start..body_start;
+                out.extend(leaf(lines, &header, kind, meta.symbol, breadcrumb, cfg));
                 for child in children {
                     emit(lines, child, path, Some(&label), cfg, out);
                 }
@@ -212,28 +213,58 @@ fn emit(
         }
     }
 
-    if text.len() <= cfg.max_chars {
-        // A module docstring documents the file, so it takes the file's name —
-        // the same answer the Rust chunker gives its `//!` preamble.
-        let named = (meta.kind == ChunkKind::Module).then(|| module_name(path));
-        out.push(RawChunk {
-            kind,
-            symbol: named.clone().or(meta.symbol),
-            breadcrumb: named.map(|n| format!("module {n}")).or(breadcrumb),
-            start_line,
-            end_line,
-            text: text.trim_end().to_string(),
-        });
+    // A module docstring documents the file, so it takes the file's name — the
+    // same answer the Rust chunker gives its `//!` preamble.
+    let names_the_file = meta.kind == ChunkKind::Module && text.len() <= cfg.max_chars;
+    let (symbol, breadcrumb) = if names_the_file {
+        let name = module_name(path);
+        (Some(name.clone()), Some(format!("module {name}")))
     } else {
-        out.extend(split_windows(
-            &text,
-            start_line,
-            kind,
-            meta.symbol,
-            breadcrumb,
-            cfg,
-        ));
+        (meta.symbol, breadcrumb)
+    };
+    out.extend(leaf(lines, &range, kind, symbol, breadcrumb, cfg));
+}
+
+/// `range` as one chunk, or as line windows when it is too big.
+fn leaf(
+    lines: &[&str],
+    range: &std::ops::Range<usize>,
+    kind: ChunkKind,
+    symbol: Option<String>,
+    breadcrumb: Option<String>,
+    cfg: &ChunkConfig,
+) -> Vec<RawChunk> {
+    let text = item_text(lines, range);
+    let start_line = (range.start + 1) as u32;
+    if text.len() > cfg.max_chars {
+        return split_windows(&text, start_line, kind, symbol, breadcrumb, cfg);
     }
+    vec![RawChunk {
+        kind,
+        symbol,
+        breadcrumb,
+        start_line,
+        end_line: end_line_of(lines, range),
+        text: text.trim_end().to_string(),
+    }]
+}
+
+/// The line just past the header of the item in `range`: past its comments
+/// and decorators, and past every line its `class …:` statement spans.
+fn header_end(lines: &[&str], range: &std::ops::Range<usize>) -> usize {
+    let mut state = LexState::default();
+    let mut i = range.start;
+    while i < range.end && is_trivia(lines[i]) {
+        i += 1;
+    }
+    while i < range.end {
+        scan_line(lines[i], &mut state);
+        i += 1;
+        if state.depth == 0 && state.triple.is_none() && !state.continued {
+            break;
+        }
+    }
+    i
 }
 
 /// The text of a line range.
@@ -425,6 +456,31 @@ mod tests {
         assert_eq!(render.kind, ChunkKind::Method);
         assert_eq!(render.breadcrumb.as_deref(), Some("Widget > render"));
         assert!(out.iter().any(|c| c.symbol.as_deref() == Some("paint")));
+    }
+
+    #[test]
+    fn a_split_class_keeps_its_header_in_a_chunk_of_its_own() {
+        let body = "        value = 1\n".repeat(20);
+        let src = format!(
+            "# The widget.\n@dataclass\nclass Widget(\n    Base,\n):\n    def render(self):\n{body}"
+        );
+        let out = chunk_under(&src, 200);
+        let header = out
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("Widget"))
+            .expect("the class keeps a chunk");
+        assert_eq!(header.kind, ChunkKind::Struct);
+        assert_eq!(
+            header.text,
+            "# The widget.\n@dataclass\nclass Widget(\n    Base,\n):"
+        );
+        assert_eq!((header.start_line, header.end_line), (1, 5));
+        let render = out
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("render"))
+            .expect("render");
+        assert_eq!(render.breadcrumb.as_deref(), Some("Widget > render"));
+        assert_eq!(render.start_line, 6);
     }
 
     #[test]

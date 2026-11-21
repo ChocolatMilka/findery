@@ -7,7 +7,8 @@
 //! (`<p>don't</p>`), which a lexical scanner reads as the opening of a string
 //! and lets run across the markup. They take the text fallback instead.
 
-use crate::brace::{ItemMeta, Profile, chunk_with, keyword_header, split_trivia};
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::{keyword_header, split_trivia};
 use crate::items::LineIndex;
 use crate::scanner::Lexicon;
 use findery_core::Result;

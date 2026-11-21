@@ -8,19 +8,22 @@
 //! else in the workspace changes.
 //!
 //! Two families share the work. The brace-delimited languages (Rust,
-//! JavaScript, PHP, JSON, Axle) differ only in their trivia and their keywords, so
-//! they run the SAME pipeline over one [`scanner::Lexicon`] each; Python, whose
-//! blocks are indentation and not braces, has its own.
+//! JavaScript, PHP, Axle, Java, Kotlin, Go) differ only in their trivia and
+//! their keywords, so they run the SAME pipeline over one
+//! [`scanner::Lexicon`] each; JSON reads with that scanner but splits on its
+//! own terms, and Python, whose blocks are indentation and not braces, has its
+//! own splitter.
 
 mod brace;
+mod header;
 mod items;
 pub mod langs;
 mod scanner;
 pub mod sizing;
 
 pub use langs::{
-    AxleChunker, JsChunker, JsonChunker, MarkdownChunker, PhpChunker, PythonChunker, RustChunker,
-    TextChunker,
+    AxleChunker, GoChunker, JavaChunker, JsChunker, JsonChunker, KotlinChunker, MarkdownChunker,
+    PhpChunker, PythonChunker, RustChunker, TextChunker,
 };
 
 use findery_core::Result;
@@ -37,6 +40,9 @@ pub struct Registry {
     php: PhpChunker,
     json: JsonChunker,
     axle: AxleChunker,
+    java: JavaChunker,
+    kotlin: KotlinChunker,
+    go: GoChunker,
     fallback: TextChunker,
 }
 
@@ -47,6 +53,7 @@ impl Default for Registry {
 }
 
 impl Registry {
+    /// A registry holding one chunker per language.
     pub fn new() -> Self {
         Self {
             rust: RustChunker,
@@ -56,6 +63,9 @@ impl Registry {
             php: PhpChunker,
             json: JsonChunker,
             axle: AxleChunker,
+            java: JavaChunker,
+            kotlin: KotlinChunker,
+            go: GoChunker,
             fallback: TextChunker,
         }
     }
@@ -70,6 +80,9 @@ impl Registry {
             Lang::Php => &self.php,
             Lang::Json => &self.json,
             Lang::Axle => &self.axle,
+            Lang::Java => &self.java,
+            Lang::Kotlin => &self.kotlin,
+            Lang::Go => &self.go,
             Lang::Toml | Lang::Other => &self.fallback,
         }
     }
@@ -93,17 +106,7 @@ mod tests {
 
     /// Every language the registry routes, so a new one cannot be added without
     /// being exercised below.
-    const ALL: &[Lang] = &[
-        Lang::Rust,
-        Lang::Markdown,
-        Lang::Toml,
-        Lang::JavaScript,
-        Lang::Python,
-        Lang::Php,
-        Lang::Json,
-        Lang::Axle,
-        Lang::Other,
-    ];
+    const ALL: &[Lang] = Lang::ALL;
 
     #[test]
     fn registry_routes_by_language() {
@@ -117,6 +120,13 @@ mod tests {
         assert_eq!(r.chunker_for(Lang::Axle).lang(), Lang::Axle);
         assert_eq!(r.chunker_for(Lang::Toml).lang(), Lang::Other);
         assert_eq!(r.chunker_for(Lang::Other).lang(), Lang::Other);
+        for lang in ALL {
+            let routed = r.chunker_for(*lang).lang();
+            assert!(
+                routed == *lang || matches!(lang, Lang::Toml | Lang::Other),
+                "{lang:?} is routed to {routed:?}"
+            );
+        }
     }
 
     #[test]
@@ -147,14 +157,26 @@ mod tests {
         }
     }
 
+    /// What this can catch: an output that depends on the iteration order of a
+    /// hashed collection (each one is seeded anew), or on state a chunker
+    /// carries from one file to the next — hence another file in between.
+    /// That the chunks are RIGHT is `tests/coverage.rs`'s and the golden
+    /// tests' job; this only says they are the same every time.
     #[test]
     fn chunking_is_deterministic() {
-        let r = Registry::new();
-        let cfg = ChunkConfig::default();
-        let src = include_str!("langs/rust.rs");
-        let a = r.chunk("a.rs", Lang::Rust, src, &cfg).expect("first pass");
-        let b = r.chunk("a.rs", Lang::Rust, src, &cfg).expect("second pass");
-        assert_eq!(a, b);
+        let cfg = ChunkConfig {
+            max_chars: 300,
+            ..ChunkConfig::default()
+        };
+        let src = include_str!("langs/kotlin.rs");
+        let other = include_str!("langs/go.rs");
+        for lang in ALL {
+            let first = Registry::new().chunk("a", *lang, src, &cfg);
+            let r = Registry::new();
+            r.chunk("b", *lang, other, &cfg).expect("chunking succeeds");
+            let again = r.chunk("a", *lang, src, &cfg);
+            assert_eq!(first.ok(), again.ok(), "{lang:?}");
+        }
     }
 
     #[test]
@@ -174,18 +196,28 @@ mod tests {
                 "import a from 'a';\nimport b from 'b';\n\nconst MAX = 4;\n",
             ),
             (Lang::Python, "import os\nimport sys\n\nMAX_RETRIES = 4\n"),
+            (
+                Lang::Java,
+                "package a;\nimport java.util.List;\n\nclass MAX {}\n",
+            ),
+            (
+                Lang::Kotlin,
+                "package a\nimport kotlin.math.max\n\nconst val MAX = 4\n",
+            ),
+            (Lang::Go, "package a\n\nimport \"fmt\"\n\nconst MAX = 4\n"),
         ];
         for (lang, src) in sources {
             let chunks = r.chunk("x", *lang, src, &cfg).expect("chunking succeeds");
             let symbols: Vec<Option<String>> = chunks.iter().map(|c| c.symbol.clone()).collect();
-            match lang {
-                Lang::Rust => assert!(symbols.contains(&Some("MAX".into())), "{chunks:?}"),
-                Lang::JavaScript => assert!(symbols.contains(&Some("MAX".into())), "{chunks:?}"),
-                Lang::Python => {
-                    assert!(symbols.contains(&Some("MAX_RETRIES".into())), "{chunks:?}")
-                }
-                _ => {}
-            }
+            let expected = if *lang == Lang::Python {
+                "MAX_RETRIES"
+            } else {
+                "MAX"
+            };
+            assert!(
+                symbols.contains(&Some(expected.into())),
+                "{lang:?}: {chunks:?}"
+            );
         }
     }
 

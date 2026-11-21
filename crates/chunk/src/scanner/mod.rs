@@ -8,13 +8,39 @@
 
 mod lexicon;
 
-pub use lexicon::{BlockComment, Lexicon};
+pub use lexicon::{BlockComment, Lexicon, Statements, TextBlocks};
+
+/// How deep `${…}` templates may nest inside each other before the scanner
+/// stops re-entering them and reads the rest of the template flat.
+///
+/// INTENT: following a template is recursion, and recursion on input is a
+/// stack the input controls. Real code nests two or three levels; a file of a
+/// million `"${` must cost a misread string, not the daemon.
+const MAX_TEMPLATE_DEPTH: usize = 16;
 
 /// Skips a lexical construct whose contents must not be read structurally.
 ///
 /// Returns the offset just past the construct, or `None` when the byte at `i`
 /// starts no such construct and the caller should interpret it.
 pub fn skip_opaque(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
+    skip_opaque_at(src, i, lex, 0)
+}
+
+/// Whether the construct at `i` is a comment — trivia — rather than a literal,
+/// which is code.
+pub fn is_comment_at(src: &[u8], i: usize, lex: &Lexicon) -> bool {
+    let rest = &src[i.min(src.len())..];
+    let line = lex.line_comments.iter().any(|open| {
+        rest.starts_with(open.as_bytes()) && !(*open == "#" && rest.get(1) == Some(&b'['))
+    });
+    line || lex
+        .block_comment
+        .as_ref()
+        .is_some_and(|bc| rest.starts_with(bc.open.as_bytes()))
+}
+
+/// [`skip_opaque`], `depth` templates deep.
+fn skip_opaque_at(src: &[u8], i: usize, lex: &Lexicon, depth: usize) -> Option<usize> {
     let b = *src.get(i)?;
     for open in lex.line_comments {
         if src[i..].starts_with(open.as_bytes()) {
@@ -37,7 +63,7 @@ pub fn skip_opaque(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
         return Some(end);
     }
     if lex.char_literals && b == b'\'' {
-        return skip_char_literal(src, i);
+        return skip_char_literal(src, i, lex.single_line_strings);
     }
     if lex.heredocs && src[i..].starts_with(b"<<<") {
         return skip_heredoc(src, i);
@@ -45,10 +71,110 @@ pub fn skip_opaque(src: &[u8], i: usize, lex: &Lexicon) -> Option<usize> {
     if lex.regex_literals && b == b'/' && regex_allowed(src, i) {
         return Some(skip_regex(src, i + 1));
     }
+    if lex.text_blocks != TextBlocks::No && src[i..].starts_with(b"\"\"\"") {
+        return Some(skip_text_block(src, i + 3, lex, depth));
+    }
+    if lex.verbatim_strings.contains(&b) {
+        return Some(skip_verbatim(src, i + 1, b));
+    }
     if lex.strings.contains(&b) {
+        if lex.single_line_strings || lex.templates {
+            return Some(skip_line_string(src, i + 1, b, lex, depth));
+        }
         return Some(skip_string(src, i + 1, b));
     }
     None
+}
+
+/// Skips a string of a language that may follow templates and may forbid a
+/// newline inside it.
+///
+/// INTENT: a string that cannot span a line ends at the newline when its quote
+/// never comes — the compiler would refuse it there, and the scanner refusing
+/// to let it swallow the file keeps every item below it. The newline itself is
+/// left to the caller, which may need it to end a statement.
+fn skip_line_string(src: &[u8], mut i: usize, quote: u8, lex: &Lexicon, depth: usize) -> usize {
+    let templates = lex.templates && quote == b'"';
+    while i < src.len() {
+        match src[i] {
+            b'\\' => i += 2,
+            b'\n' if lex.single_line_strings => return i,
+            b'$' if templates && src.get(i + 1) == Some(&b'{') => {
+                i = skip_template(src, i + 2, lex, depth);
+            }
+            b if b == quote => return i + 1,
+            _ => i += 1,
+        }
+    }
+    i.min(src.len())
+}
+
+/// Skips the code of a `${…}` template up to its matching `}`.
+///
+/// INTENT: the expression is code, so it may hold a string that holds a brace
+/// — `"${m["{"]}"` — and only re-entering the scanner tells that brace from
+/// the one that closes the template. A template that never closes ends at its
+/// own line, the way an unterminated one-line string does: a half-typed `"${`
+/// costs that line, not every item below it.
+fn skip_template(src: &[u8], start: usize, lex: &Lexicon, depth: usize) -> usize {
+    let mut i = start;
+    let mut braces = 1usize;
+    while i < src.len() {
+        if depth < MAX_TEMPLATE_DEPTH
+            && let Some(next) = skip_opaque_at(src, i, lex, depth + 1)
+        {
+            i = next.max(i + 1);
+            continue;
+        }
+        match src[i] {
+            b'{' => braces += 1,
+            b'}' => {
+                braces -= 1;
+                if braces == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    src[start..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map_or(src.len(), |nl| start + nl)
+}
+
+/// Skips a `"""…"""` literal opened just before `i`. The closing run may be
+/// longer than three quotes — `""""` ends a raw string on a quote — and every
+/// quote of it belongs to the literal.
+fn skip_text_block(src: &[u8], mut i: usize, lex: &Lexicon, depth: usize) -> usize {
+    while i < src.len() {
+        if src[i] == b'\\' && lex.text_blocks == TextBlocks::Escaped {
+            i += 2;
+            continue;
+        }
+        if lex.templates && src[i] == b'$' && src.get(i + 1) == Some(&b'{') {
+            i = skip_template(src, i + 2, lex, depth);
+            continue;
+        }
+        if src[i..].starts_with(b"\"\"\"") {
+            i += 3;
+            while src.get(i) == Some(&b'"') {
+                i += 1;
+            }
+            return i;
+        }
+        i += 1;
+    }
+    i.min(src.len())
+}
+
+/// Skips a verbatim string: no escape, any byte up to the closing quote.
+fn skip_verbatim(src: &[u8], mut i: usize, quote: u8) -> usize {
+    while i < src.len() && src[i] != quote {
+        i += 1;
+    }
+    (i + 1).min(src.len())
 }
 
 fn skip_line_comment(src: &[u8], mut i: usize) -> usize {
@@ -152,15 +278,21 @@ fn skip_raw_or_byte_literal(src: &[u8], i: usize) -> Option<usize> {
 /// reading the closing quote as the OPENING quote of the next literal swallows
 /// it — which turns the brace of the following item into a structural brace and
 /// silently fuses two items into one.
-fn skip_char_literal(src: &[u8], i: usize) -> Option<usize> {
+///
+/// `single_line` stops an unterminated escape at the newline, as the languages
+/// whose strings cannot span a line would.
+fn skip_char_literal(src: &[u8], i: usize, single_line: bool) -> Option<usize> {
     let first = *src.get(i + 1)?;
     if first == b'\\' {
         // An escape runs to the next `'`: `'\''`, `'\\'`, `'\u{1F600}'`.
         let mut j = i + 3;
         while j < src.len() && src[j] != b'\'' {
+            if single_line && src[j] == b'\n' {
+                return Some(j);
+            }
             j += 1;
         }
-        return Some(j + 1);
+        return Some((j + 1).min(src.len()));
     }
     let width = match first {
         0x00..=0x7F => 1,
@@ -362,6 +494,70 @@ mod tests {
         let src = "$a = <<<EOT\n{ not a brace }\nEOT;\n$x = 1;";
         let end = opaque(src, 5, PHP).expect("heredoc");
         assert_eq!(&src[end..end + 1], ";");
+    }
+
+    const JAVA: &Lexicon = &Lexicon::JAVA;
+    const KOTLIN: &Lexicon = &Lexicon::KOTLIN;
+    const GO: &Lexicon = &Lexicon::GO;
+
+    #[test]
+    fn a_text_block_is_one_literal_and_an_escape_does_not_close_it() {
+        let src = "\"\"\"\n  { \\\"\"\" }\n  \"\"\";";
+        assert_eq!(opaque(src, 0, JAVA), Some(src.len() - 1));
+    }
+
+    #[test]
+    fn a_kotlin_raw_string_ends_on_its_longest_quote_run() {
+        let src = "\"\"\"a \\\"\"\"\"; x";
+        // No escape in a raw string: the backslash is a byte, the run of four
+        // quotes closes it with a quote inside.
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.find(';').expect("semi")));
+    }
+
+    #[test]
+    fn a_template_holding_a_string_holding_a_brace_stays_inside_its_string() {
+        let src = "\"a ${m[\"}\"]} b\" + c";
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.find(" +").expect("plus")));
+        let src = "\"\"\"x ${ f(\"{\") } y\"\"\";";
+        assert_eq!(opaque(src, 0, KOTLIN), Some(src.len() - 1));
+    }
+
+    #[test]
+    fn a_template_nested_past_the_cap_still_terminates() {
+        let src = "\"${".repeat(10_000);
+        let end = opaque(&src, 0, KOTLIN).expect("a string");
+        assert!(end <= src.len());
+    }
+
+    #[test]
+    fn an_unterminated_one_line_string_stops_at_the_newline() {
+        let src = "\"open { \nnext";
+        assert_eq!(opaque(src, 0, JAVA), Some(src.find('\n').expect("nl")));
+        assert_eq!(opaque(src, 0, GO), Some(src.find('\n').expect("nl")));
+        let src = "'\\x\nnext";
+        assert_eq!(opaque(src, 0, GO), Some(src.find('\n').expect("nl")));
+    }
+
+    #[test]
+    fn a_go_raw_string_spans_lines_and_knows_no_escape() {
+        let src = "`C:\\` + `\n{\n`";
+        assert_eq!(opaque(src, 0, GO), Some(5));
+        assert_eq!(opaque(src, 8, GO), Some(src.len()));
+    }
+
+    #[test]
+    fn a_rune_or_a_char_is_one_literal() {
+        assert_eq!(opaque("'{'", 0, GO), Some(3));
+        assert_eq!(opaque("'\\u0041'", 0, JAVA), Some(8));
+        assert_eq!(opaque("'}'", 0, KOTLIN), Some(3));
+    }
+
+    #[test]
+    fn a_comment_is_trivia_and_a_string_is_not() {
+        assert!(is_comment_at(b"// x", 0, GO));
+        assert!(is_comment_at(b"/* x */", 0, JAVA));
+        assert!(!is_comment_at(b"\"x\"", 0, GO));
+        assert!(!is_comment_at(b"#[a]", 0, PHP));
     }
 
     #[test]

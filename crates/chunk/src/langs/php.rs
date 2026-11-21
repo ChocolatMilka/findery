@@ -4,7 +4,8 @@
 //! INTENT: heredocs and nowdocs are opaque to the scanner, so a SQL string or a
 //! template holding `{`, `}` and `,` never counts as structure.
 
-use crate::brace::{ItemMeta, Profile, chunk_with, keyword_header, split_trivia};
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::{keyword_header, split_trivia};
 use crate::items::LineIndex;
 use crate::scanner::Lexicon;
 use findery_core::Result;

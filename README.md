@@ -44,7 +44,7 @@
 |---|---|
 | **Language** | 100% Rust — a five-layer workspace, one `findery` CLI, one `finderyd` daemon, one `findery-mcp` bridge |
 | **Search** | Hybrid: vectors for the concept, BM25 for the exact identifier, fused by **rank** (RRF) — no calibration between two incomparable scales |
-| **Chunking** | Syntactic, per item, with a symbol and a breadcrumb: **Rust, JavaScript / TypeScript, Python, PHP, Axle, Markdown, JSON**; line windows for everything else. No tree-sitter, no C toolchain — a lexical scanner that never mistakes a brace in a string for a structural one |
+| **Chunking** | Syntactic, per item, with a symbol and a breadcrumb: **Rust, JavaScript / TypeScript, Python, PHP, Axle, Java, Kotlin, Go, Markdown, JSON**; line windows for everything else. No tree-sitter, no C toolchain — a lexical scanner that never mistakes a brace in a string for a structural one |
 | **Cost model** | A vector is keyed by `(recipe, content_hash)`, never by place. An unchanged tree, a re-clone, a `--full` or a reordered file cost **zero embeddings** |
 | **Model** | Nothing hardcoded: Qwen3 out of the box, any local runtime (Ollama, llama.cpp, LM Studio, vLLM), any remote provider. Backend, URL, route, auth header, name and width are data. Changing model opens a new space, it never mixes two |
 | **Store** | Embedded SQLite — exact in-RAM scan, **12 ms at 50k chunks**, no service to run — or Qdrant (HNSW) beyond ~150k chunks. Switching re-embeds nothing |

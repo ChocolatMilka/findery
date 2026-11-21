@@ -82,17 +82,20 @@ Optionally return the N neighboring lines of a chunk, to avoid the follow-up
 *Likely shape*: `SearchRequest::context_lines`.
 
 ### R4 — Chunkers for the remaining languages
-Rust, JavaScript/TypeScript, Python, PHP, Markdown and JSON now split
-syntactically. Everything else — `.toml`, `.sql`, `.go`, `.java`, `.yaml` —
-still goes through the generic chunker: usable, but with no symbol, no kind
-and no breadcrumb.
+Rust, JavaScript/TypeScript, Python, PHP, Markdown, JSON, Axle, Java, Kotlin
+and Go split syntactically. `.toml` is walked by default but still goes through
+the generic chunker — line windows, no symbol, no kind, no breadcrumb — and so
+do `.jsx`/`.tsx`, on purpose (see `docs/chunk`). Nothing else is walked by
+default: `.yaml`, `.sql`, C/C++, C#, Swift, Ruby or shell indexed through
+`findery init --ext` get the same windows.
 
-One language is a `Profile` in `findery-chunk` (a `Lexicon`, a keyword table,
-optionally a preamble) plus one line in `Registry`, one entry in
-`DEFAULT_EXTENSIONS` and one arm in `Lang`. For a brace-delimited language
-that is a few dozen lines: `brace.rs` already holds the pipeline. A language
-whose blocks are not braces — Ruby's `end`, Haskell's layout — needs its own
-splitter, as Python has.
+The cheapest wins: `.toml` split per `[table]` with the table name as symbol,
+which is a line pass like Markdown's; then C#, Swift and C/C++, which are
+brace-delimited and are a `Profile` each over `brace.rs`. A language whose
+blocks are not braces — Ruby's `end`, YAML's indentation — needs its own
+splitter, as Python has. The full list of what a language touches is in
+`.claude/docs/chunk/README.md` (*The fallback*); `tests/coverage.rs` takes one
+fixture per language and proves the new chunker drops nothing.
 
 ### R5 — Persistent watch
 Watchers live in the server's memory: a restart loses them. Store them in

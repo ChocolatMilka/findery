@@ -1,9 +1,8 @@
 //! Rust chunker: one chunk per item, one chunk per method inside a large
 //! `impl`, doc comments and attributes riding along with the item they document.
 
-use crate::brace::{
-    ItemMeta, Profile, chunk_with, inner_doc_preamble_end, next_ident, split_trivia,
-};
+use crate::brace::{ItemMeta, Profile, chunk_with, inner_doc_preamble_end};
+use crate::header::{next_ident, split_trivia};
 use crate::items::LineIndex;
 use crate::scanner::Lexicon;
 use findery_core::Result;
@@ -197,6 +196,27 @@ mod tests {
             .expect("method");
         assert_eq!(m.kind, ChunkKind::Method);
         assert_eq!(m.breadcrumb.as_deref(), Some("Widget > render"));
+    }
+
+    #[test]
+    fn a_split_impl_keeps_its_doc_comment_in_its_header_chunk() {
+        let filler = "    // padding padding padding padding padding padding\n".repeat(50);
+        let src = format!(
+            "/// Renders widgets.\n#[allow(dead_code)]\nimpl<T: Clone> Render for Widget<T> {{\n    fn render(&self) {{\n{filler}    }}\n}}\n"
+        );
+        let out = chunk(&src);
+        let header = &out[0];
+        assert_eq!(header.kind, ChunkKind::Impl);
+        assert_eq!(header.symbol.as_deref(), Some("Render for Widget<T>"));
+        assert_eq!(
+            header.text,
+            "/// Renders widgets.\n#[allow(dead_code)]\nimpl<T: Clone> Render for Widget<T> {"
+        );
+        assert_eq!((header.start_line, header.end_line), (1, 3));
+        assert_eq!(
+            out[1].breadcrumb.as_deref(),
+            Some("Render for Widget<T> > render")
+        );
     }
 
     #[test]
