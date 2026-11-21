@@ -10,15 +10,18 @@
 //! text that is embedded, which opens on `path: …`. Moving a function to
 //! another file re-embeds it, and on purpose — the path is signal.
 
-use super::{Bucket, blob_to_vec, vec_to_blob};
-use crate::bucket::schema::sql;
+use std::collections::HashMap;
+
+use rusqlite::params;
+
 use findery_core::Result;
 use findery_core::ids::{ChunkId, ContentHash, ProjectId};
 use findery_core::model::{ChunkKind, Lang};
 use findery_core::support::clock::now_unix;
 use findery_core::traits::{VectorPayload, VectorRecord};
-use rusqlite::params;
-use std::collections::HashMap;
+
+use super::{Bucket, blob_to_vec, vec_to_blob};
+use crate::bucket::schema::sql;
 
 /// Hashes per `IN (...)` batch.
 const HASH_BATCH: usize = 400;

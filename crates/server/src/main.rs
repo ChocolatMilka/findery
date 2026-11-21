@@ -4,10 +4,12 @@
 //! the embedding runtime, opens the bucket, and serves the HTTP API until it is
 //! asked to stop.
 
+use std::path::PathBuf;
+
 use clap::Parser;
+
 use findery_core::config::Config;
 use findery_core::{Error, Result};
-use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(

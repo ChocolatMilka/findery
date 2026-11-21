@@ -4,8 +4,9 @@
 //! reader and an implementation for the compiler, and mixing the two is how a
 //! tool ends up documented as something it no longer does.
 
-use findery_core::model::Lang;
 use serde_json::{Value, json};
+
+use findery_core::model::Lang;
 
 /// The tool catalogue, as `tools/list` returns it.
 pub fn catalogue() -> Value {

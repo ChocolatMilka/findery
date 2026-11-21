@@ -1,22 +1,27 @@
 //! Route table and handlers. Each one does exactly three things: validate,
 //! call one [`findery_index::Indexer`] method, serialize.
 
-use crate::dto::{
-    AddDocument, Deleted, DocumentQuery, ExportRequest, PruneRequest, PushDocuments, Removed,
-    Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
-};
-use crate::{ApiResult, AppState};
+use std::time::Duration;
+
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+
 use findery_core::api::{
     BucketInfo, BucketRemoved, CreateBucket, HealthReport, Job, RegisterProject,
 };
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
-use findery_index::ProgressHandle;
+
 use findery_store::{ExportFormat, ExportReport};
-use std::time::Duration;
+
+use findery_index::ProgressHandle;
+
+use crate::dto::{
+    AddDocument, Deleted, DocumentQuery, ExportRequest, PruneRequest, PushDocuments, Removed,
+    Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
+};
+use crate::{ApiResult, AppState};
 
 /// The full API surface.
 pub fn router() -> Router<AppState> {

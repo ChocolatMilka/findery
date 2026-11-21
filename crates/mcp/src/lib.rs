@@ -11,9 +11,10 @@ pub mod catalogue;
 pub mod protocol;
 pub mod tools;
 
-use findery_client::Client;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+use findery_client::Client;
 
 /// Serves the MCP protocol on the given streams until the input closes.
 ///

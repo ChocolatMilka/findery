@@ -7,13 +7,15 @@
 //! bucket. Named buckets are still found by scanning, so losing this file costs
 //! only the out-of-place ones, and an entry whose file is gone is pruned.
 
-use findery_core::config::StoreConfig;
-use findery_core::{Error, Result};
-use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+
+use findery_core::config::StoreConfig;
+use findery_core::{Error, Result};
 
 /// Serialises a read-modify-write of the registry file.
 ///

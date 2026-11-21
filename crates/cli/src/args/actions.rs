@@ -1,8 +1,9 @@
 //! The second word of the commands that take one: `config set`, `bucket rm`,
 //! `daemon stop`, `doc add`.
 
-use super::Scope;
 use clap::Subcommand;
+
+use super::Scope;
 
 #[derive(Subcommand)]
 pub(crate) enum ConfigAction {

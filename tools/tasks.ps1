@@ -97,6 +97,7 @@ $tasks = [ordered]@{
     'fmt-check'    = 'Fail if anything is unformatted'
     'layers'       = 'Verify no crate depends on a layer above it'
     'sizes'        = 'Verify no file grows past its budget (CONV-029)'
+    'imports'      = 'Verify every block of imports is grouped by layer (CONV-039)'
     'check'        = 'Everything CI would run'
     'bench'        = 'Measure the brute-force vector scan (release only)'
     'image'        = 'Build the daemon image'
@@ -124,6 +125,7 @@ switch ($Task) {
     'fmt-check' { Invoke-Step 'cargo' @('fmt', '--all', '--', '--check') }
     'layers'    { Invoke-Step (Get-Bash) @('tools/watchdogs/check_layers.sh') }
     'sizes'     { Invoke-Step (Get-Bash) @('tools/watchdogs/check_file_size.sh') }
+    'imports'   { Invoke-Step (Get-Bash) @('tools/watchdogs/check_imports.sh') }
     'bench'     { Invoke-Step 'cargo' @('run', '-p', 'findery-bench', '--release') }
     'clean'     { Invoke-Step 'cargo' @('clean') }
 
@@ -134,6 +136,7 @@ switch ($Task) {
         $bash = Get-Bash
         Invoke-Step $bash @('tools/watchdogs/check_layers.sh')
         Invoke-Step $bash @('tools/watchdogs/check_file_size.sh')
+        Invoke-Step $bash @('tools/watchdogs/check_imports.sh')
         Write-Host 'check OK' -ForegroundColor Green
     }
 

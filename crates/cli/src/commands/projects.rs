@@ -2,13 +2,16 @@
 //! `findery export` — what the server knows about a project, its removal, and
 //! the single documents and exports that go in and out of its index.
 
+use std::io::Read;
+
+use findery_core::api::{AddDocument, ExportRequest};
+use findery_core::{Error, Result};
+
+use findery_client::Client;
+
 use crate::args::{DocAction, Scope};
 use crate::ui::render;
 use crate::workspace::scope::{current_project, resolve};
-use findery_client::Client;
-use findery_core::api::{AddDocument, ExportRequest};
-use findery_core::{Error, Result};
-use std::io::Read;
 
 /// `findery status`: the counters of one project.
 pub(crate) async fn status(client: &Client, scope: &Scope, json: bool) -> Result<()> {

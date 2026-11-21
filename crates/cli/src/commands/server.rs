@@ -1,10 +1,12 @@
 //! `findery health` and the hidden `findery daemon` — whether the server
 //! answers, and the lifecycle a service manager drives.
 
+use findery_core::Result;
+
+use findery_client::Client;
+
 use crate::args::DaemonAction;
 use crate::ui::render;
-use findery_client::Client;
-use findery_core::Result;
 
 /// `findery health`: whether the index answers, and what it serves.
 pub(crate) async fn health(client: &Client, json: bool) -> Result<()> {

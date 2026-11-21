@@ -11,11 +11,12 @@
 //! place and returns the first parse failure; nothing here touches the
 //! filesystem, so the whole surface is testable with an injected lookup.
 
+use std::collections::BTreeMap;
+
 use super::sections::{EmbedderBackend, StoreBackend};
 use crate::config::Config;
 use crate::support::path_map::Mount;
 use crate::{Error, Result};
-use std::collections::BTreeMap;
 
 /// One `FINDERY_*` variable, the dotted key it overrides, and how.
 pub struct EnvOverride {

@@ -1,12 +1,14 @@
 //! `findery search`: the request the arguments describe, and the hits printed.
 
-use crate::args::Scope;
-use crate::ui::render;
-use crate::workspace::scope::{parse_mode, resolve};
-use findery_client::Client;
 use findery_core::Result;
 use findery_core::embedding::prompt::QueryTask;
 use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchRequest};
+
+use findery_client::Client;
+
+use crate::args::Scope;
+use crate::ui::render;
+use crate::workspace::scope::{parse_mode, resolve};
 
 /// What `findery search` was asked for, past the project.
 pub(crate) struct Options {

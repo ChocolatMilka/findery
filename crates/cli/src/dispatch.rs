@@ -3,11 +3,13 @@
 //! INTENT: the table of commands reads as a table. A body that grows here is a
 //! body that belongs in its command's module, where its own tests live.
 
+use findery_core::Result;
+
+use findery_client::Client;
+
 use crate::args::{Cli, Command};
 use crate::commands;
 use crate::settings::endpoint::Endpoint;
-use findery_client::Client;
-use findery_core::Result;
 
 pub(crate) async fn dispatch(cli: Cli, endpoint: &Endpoint) -> Result<()> {
     let mut client = Client::new(&endpoint.base_url)?;

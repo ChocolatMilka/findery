@@ -6,12 +6,14 @@
 //! deepest root wins, an auto-derived id may not hijack an existing project,
 //! and a Windows verbatim prefix never reaches a message (CONV-029).
 
-use crate::args::Scope;
-use findery_client::Client;
 use findery_core::ids::ProjectId;
 use findery_core::model::SearchMode;
 use findery_core::support::path_map;
 use findery_core::{Error, Result};
+
+use findery_client::Client;
+
+use crate::args::Scope;
 
 /// Resolves the project a command applies to.
 ///

@@ -23,6 +23,11 @@
 
 pub mod daemon;
 
+use std::time::Duration;
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
 use findery_core::api::{
     AddDocument, BucketInfo, BucketRemoved, CreateBucket, Deleted, ErrorBody, ExportReport,
     ExportRequest, HealthReport, Job, JobState, PruneRequest, PushDocuments, RegisterProject,
@@ -31,9 +36,6 @@ use findery_core::api::{
 use findery_core::ids::ProjectId;
 use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
 use findery_core::{Error, Result};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use std::time::Duration;
 
 /// Default daemon address, matching the bundled Docker Compose stack.
 ///

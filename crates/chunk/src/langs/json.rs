@@ -6,13 +6,14 @@
 //! big for the budget becomes members, and then the KEY is the symbol, so
 //! "dependencies" or "scripts" is found by name and not only by vector.
 
-use crate::items::{LineIndex, Span};
-use crate::scanner::{Lexicon, is_comment_at, skip_opaque};
-use crate::sizing::{drop_empty, merge_small, split_windows};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
+
+use crate::items::{LineIndex, Span};
+use crate::scanner::{Lexicon, is_comment_at, skip_opaque};
+use crate::sizing::{drop_empty, merge_small, split_windows};
 
 /// How far the recursion goes before a member is windowed instead. A JSON
 /// document nested deeper than this is data, not structure worth naming.

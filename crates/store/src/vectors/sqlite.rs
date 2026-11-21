@@ -10,14 +10,17 @@
 //! Durability lives in the `vectors` table; the matrix is a cache rebuilt on
 //! demand, so a crash loses nothing.
 
-use crate::bucket::Bucket;
+use std::collections::HashMap;
+
+use parking_lot::RwLock;
+
 use findery_core::ids::{ChunkId, ProjectId};
 use findery_core::model::filter::CompiledFilter;
 use findery_core::model::{ScoredChunk, SearchFilter};
 use findery_core::traits::{VectorPayload, VectorRecord, VectorStore};
 use findery_core::{Error, Result};
-use parking_lot::RwLock;
-use std::collections::HashMap;
+
+use crate::bucket::Bucket;
 
 pub struct SqliteVectorStore {
     bucket: Bucket,
@@ -330,8 +333,9 @@ fn normalize(v: &mut [f32]) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use findery_core::model::{ChunkKind, Lang};
+
+    use super::*;
 
     fn payload(path: &str, kind: ChunkKind) -> VectorPayload {
         VectorPayload {

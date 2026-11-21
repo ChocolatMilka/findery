@@ -1,9 +1,11 @@
 //! `findery bucket` — the independent indexes the server holds.
 
+use findery_core::{Error, Result};
+
+use findery_client::Client;
+
 use crate::args::BucketAction;
 use crate::ui::render;
-use findery_client::Client;
-use findery_core::{Error, Result};
 
 pub(crate) async fn run(client: &Client, action: BucketAction, json: bool) -> Result<()> {
     match action {

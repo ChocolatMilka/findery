@@ -9,11 +9,12 @@
 //! The three gates still apply, they just move: the manifest replaces the
 //! bucket lookup, and the vector cache stays where it is, server-side.
 
+use std::collections::HashMap;
+
 use findery_core::api::{AddDocument, PruneRequest, PushDocuments};
 use findery_core::ids::{ContentHash, ProjectId};
 use findery_core::model::{Project, SyncReport};
 use findery_core::{Error, Result};
-use std::collections::HashMap;
 
 /// Documents per HTTP request.
 const BATCH_FILES: usize = 64;

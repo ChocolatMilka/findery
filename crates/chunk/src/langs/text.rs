@@ -1,10 +1,11 @@
 //! The fallback chunker: the whole file while it fits, line windows after that.
 
-use crate::sizing::{count_lines, split_windows};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
+
+use crate::sizing::{count_lines, split_windows};
 
 /// Line-window chunker used for `Other` languages and as the last resort when a
 /// syntactic chunker produces a fragment that is still too large.

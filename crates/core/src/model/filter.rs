@@ -5,10 +5,11 @@
 //! A backend may push part of the predicate down to its engine, but whatever it
 //! cannot push down it evaluates with THIS matcher.
 
+use globset::{Glob, GlobSet, GlobSetBuilder};
+
 use crate::model::SearchFilter;
 use crate::traits::VectorPayload;
 use crate::{Error, Result};
-use globset::{Glob, GlobSet, GlobSetBuilder};
 
 /// A [`SearchFilter`] with its globs compiled once per query.
 #[derive(Debug)]

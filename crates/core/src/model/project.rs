@@ -6,12 +6,14 @@
 //! it crosses the wire, and everything here is about a *project*, while what
 //! stayed behind is about chunks and runs.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 use crate::ids::{ContentHash, ProjectId};
 use crate::model::Lang;
 use crate::model::search::SearchFilter;
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Files and projects

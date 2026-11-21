@@ -6,12 +6,15 @@
 //! read: JSONL for a one-shot load, or a raw `float32` matrix plus sidecar
 //! metadata for `numpy.fromfile` and friends.
 
-use crate::bucket::Bucket;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
+
 use findery_core::ids::ProjectId;
 use findery_core::{Error, Result};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
+
+use crate::bucket::Bucket;
 
 /// On-disk shape of an export.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,9 +229,10 @@ impl<'a> Record<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use findery_core::ids::{ChunkId, ContentHash};
     use findery_core::model::{Chunk, ChunkKind, Lang, Project, ProjectSpec};
+
+    use super::*;
 
     async fn seeded() -> (Bucket, ProjectId, tempfile::TempDir) {
         let cat = Bucket::open_in_memory().expect("bucket");

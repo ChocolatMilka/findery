@@ -27,8 +27,9 @@ mod settings;
 mod ui;
 mod workspace;
 
-use args::Cli;
 use clap::Parser;
+
+use args::Cli;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
