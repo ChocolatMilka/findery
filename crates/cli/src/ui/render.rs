@@ -2,7 +2,7 @@
 //! reads as calls, not as calls interleaved with `println!`.
 
 use findery_core::Result;
-use findery_core::api::{BucketInfo, ExportReport, HealthReport, Job};
+use findery_core::api::{ExportReport, HealthReport, Job};
 use findery_core::model::{IndexStats, Project, SearchHit, SyncReport};
 
 /// Prints any serializable value as indented JSON.
@@ -47,35 +47,6 @@ pub fn projects(list: &[Project], current: Option<&str>) {
     }
     if current.is_none() {
         println!("\n(no project contains the current directory)");
-    }
-}
-
-/// Lists the buckets the daemon has open, marking the default one.
-///
-/// INTENT: a bucket whose recipe disagrees with the daemon keeps working for
-/// keyword search and can still be deleted, so the conflict is printed here as
-/// the repair instruction it carries rather than as a failure.
-pub fn buckets(list: &[BucketInfo]) {
-    if list.is_empty() {
-        println!("no bucket open — the daemon creates the default one at boot");
-        return;
-    }
-    for c in list {
-        println!(
-            "{} {:<22} {:>5} project(s) {:>9} chunk(s) {:>9.1} MB",
-            if c.is_default { "*" } else { " " },
-            c.name,
-            c.projects,
-            c.chunks,
-            c.disk_bytes as f64 / 1e6
-        );
-        println!("    {}", c.path);
-        if let Some(recipe) = &c.recipe {
-            println!("    built with {recipe}");
-        }
-        if let Some(conflict) = &c.conflict {
-            println!("    {conflict}");
-        }
     }
 }
 

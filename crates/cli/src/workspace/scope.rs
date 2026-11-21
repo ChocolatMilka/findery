@@ -1,10 +1,11 @@
 //! Which project a command applies to, and the path shapes that answer it.
 //!
-//! INTENT: split out of `run.rs`, whose own header admitted to two jobs —
-//! dispatching a command, and working out which project the caller is standing
-//! in. The second is the one with the rules worth reading on their own: the
-//! deepest root wins, an auto-derived id may not hijack an existing project,
-//! and a Windows verbatim prefix never reaches a message (CONV-029).
+//! INTENT: the resolution rule itself — `-p`, then the manifest walked
+//! upward, then the deepest registered root — lives in
+//! [`findery_client::resolve`], because the MCP bridge must answer the same way
+//! from the same directory. What stays here is the CLI's side of it: its flag,
+//! its repair sentence, and the id `init` derives without hijacking another
+//! project (CONV-029).
 
 use findery_core::ids::ProjectId;
 use findery_core::model::SearchMode;
@@ -23,43 +24,21 @@ use crate::args::Scope;
 /// the only one of the two that answers the same way offline, from a
 /// subdirectory, and in a repository somebody else cloned.
 pub(crate) async fn resolve(client: &Client, scope: &Scope) -> Result<ProjectId> {
-    if let Some(explicit) = &scope.project {
-        return ProjectId::new(explicit.clone());
-    }
-    if let Some(found) = crate::workspace::manifest::discover(
-        &std::env::current_dir()
-            .map_err(|e| Error::Invalid(format!("cannot read the current directory: {e}")))?,
-    )? && let Some(id) = found.config.project_id()
-    {
-        return Ok(id);
-    }
-    let projects = client.list_projects().await?;
-    current_project(&projects).ok_or_else(|| {
-        let cwd = cwd().unwrap_or_else(|_| "the current directory".into());
-        Error::Invalid(format!(
-            "no indexed project contains `{cwd}`\n  \
-             run `findery init` here, or name one with `-p <project>` (`findery projects` lists them)"
-        ))
-    })
+    let dir = std::env::current_dir()
+        .map_err(|e| Error::Invalid(format!("cannot read the current directory: {e}")))?;
+    client
+        .resolve_project(scope.project.as_deref(), &dir, REPAIR)
+        .await
 }
 
-/// The registered project whose root contains the current directory.
-///
-/// The deepest match wins, so a project nested inside another one is picked
-/// over its parent.
+/// What the CLI tells a caller standing in no project.
+const REPAIR: &str =
+    "run `findery init` here, or name one with `-p <project>` (`findery projects` lists them)";
+
+/// The registered project whose root contains the current directory, the
+/// deepest one first.
 pub(crate) fn current_project(projects: &[findery_core::model::Project]) -> Option<ProjectId> {
-    let cwd = cwd().ok()?;
-    let mut best: Option<(usize, ProjectId)> = None;
-    for project in projects {
-        if !path_map::is_within(&project.host_root, &cwd) {
-            continue;
-        }
-        let depth = path_map::normalize(&project.host_root).len();
-        if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-            best = Some((depth, project.id.clone()));
-        }
-    }
-    best.map(|(_, id)| id)
+    findery_client::resolve::deepest_root(projects, &cwd().ok()?)
 }
 
 /// Picks an id for a new project, refusing to hijack an existing one.
@@ -104,10 +83,5 @@ pub(crate) fn absolute(path: &str) -> Result<String> {
 }
 
 pub(crate) fn parse_mode(raw: &str) -> Option<SearchMode> {
-    match raw {
-        "hybrid" => Some(SearchMode::Hybrid),
-        "vector" => Some(SearchMode::Vector),
-        "keyword" => Some(SearchMode::Keyword),
-        _ => None,
-    }
+    SearchMode::parse(raw)
 }

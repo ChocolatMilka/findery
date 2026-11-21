@@ -5,7 +5,14 @@
 //! the embedder, and it decouples our release cadence from a client library
 //! that tracks the server's major versions.
 //!
-//! One collection per project, named `<prefix><project_id>`. Exact-match
+//! One collection per project and bucket member, named `<prefix><project_id>`
+//! for a file with no namespace and `<prefix><namespace>.<project_id>` for one
+//! with. The namespace is the member file's `meta.vector_namespace`: empty for
+//! a file written before members existed, so its collections keep the names
+//! they already have, and the recipe tag for a member — two models of the same
+//! width would otherwise write into one collection and be scored against each
+//! other. The `.` is outside both alphabets, so no namespace and id can spell
+//! another pair's name. Exact-match
 //! predicates (`lang`, `kind`) are pushed into the server filter; path globs
 //! and symbol substrings are evaluated locally after over-fetching, because
 //! Qdrant has no glob predicate and a wrong translation is worse than a second
@@ -27,23 +34,62 @@ const SERVICE: &str = "qdrant";
 const LOCAL_FILTER_FANOUT: usize = 8;
 const LOCAL_FILTER_CAP: usize = 1024;
 
+/// Longest namespace accepted: a recipe tag, with room.
+const NAMESPACE_MAX: usize = 32;
+/// Between a namespace and a project id: in neither alphabet.
+const NAMESPACE_SEPARATOR: char = '.';
+
+/// A vector store backed by a Qdrant cluster, one collection per project.
 pub struct QdrantStore {
     http: reqwest::Client,
     cfg: QdrantConfig,
+    /// Inserted between the configured prefix and the project id.
+    namespace: String,
+}
+
+/// Refuses a namespace that could not sit inside a collection name.
+///
+/// `[a-z0-9_-]`, at most [`NAMESPACE_MAX`] characters, empty allowed: the same
+/// alphabet a project id uses, so the collection name stays one path segment.
+pub fn check_namespace(namespace: &str) -> Result<()> {
+    let ok = namespace.len() <= NAMESPACE_MAX
+        && namespace
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "vector namespace `{namespace}`: expected at most {NAMESPACE_MAX} characters of \
+             a-z, 0-9, `_` and `-`"
+        )))
+    }
 }
 
 impl QdrantStore {
-    pub fn new(cfg: QdrantConfig) -> Result<Self> {
+    /// A client for the cluster `cfg` names, writing under `namespace`.
+    /// Nothing is contacted until the first call.
+    pub fn new(cfg: QdrantConfig, namespace: &str) -> Result<Self> {
+        check_namespace(namespace)?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .user_agent(concat!("findery/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Config(format!("qdrant http client: {e}")))?;
-        Ok(Self { http, cfg })
+        Ok(Self {
+            http,
+            cfg,
+            namespace: namespace.to_string(),
+        })
     }
 
     fn collection(&self, project: &ProjectId) -> String {
-        format!("{}{}", self.cfg.collection_prefix, project)
+        let prefix = &self.cfg.collection_prefix;
+        if self.namespace.is_empty() {
+            format!("{prefix}{project}")
+        } else {
+            format!("{prefix}{}{NAMESPACE_SEPARATOR}{project}", self.namespace)
+        }
     }
 
     fn url(&self, suffix: &str) -> String {
@@ -107,9 +153,9 @@ impl VectorStore for QdrantStore {
                 .and_then(Value::as_u64);
             return match size {
                 Some(s) if s as usize == dim => Ok(()),
-                Some(s) => Err(Error::Store(format!(
-                    "qdrant collection `{name}` stores {s}-dim vectors, embedder produces {dim}"
-                ))),
+                // Another embedding space, not a broken store: the same 409 and
+                // the same repair the SQLite matrix gives for the same conflict.
+                Some(s) => Err(Error::width_mismatch(project, s as usize, dim)),
                 None => Ok(()),
             };
         }
@@ -339,13 +385,55 @@ mod tests {
 
     #[test]
     fn collection_names_are_prefixed_per_project() {
-        let s = QdrantStore::new(QdrantConfig::default()).expect("client");
+        let s = QdrantStore::new(QdrantConfig::default(), "").expect("client");
         let p = ProjectId::new("axle").expect("id");
         assert_eq!(s.collection(&p), "findery_axle");
         assert_eq!(
             s.url("/collections/x"),
             "http://127.0.0.1:6333/collections/x"
         );
+    }
+
+    /// A member of another recipe gets its own collection; a file with no
+    /// namespace keeps the name its collections were created under.
+    #[test]
+    fn the_namespace_sits_between_the_prefix_and_the_project() {
+        let p = ProjectId::new("axle").expect("id");
+        let member = QdrantStore::new(QdrantConfig::default(), "zvpmtsdf").expect("client");
+        assert_eq!(member.collection(&p), "findery_zvpmtsdf.axle");
+        let legacy = QdrantStore::new(QdrantConfig::default(), "").expect("client");
+        assert_ne!(member.collection(&p), legacy.collection(&p));
+    }
+
+    /// Project ids may contain `_`, so a namespace glued to the id spelled the
+    /// name of a legacy collection: `findery_` + `abcdefgh_x` was
+    /// `findery_abcdefgh_` + `x`.
+    #[test]
+    fn no_namespace_and_id_spell_another_pairs_collection() {
+        let store = |ns: &str| QdrantStore::new(QdrantConfig::default(), ns).expect("client");
+        let id = |raw: &str| ProjectId::new(raw).expect("id");
+        let names = [
+            store("").collection(&id("abcdefgh_x")),
+            store("abcdefgh").collection(&id("x")),
+            store("abcdefgh_").collection(&id("x")),
+            store("abcdefgh").collection(&id("_x")),
+        ];
+        let distinct: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(distinct.len(), names.len(), "{names:?}");
+    }
+
+    #[test]
+    fn a_namespace_that_cannot_be_part_of_a_name_is_refused() {
+        for bad in ["../x", "A_", "a b", "a/b", &"x".repeat(NAMESPACE_MAX + 1)] {
+            assert_eq!(
+                check_namespace(bad).map_err(|e| e.code()),
+                Err("invalid"),
+                "{bad}"
+            );
+            assert!(QdrantStore::new(QdrantConfig::default(), bad).is_err());
+        }
+        assert!(check_namespace("").is_ok());
+        assert!(check_namespace("47m32eui_").is_ok());
     }
 
     #[test]

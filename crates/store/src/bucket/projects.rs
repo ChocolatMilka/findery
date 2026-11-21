@@ -261,6 +261,7 @@ fn read_project(row: &Row<'_>, bucket: &str) -> Result<Project> {
         id: ProjectId::new(id)?,
         name: row.get(1).map_err(sql)?,
         bucket: bucket.to_string(),
+        model: None,
         spec,
         host_root: row.get(3).map_err(sql)?,
         created_at: row.get(4).map_err(sql)?,
@@ -295,6 +296,7 @@ mod tests {
             id: ProjectId::new(id).expect("id"),
             name: id.to_string(),
             bucket: findery_core::model::DEFAULT_BUCKET.into(),
+            model: None,
             spec: ProjectSpec {
                 root: "/workspaces/demo".into(),
                 ..ProjectSpec::default()

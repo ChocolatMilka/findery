@@ -1,10 +1,9 @@
 //! Finding a project's manifest, reading it, and writing it.
 //!
 //! The filesystem half of [`findery_core::manifest`], which parses but opens
-//! nothing (CONV-006). Discovery walks up the way `package.json` lookup does.
-//!
-//! Only the CLI reads manifests: the MCP bridge names its project and lets the
-//! daemon answer, which keeps the bridge a wire rather than a working directory.
+//! nothing (CONV-006). Discovery — walking up the way `package.json` lookup
+//! does — lives in [`findery_client::resolve`], shared with the MCP bridge;
+//! writing a manifest is the CLI's alone, because only `init` owns one.
 
 use std::path::{Path, PathBuf};
 
@@ -12,32 +11,7 @@ use findery_core::Result;
 use findery_core::manifest::{BucketRef, MANIFEST_DIR, MANIFEST_FILE, ProjectConfig};
 use findery_core::model::Project;
 
-/// A manifest found on disk, and the directory that holds it.
-#[derive(Debug)]
-pub(crate) struct Found {
-    /// The project root: the directory containing `.findery/`.
-    pub(crate) root: PathBuf,
-    pub(crate) config: ProjectConfig,
-}
-
-/// The nearest manifest at or above `start`, if there is one.
-///
-/// A malformed manifest is an error and not a miss: searching on would answer
-/// about a different project than the one asked about.
-pub(crate) fn discover(start: &Path) -> Result<Option<Found>> {
-    let mut current = Some(start);
-    while let Some(dir) = current {
-        let candidate = dir.join(MANIFEST_DIR).join(MANIFEST_FILE);
-        if candidate.is_file() {
-            return Ok(Some(Found {
-                root: dir.to_path_buf(),
-                config: read_file(&candidate)?,
-            }));
-        }
-        current = dir.parent();
-    }
-    Ok(None)
-}
+use findery_client::resolve::read_manifest;
 
 /// The manifest's own path under a project root, for a message.
 pub(crate) fn path_of(root: &Path) -> PathBuf {
@@ -51,7 +25,7 @@ pub(crate) fn path_of(root: &Path) -> PathBuf {
 pub(crate) fn read_at(root: &Path) -> Result<ProjectConfig> {
     let path = path_of(root);
     match path.is_file() {
-        true => read_file(&path),
+        true => read_manifest(&path),
         false => Ok(ProjectConfig::default()),
     }
 }
@@ -126,17 +100,6 @@ pub(crate) fn write(root: &Path, config: &ProjectConfig) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn read_file(path: &Path) -> Result<ProjectConfig> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| findery_core::Error::Config(format!("cannot read {}: {e}", path.display())))?;
-    ProjectConfig::from_toml_str(&source)
-        .map_err(|e| findery_core::Error::Config(format!("{}: {e}", path.display())))
-        .and_then(|config| {
-            config.validate()?;
-            Ok(config)
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use findery_core::ids::ProjectId;
@@ -152,25 +115,18 @@ mod tests {
         }
     }
 
-    /// A command run in a subdirectory finds the project that owns it.
+    /// What `init` writes is found again from a subdirectory, by the shared
+    /// discovery the MCP bridge uses too.
     #[test]
-    fn a_nested_directory_finds_the_manifest_above_it() {
+    fn a_written_manifest_is_discovered_from_below_it() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let deep = dir.path().join("crates").join("core").join("src");
+        let deep = dir.path().join("crates").join("core");
         std::fs::create_dir_all(&deep).expect("mkdir");
         write(dir.path(), &starter()).expect("write");
-
-        let found = discover(&deep).expect("discover").expect("found");
-        assert_eq!(found.root, dir.path());
+        let found = findery_client::resolve::discover_manifest(&deep)
+            .expect("discover")
+            .expect("found");
         assert_eq!(found.config.project, "axle");
-    }
-
-    /// No manifest is a miss, not a failure: the caller falls back to asking the
-    /// daemon which project contains this directory.
-    #[test]
-    fn a_directory_with_no_manifest_is_a_miss_and_not_a_failure() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert!(discover(dir.path()).expect("discover").is_none());
     }
 
     /// The bucket the daemon answered with, relative when it lives inside the
@@ -181,6 +137,7 @@ mod tests {
             id: ProjectId::new("axle").expect("id"),
             name: "axle".into(),
             bucket: "axle".into(),
+            model: None,
             host_root: "D:/work/axle".into(),
             spec: findery_core::model::ProjectSpec::default(),
             created_at: 0,
@@ -233,18 +190,16 @@ mod tests {
         );
     }
 
-    /// A manifest that cannot be parsed names itself. Searching on from a
-    /// directory whose manifest is broken would answer about another project.
+    /// `init` refuses to build on a manifest it cannot read, naming the file.
     #[test]
-    fn a_malformed_manifest_names_itself_instead_of_being_skipped() {
+    fn a_malformed_manifest_at_the_root_names_itself() {
         let dir = tempfile::tempdir().expect("tempdir");
         let inner = dir.path().join(".findery");
         std::fs::create_dir_all(&inner).expect("mkdir");
         std::fs::write(inner.join("config.toml"), "projekt = \"typo\"\n").expect("write");
 
-        let err = discover(dir.path()).expect_err("must be refused");
-        let text = err.to_string();
-        assert!(text.contains("config.toml"), "{text}");
+        let err = read_at(dir.path()).expect_err("must be refused");
+        assert!(err.to_string().contains("config.toml"), "{err}");
     }
 
     /// A scope with an unusable glob is refused when the file is written, not
