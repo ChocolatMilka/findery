@@ -3,9 +3,10 @@
 //! INTENT: split out of `model/mod.rs` so that "what an indexed thing is" and
 //! "how you ask for one" stay separate concerns (CONV-029).
 
+use serde::{Deserialize, Serialize};
+
 use super::{Chunk, ChunkKind, Lang};
 use crate::ids::{ChunkId, ProjectId};
-use serde::{Deserialize, Serialize};
 
 /// Recall strategy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,10 +206,11 @@ pub struct SearchHit {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::embedding::prompt::{DEFAULT_QUERY_INSTRUCTION, QueryTask};
     use crate::model::ProjectSpec;
-    use std::collections::BTreeMap;
 
     fn request() -> SearchRequest {
         SearchRequest::new(

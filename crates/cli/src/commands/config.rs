@@ -4,10 +4,12 @@
 //! variable shadows it — is `settings`; this module is the command, and the one
 //! decision the command adds: a written setting replaces a running server.
 
+use findery_core::Result;
+
+use findery_client::Client;
+
 use crate::args::ConfigAction;
 use crate::settings;
-use findery_client::Client;
-use findery_core::Result;
 
 pub(crate) async fn run(client: &Client, action: ConfigAction, json: bool) -> Result<()> {
     let written = match action {

@@ -6,14 +6,16 @@
 //! search, re-sync for free, add, remove, export, and refuse what should be
 //! refused.
 
+use std::path::Path;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use findery_core::config::{Config, EmbedderBackend};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use std::path::Path;
 use tower::ServiceExt;
+
+use findery_core::config::{Config, EmbedderBackend};
 
 struct Harness {
     app: Router,

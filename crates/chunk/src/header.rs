@@ -7,8 +7,9 @@
 //! [`Lexicon`]. Holding them apart from the pipeline in [`crate::brace`] keeps
 //! that pipeline about splitting, and these helpers about reading.
 
-use crate::scanner::Lexicon;
 use findery_core::model::ChunkKind;
+
+use crate::scanner::Lexicon;
 
 /// Returns `(trivia, code)`: everything up to the first byte that is not a
 /// comment, an attribute, a decorator or whitespace, and the rest.

@@ -5,14 +5,17 @@
 //! by anyone who clones it. They belong together because the second is built
 //! from the first's *answer*, never from the request.
 
-use crate::ui::render;
-use crate::workspace::scope::{absolute, derive_id};
-use findery_client::Client;
+use std::path::Path;
+
 use findery_core::Result;
 use findery_core::api::RegisterProject;
 use findery_core::ids::ProjectId;
 use findery_core::manifest::BucketRef;
-use std::path::Path;
+
+use findery_client::Client;
+
+use crate::ui::render;
+use crate::workspace::scope::{absolute, derive_id};
 
 /// What the command line asked for.
 pub(crate) struct Options {

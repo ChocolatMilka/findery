@@ -4,12 +4,14 @@
 //! purpose. A keyword index that lags the chunk table returns hits pointing at
 //! text that no longer exists, which is worse than no keyword leg at all.
 
-use super::Bucket;
-use crate::bucket::schema::sql;
+use rusqlite::{Connection, Row, params};
+
 use findery_core::Result;
 use findery_core::ids::{ChunkId, ContentHash, ProjectId};
 use findery_core::model::{Chunk, ChunkKind, Lang, ScoredChunk};
-use rusqlite::{Connection, Row, params};
+
+use super::Bucket;
+use crate::bucket::schema::sql;
 
 /// Ids per `IN (...)` batch. SQLite's default variable limit is 999.
 const ID_BATCH: usize = 400;
@@ -290,8 +292,9 @@ pub fn fts_query(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use findery_core::model::{Origin, Project, ProjectSpec};
+
+    use super::*;
 
     fn chunk(id_seed: u32, path: &str, text: &str) -> Chunk {
         let project = ProjectId::new("demo").expect("id");

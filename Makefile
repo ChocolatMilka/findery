@@ -25,7 +25,10 @@ layers:           ## Verify no crate depends on a layer above it
 sizes:            ## Verify no file grows past its budget (CONV-029)
 	bash tools/watchdogs/check_file_size.sh
 
-check: fmt-check clippy test layers sizes  ## Everything CI would run
+imports:          ## Verify every block of imports is grouped by layer (CONV-039)
+	bash tools/watchdogs/check_imports.sh
+
+check: fmt-check clippy test layers sizes imports  ## Everything CI would run
 
 bench:            ## Measure the brute-force vector scan (release only)
 	cargo run -p findery-bench --release

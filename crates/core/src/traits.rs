@@ -4,11 +4,12 @@
 //! touching the indexing engine. Keep them narrow. Every method added here has
 //! to be honoured by every present and future backend.
 
+use async_trait::async_trait;
+
 use crate::Result;
 use crate::config::ChunkConfig;
 use crate::ids::{ChunkId, ProjectId};
 use crate::model::{ChunkKind, Lang, RawChunk, ScoredChunk, SearchFilter};
-use async_trait::async_trait;
 
 /// Turns text into an embedding vector.
 ///

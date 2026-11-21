@@ -197,8 +197,9 @@ pub fn explain(err: &findery_core::Error, server: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use findery_core::Error;
+
+    use super::*;
 
     #[test]
     fn a_refused_connection_names_the_fix() {

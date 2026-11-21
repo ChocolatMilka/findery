@@ -15,10 +15,12 @@
 //!   bucket, and a start that does not come up within the deadline fails with
 //!   that path in the message.
 
-use crate::Client;
-use findery_core::{Error, Result};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+use findery_core::{Error, Result};
+
+use crate::Client;
 
 /// How long to wait for a freshly started daemon to answer.
 ///

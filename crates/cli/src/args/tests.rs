@@ -1,7 +1,8 @@
 //! The argument surface parses what the documentation says it parses.
 
-use super::*;
 use findery_core::support::path_map;
+
+use super::*;
 
 #[test]
 fn the_deepest_matching_root_wins() {

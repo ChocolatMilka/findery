@@ -18,17 +18,20 @@ pub use findery_walk as walker;
 pub use buckets::BucketHandle;
 pub use jobs::progress::ProgressHandle;
 
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+
 use findery_core::config::Config;
 use findery_core::ids::ProjectId;
 use findery_core::model::{IndexStats, SearchHit, SearchRequest, SyncMode, SyncReport};
 use findery_core::support::path_map::PathMapper;
 use findery_core::traits::Embedder;
 use findery_core::{Error, Result};
+
 use findery_store::{ExportFormat, ExportReport};
-use parking_lot::RwLock;
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
-use std::sync::Arc;
 
 pub use jobs::{Job, JobRegistry, JobState};
 

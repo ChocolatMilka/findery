@@ -9,14 +9,17 @@
 pub mod progress;
 pub mod watch;
 
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
 use findery_core::model::SyncReport;
 use findery_core::support::clock::now_unix;
 use findery_core::{Error, Result};
-use parking_lot::Mutex;
+
 use progress::ProgressHandle;
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 // The job types are wire vocabulary and therefore live in L0, next to every
 // other shape a client can observe.

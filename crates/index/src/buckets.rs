@@ -12,17 +12,20 @@
 //! disagrees with the daemon about its embedding recipe is opened anyway and
 //! reported through [`BucketHandle::recipe_conflict`] — see there for why.
 
-use crate::Indexer;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::Arc;
+
 use findery_core::api::{BucketInfo, BucketRemoved};
 use findery_core::config::{Config, StoreConfig};
 use findery_core::ids::ProjectId;
 use findery_core::model::{DEFAULT_BUCKET, is_bucket_name};
 use findery_core::traits::VectorStore;
 use findery_core::{Error, Result};
+
 use findery_store::Bucket;
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
-use std::sync::Arc;
+
+use crate::Indexer;
 
 /// One bucket the daemon has open.
 pub struct BucketHandle {

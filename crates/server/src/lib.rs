@@ -10,20 +10,23 @@
 pub mod dto;
 pub mod routes;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::Request;
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use findery_core::Error;
-use findery_core::config::Config;
-use findery_index::Indexer;
-use findery_index::jobs::watch::WatchHandle;
 use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
+
+use findery_core::Error;
+use findery_core::config::Config;
+
+use findery_index::Indexer;
+use findery_index::jobs::watch::WatchHandle;
 
 /// Everything a handler can reach.
 #[derive(Clone)]

@@ -11,14 +11,16 @@
 //!
 //! Like [`crate::config`], this parses and validates but never opens a file.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 use crate::config::{StoreConfig, bucket_path};
 use crate::embedding::prompt::QueryTask;
 use crate::ids::ProjectId;
 use crate::model::filter::CompiledFilter;
 use crate::model::{SearchFilter, is_bucket_name};
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// The file name a project's manifest lives under, relative to the project root.
 pub const MANIFEST_DIR: &str = ".findery";

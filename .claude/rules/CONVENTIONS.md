@@ -86,6 +86,7 @@ user is in **French**.
 | **CONV-029** | **≤ 450 lines of code per file**, tests excluded. `#[cfg(test)]` modules live next to the code they lock down — that's a strength of Rust, not a smell, and they don't count. Past the budget, split **by responsibility** (see `findery-core/src/config/`, `findery-store/src/bucket/`). Mechanical truth: `bash tools/watchdogs/check_file_size.sh`. |
 | **CONV-030** | `//!` at the top of every module: what it does, and above all **why this way**. Every `pub` has its rustdoc. |
 | **CONV-031** | Comments say **INTENT / WHY**, never WHAT. `// increments i` is noise; `// INTENT: ordering the ties keeps every cache above this honest` is information. |
+| **CONV-039** | **Imports are grouped by layer**, one blank line between groups: `std` / `core` / `alloc`, then external crates, then `findery_core`, then the workspace crates by layer (L1, L2, L3), then `crate` / `super` / `self` and the file's own modules. rustfmt sorts inside a group. `pub use` re-exports are a surface and stay where they are. Mechanical truth: `bash tools/watchdogs/check_imports.sh`. |
 | **CONV-032** | **Zero time markers**: no "new", "refactored", "old system", no date, no orphan `TODO`. What's left to do goes in `.claude/roadmap/`. |
 
 ---
@@ -119,6 +120,7 @@ user is in **French**.
 □ bash tools/watchdogs/check_layers.sh
 □ zero .unwrap()/panic!/unreachable!/todo! outside #[cfg(test)]
 □ bash tools/watchdogs/check_file_size.sh   — ≤ 450 lines of code/file
+□ bash tools/watchdogs/check_imports.sh     — imports grouped by layer
 □ //! on every touched module, rustdoc on every pub
 □ happy path + ≥ 1 error case per unit shipped
 □ .claude/docs/<area>/ page up to date if an observable behavior changed
@@ -129,7 +131,7 @@ Reference commands — on a machine without `make`, `.\tools\tasks.ps1 <task>`
 runs the same list under the same names:
 
 ```bash
-make check          # fmt-check + clippy + test + layers + sizes
+make check          # fmt-check + clippy + test + layers + sizes + imports
 make bench          # measures the vector scan
 make up             # CPU stack (model + daemon)
 findery health          # what the daemon actually serves

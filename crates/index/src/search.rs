@@ -6,7 +6,8 @@
 //! neighbours. RRF fuses them on RANK rather than on score, so two
 //! incomparable scales (cosine in [-1,1], BM25 unbounded) need no calibration.
 
-use crate::Indexer;
+use std::collections::HashMap;
+
 use findery_core::Result;
 use findery_core::ids::ChunkId;
 use findery_core::model::filter::CompiledFilter;
@@ -14,7 +15,8 @@ use findery_core::model::{
     Chunk, Project, ScoredChunk, SearchFilter, SearchHit, SearchMode, SearchRequest,
 };
 use findery_core::traits::VectorPayload;
-use std::collections::HashMap;
+
+use crate::Indexer;
 
 /// Stands in for "this request named no scope".
 ///
@@ -224,8 +226,9 @@ fn truncate_text(text: &mut String, budget: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use findery_core::ids::ProjectId;
+
+    use super::*;
 
     fn scored(id: &str, score: f32) -> ScoredChunk {
         ScoredChunk {

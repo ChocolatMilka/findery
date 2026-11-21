@@ -10,11 +10,13 @@
 
 mod fixtures;
 
-use findery_chunk::Registry;
-use findery_core::config::ChunkConfig;
-use findery_core::model::{ChunkKind, Lang, RawChunk};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
+
+use findery_core::config::ChunkConfig;
+use findery_core::model::{ChunkKind, Lang, RawChunk};
+
+use findery_chunk::Registry;
 
 /// A budget that forces every container to be split, and the default one.
 const BUDGETS: &[usize] = &[120, 2400];

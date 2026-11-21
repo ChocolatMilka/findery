@@ -4,13 +4,15 @@
 //! once — how it is fed, which bucket holds its rows, what the walker must skip —
 //! and that reads better in one piece than interleaved with search and export.
 
-use crate::Indexer;
+use std::path::Path;
+
 use findery_core::api::RegisterProject;
 use findery_core::ids::ProjectId;
 use findery_core::model::{Project, ProjectSpec};
 use findery_core::support::clock::now_unix;
 use findery_core::{Error, Result};
-use std::path::Path;
+
+use crate::Indexer;
 
 impl Indexer {
     /// Registers a project, or updates it when the id already exists.

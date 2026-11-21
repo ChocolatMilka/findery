@@ -5,14 +5,17 @@
 //! same file three times in a second, so events are coalesced per path and only
 //! flushed after the directory has been quiet for `debounce`.
 
-use crate::Indexer;
-use findery_core::model::{Project, SyncMode};
-use findery_core::{Error, Result};
-use notify::{Event, EventKind, RecursiveMode, Watcher as _};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use notify::{Event, EventKind, RecursiveMode, Watcher as _};
+
+use findery_core::model::{Project, SyncMode};
+use findery_core::{Error, Result};
+
+use crate::Indexer;
 
 /// Live watch over one project. Dropping it stops the watcher.
 pub struct WatchHandle {
@@ -137,8 +140,9 @@ fn is_content_change(kind: &EventKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
+
+    use super::*;
 
     #[test]
     fn only_content_events_trigger_a_resync() {

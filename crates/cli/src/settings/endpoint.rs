@@ -10,9 +10,11 @@
 //! Kept apart from `dispatch`, whose one job is routing: naming where a command
 //! goes is a different question from deciding what it does.
 
-use crate::args::Cli;
-use findery_client::DEFAULT_BASE_URL;
 use findery_core::Result;
+
+use findery_client::DEFAULT_BASE_URL;
+
+use crate::args::Cli;
 
 pub(crate) struct Endpoint {
     pub(crate) base_url: String,

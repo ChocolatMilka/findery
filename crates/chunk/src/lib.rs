@@ -26,11 +26,12 @@ pub use langs::{
     PhpChunker, PythonChunker, RustChunker, TextChunker,
 };
 
+use std::borrow::Cow;
+
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{Lang, RawChunk};
 use findery_core::traits::Chunker;
-use std::borrow::Cow;
 
 /// Routes a file to the chunker registered for its language.
 pub struct Registry {

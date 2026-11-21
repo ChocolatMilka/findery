@@ -4,13 +4,16 @@
 //! `GET /v1/jobs/{id}` — and it lives here, at the edge. A streaming route would
 //! be a protocol in service of a progress bar.
 
-use findery_client::Client;
+use std::io::IsTerminal;
+use std::time::Duration;
+
+use indicatif::{ProgressBar, ProgressStyle};
+
 use findery_core::Result;
 use findery_core::api::{JobState, Progress, SyncRequest, SyncResponse};
 use findery_core::ids::ProjectId;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::io::IsTerminal;
-use std::time::Duration;
+
+use findery_client::Client;
 
 /// Each poll is an HTTP round trip and the bar moves in units of files, which
 /// take far longer to change than this.

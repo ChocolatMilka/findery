@@ -10,13 +10,14 @@
 //! extension receiver, which belongs to the name — `fun String.slug()` is
 //! found as `String.slug`.
 
-use crate::brace::{ItemMeta, Profile, chunk_with};
-use crate::header::annotated_header;
-use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
+
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::annotated_header;
+use crate::scanner::Lexicon;
 
 /// Splits Kotlin source and scripts into items.
 pub struct KotlinChunker;

@@ -6,11 +6,13 @@
 //! — which is exactly the failure mode we want, instead of a client silently
 //! dropping a field the server started sending.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 use crate::manifest::BucketRef;
 use crate::model::{SearchFilter, SyncMode, SyncReport};
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// `POST /v1/projects` — register or update a project.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

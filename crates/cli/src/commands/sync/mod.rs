@@ -9,13 +9,16 @@
 pub(crate) mod follow;
 pub(crate) mod push;
 
+use std::time::Duration;
+
+use findery_core::Result;
+use findery_core::api::{SyncRequest, SyncResponse, WatchRequest};
+
+use findery_client::Client;
+
 use crate::args::Scope;
 use crate::ui::render;
 use crate::workspace::scope::resolve;
-use findery_client::Client;
-use findery_core::Result;
-use findery_core::api::{SyncRequest, SyncResponse, WatchRequest};
-use std::time::Duration;
 
 /// What `findery sync` was asked for, past the project.
 pub(crate) struct Options {

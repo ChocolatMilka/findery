@@ -1,13 +1,16 @@
 //! Project and file records: the state incremental sync compares against disk.
 
-use super::Bucket;
-use crate::bucket::schema::sql;
+use std::collections::HashMap;
+
+use rusqlite::{Connection, Row, params};
+
 use findery_core::ids::{ContentHash, ProjectId};
 use findery_core::model::{FileRecord, Lang, Origin, Project, ProjectSpec};
 use findery_core::support::clock::now_unix;
 use findery_core::{Error, Result};
-use rusqlite::{Connection, Row, params};
-use std::collections::HashMap;
+
+use super::Bucket;
+use crate::bucket::schema::sql;
 
 impl Bucket {
     /// Creates or replaces a project definition.

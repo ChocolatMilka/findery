@@ -5,8 +5,9 @@
 //! append-only and numbered, and `user_version` is the single source of truth
 //! for where a database stands.
 
-use findery_core::{Error, Result};
 use rusqlite::Connection;
+
+use findery_core::{Error, Result};
 
 /// Schema version this binary writes. Bump it and append a migration.
 pub const SCHEMA_VERSION: i64 = 1;

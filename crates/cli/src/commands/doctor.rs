@@ -8,9 +8,10 @@
 //!
 //! It never starts anything. Reporting is its whole job.
 
+use findery_core::{Error, Result};
+
 use findery_client::Client;
 use findery_client::daemon;
-use findery_core::{Error, Result};
 
 /// One thing checked, and what to do when it is not right.
 struct Check {

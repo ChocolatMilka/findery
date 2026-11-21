@@ -55,7 +55,7 @@
 | **Store** | Embedded SQLite — exact in-RAM scan, **12 ms at 50k chunks**, no service to run — or Qdrant (HNSW) beyond ~150k chunks. Switching re-embeds nothing |
 | **Feeding it** | The daemon walks what it can see; a client walks what it cannot and pushes the contents. Same walk, same write path, so a container or another machine needs **nothing mounted** |
 | **Failure** | A file that cannot be read becomes a `warning` in the sync report, never a silent skip. A recipe conflict is raised by the operation that would mix, never at boot — the daemon stays up to say so |
-| **Verification** | `make check`: `fmt`, `clippy -D warnings`, 475 tests, `check_layers.sh` (the layer law), `check_file_size.sh` (≤ 450 lines of code per file). Performance claims are reproducible with `make bench` |
+| **Verification** | `make check`: `fmt`, `clippy -D warnings`, 475 tests, `check_layers.sh` (the layer law), `check_file_size.sh` (≤ 450 lines of code per file), `check_imports.sh` (imports grouped by layer). Performance claims are reproducible with `make bench` |
 | **Exit** | Your vectors export as JSONL / JSON / raw `float32`. The bucket is the durable truth, the vector store is reconstructible from it |
 
 ---

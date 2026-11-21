@@ -6,13 +6,15 @@
 //! is the principle: boundaries come from a lexical pass, never from a guess,
 //! and a `def` inside a triple-quoted string is not a definition.
 
-use super::module_name;
-use crate::sizing::{MAX_NESTING, drop_empty, merge_small, split_windows};
+use std::ops::Range;
+
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
-use std::ops::Range;
+
+use super::module_name;
+use crate::sizing::{MAX_NESTING, drop_empty, merge_small, split_windows};
 
 /// Splits Python source into items.
 pub struct PythonChunker;
