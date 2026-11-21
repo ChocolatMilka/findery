@@ -46,10 +46,10 @@ fn a_project_on_another_disk_is_reachable() {
 fn the_cli_parses_a_cwd_scoped_search() {
     let cli = Cli::try_parse_from(["findery", "search", "where", "is", "retry"]).expect("parse");
     match cli.command {
-        Command::Search { query, scope, .. } => {
-            assert_eq!(query.join(" "), "where is retry");
+        Command::Search(args) => {
+            assert_eq!(args.query.join(" "), "where is retry");
             assert!(
-                scope.project.is_none(),
+                args.scope.project.is_none(),
                 "no -p means: use the current directory"
             );
         }
@@ -61,7 +61,7 @@ fn the_cli_parses_a_cwd_scoped_search() {
 fn an_explicit_project_still_works_from_anywhere() {
     let cli = Cli::try_parse_from(["findery", "search", "-p", "axle", "retry"]).expect("parse");
     match cli.command {
-        Command::Search { scope, .. } => assert_eq!(scope.project.as_deref(), Some("axle")),
+        Command::Search(args) => assert_eq!(args.scope.project.as_deref(), Some("axle")),
         _ => panic!("expected a search"),
     }
 }
@@ -111,13 +111,105 @@ fn the_bucket_command_names_what_it_acts_on() {
     let cli = Cli::try_parse_from(["findery", "bucket", "rm", "work"]).expect("parse");
     match cli.command {
         Command::Bucket {
-            action: BucketAction::Rm { name, force },
+            action: BucketAction::Rm { name, force, model },
         } => {
             assert_eq!(name, "work");
+            assert!(!force);
+            assert!(model.is_none(), "the whole bucket unless a model is named");
+        }
+        _ => panic!("expected bucket rm"),
+    }
+}
+
+#[test]
+fn bucket_rm_can_name_one_model_file() {
+    let cli = Cli::try_parse_from(["findery", "bucket", "rm", "axle", "--model", "harrier"])
+        .expect("parse");
+    match cli.command {
+        Command::Bucket {
+            action: BucketAction::Rm { model, force, .. },
+        } => {
+            assert_eq!(model.as_deref(), Some("harrier"));
             assert!(!force);
         }
         _ => panic!("expected bucket rm"),
     }
+    assert!(
+        Cli::try_parse_from(["findery", "bucket", "rm", "axle", "--model"]).is_err(),
+        "--model takes an alias"
+    );
+}
+
+#[test]
+fn the_model_commands_parse_and_use_requires_an_alias() {
+    let parse =
+        |args: &[&str]| Cli::try_parse_from(std::iter::once("findery").chain(args.iter().copied()));
+    assert!(matches!(
+        parse(&["model", "ls"]).expect("ls").command,
+        Command::Model {
+            action: ModelAction::Ls
+        }
+    ));
+    match parse(&["model", "show"]).expect("show").command {
+        Command::Model {
+            action: ModelAction::Show { alias },
+        } => assert!(alias.is_none(), "the default model"),
+        _ => panic!("expected model show"),
+    }
+    match parse(&["model", "use", "harrier"]).expect("use").command {
+        Command::Model {
+            action: ModelAction::Use { alias },
+        } => assert_eq!(alias, "harrier"),
+        _ => panic!("expected model use"),
+    }
+    assert!(parse(&["model", "use"]).is_err(), "use names a model");
+    assert!(parse(&["model"]).is_err(), "model needs an action");
+}
+
+#[test]
+fn init_can_pin_a_model() {
+    let cli = Cli::try_parse_from(["findery", "init", "--model", "qwen3"]).expect("parse");
+    match cli.command {
+        Command::Init { model, .. } => assert_eq!(model.as_deref(), Some("qwen3")),
+        _ => panic!("expected init"),
+    }
+    let cli = Cli::try_parse_from(["findery", "init"]).expect("parse");
+    assert!(matches!(cli.command, Command::Init { model: None, .. }));
+}
+
+#[test]
+fn detach_and_rm_resolve_the_project_the_same_way() {
+    for verb in ["detach", "rm"] {
+        let here = Cli::try_parse_from(["findery", verb]).expect("parse");
+        let named = Cli::try_parse_from(["findery", verb, "-p", "axle"]).expect("parse");
+        let scope = |c: Command| match c {
+            Command::Detach { scope } | Command::Rm { scope } => scope.project,
+            _ => panic!("expected {verb}"),
+        };
+        assert_eq!(scope(here.command), None, "{verb}: the current directory");
+        assert_eq!(scope(named.command).as_deref(), Some("axle"), "{verb}");
+    }
+    assert!(Cli::try_parse_from(["findery", "detach", "--yes"]).is_err());
+}
+
+/// The two verbs differ in one thing, and each says it in its first line.
+#[test]
+fn detach_and_rm_say_how_they_differ_in_one_line_each() {
+    use clap::CommandFactory;
+    let surface = Cli::command();
+    let about = |name: &str| {
+        surface
+            .find_subcommand(name)
+            .and_then(|c| c.get_about())
+            .map(|a| a.to_string())
+            .unwrap_or_default()
+    };
+    assert!(
+        about("detach").contains("keeping its index"),
+        "{}",
+        about("detach")
+    );
+    assert!(about("rm").contains("Delete"), "{}", about("rm"));
 }
 
 #[test]
@@ -133,34 +225,6 @@ fn no_daemon_address_is_baked_into_the_argument_surface() {
 fn the_command_surface_stays_parseable() {
     use clap::CommandFactory;
     Cli::command().debug_assert();
-}
-
-/// The `--ext` help spells the default list out, so it must be the list:
-/// a language added to the chunkers and not to the help is one a user
-/// never learns is indexed.
-#[test]
-fn the_init_help_lists_every_default_extension() {
-    use clap::CommandFactory;
-    let surface = Cli::command();
-    let init = surface
-        .get_subcommands()
-        .find(|c| c.get_name() == "init")
-        .expect("`init` exists");
-    let ext = init
-        .get_arguments()
-        .find(|a| a.get_id() == "ext")
-        .expect("`init --ext` exists");
-    let help = ext
-        .get_long_help()
-        .or(ext.get_help())
-        .expect("documented")
-        .to_string();
-    let listed = help.split('`').nth(1).expect("the list is quoted");
-    assert_eq!(
-        listed.split(',').collect::<Vec<_>>(),
-        findery_core::config::DEFAULT_EXTENSIONS,
-        "{help}"
-    );
 }
 
 /// The spelling every document uses has to be the spelling that works.
@@ -180,6 +244,33 @@ fn the_no_spawn_variable_accepts_the_spelling_we_document() {
             .expect("`FINDERY_NO_SPAWN=1` is the documented spelling")
             .no_spawn,
         "the documented value must set the flag"
+    );
+}
+
+/// The `--ext` help spells the default list out, and a list written by hand
+/// drifts: it once stopped at `json` while `axle` was already walked.
+#[test]
+fn the_init_help_names_every_default_extension() {
+    use clap::CommandFactory;
+    let surface = Cli::command();
+    let init = surface
+        .get_subcommands()
+        .find(|c| c.get_name() == "init")
+        .expect("an init command");
+    // The list is detail, so it lives in the long help; `-h` stays one line.
+    let help = init
+        .get_arguments()
+        .find(|a| a.get_id() == "ext")
+        .and_then(|a| a.get_long_help())
+        .map(|h| h.to_string())
+        .expect("--ext documents itself");
+    let listed = help
+        .split('`')
+        .nth(1)
+        .expect("the default list is written between backticks");
+    assert_eq!(
+        listed.split(',').collect::<Vec<_>>(),
+        findery_core::config::DEFAULT_EXTENSIONS,
     );
 }
 

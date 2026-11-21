@@ -9,7 +9,7 @@
 // nothing of its own: a DTO that existed only here would be a shape the Rust
 // client and the MCP bridge could not see.
 pub use findery_core::api::{
-    AddDocument, Deleted, ErrorBody, ExportRequest, PruneRequest, PushDocuments, Removed, Stopping,
+    AddDocument, ErrorBody, ExportRequest, PruneRequest, PushDocuments, Removed, Stopping,
     SyncRequest, SyncResponse, WatchRequest, Watching,
 };
 use serde::Deserialize;
@@ -18,4 +18,13 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize)]
 pub struct DocumentQuery {
     pub path: String,
+}
+
+/// `DELETE /v1/buckets/{name}?model=...` — with a model, only that model's
+/// file of the bucket goes.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BucketQuery {
+    #[serde(default)]
+    pub model: Option<String>,
 }

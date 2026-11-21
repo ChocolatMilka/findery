@@ -63,7 +63,10 @@ laid out inside: `.claude/docs/overview/layers.md` (*Inside each crate*).
    changed PLACE is another matter, since `content_hash` covers the text
    actually embedded, `path:` header included — the path is signal, and
    paying for it is the point. That's the project's central economics.
-2. **`recipe = "<model>:<dim>"`.** Changing model opens a new space; a bucket
+2. **`recipe = "<model>:<dim>"`**, built only by `Recipe::of` (the profile's
+   `weights` stand in for `<model>` when set, and a non-default document
+   template adds `|doc=<fingerprint>`); its `RecipeTag` is the 8-character
+   base32 name of the space on disk. Changing model opens a new space; a bucket
    refuses to mix two recipes — at the **operation** that would mix them, never
    at boot, so the daemon stays up to report the conflict and to delete the
    bucket the message recommends.
@@ -116,7 +119,9 @@ findery search "where backoff is handled"   # project read from the manifest, wa
 findery search --scope api "…"              # a named restriction the manifest declares
 findery health                  # whether the index answers, and what it serves
 findery doctor                  # what is missing, and the command that fixes it
-findery bucket ls               # the indexes this server serves, and where each file is
+findery bucket ls               # the indexes this server serves, one line per model file
+findery model ls / use <alias>  # the model profiles; switch the default now, no restart
+findery detach / findery rm     # off the server keeping the index (unlocked) / deleting it
 findery config set model …      # settings, validated and written to <data_dir>/config.toml
 findery config set server …     # the server address — no FINDERY_SERVER_URL needed
 finderyd --check                # the config as actually resolved
@@ -177,6 +182,7 @@ finderyd --check                # the config as actually resolved
 | `println!` in `findery-mcp` | `tracing` on stderr | stdout belongs to the protocol |
 | A recipe conflict raised at boot | raised at the operation that would mix | the boot refusal locks the `bucket rm` its own message recommends |
 | Deleting a bucket with a filesystem call | through the daemon | on Windows a SQLite file a live process holds open cannot be removed |
+| A bucket file closed by dropping its last `Arc` | `Bucket::close()` | a search or a finished job still holding a clone kept the OS lock, and the file could not be deleted |
 | A project's bucket as a column | it *is* which file holds its row | a column is a second record of the same fact, free to disagree |
 | A perf claim with no number | `make bench` | CONV-035 |
 

@@ -10,7 +10,6 @@
 pub mod dto;
 pub mod routes;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -18,7 +17,6 @@ use axum::extract::Request;
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use parking_lot::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -26,7 +24,6 @@ use findery_core::Error;
 use findery_core::config::Config;
 
 use findery_index::Indexer;
-use findery_index::jobs::watch::WatchHandle;
 
 /// Everything a handler can reach.
 #[derive(Clone)]
@@ -38,8 +35,6 @@ pub struct AppState {
     /// no pid anyone recorded. Asking it to leave over its own API is the only
     /// way that works identically on every platform.
     pub shutdown: Arc<tokio::sync::Notify>,
-    /// Live watchers, one per project. Dropping a handle stops its task.
-    pub watches: Arc<Mutex<HashMap<String, WatchHandle>>>,
     pub token: Option<Arc<str>>,
 }
 
@@ -48,7 +43,6 @@ impl AppState {
         let token = indexer.cfg.server.api_token.clone().map(Arc::from);
         Self {
             indexer,
-            watches: Arc::new(Mutex::new(HashMap::new())),
             token,
             shutdown: Arc::new(tokio::sync::Notify::new()),
         }

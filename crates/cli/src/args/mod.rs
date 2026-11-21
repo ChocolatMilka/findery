@@ -1,51 +1,73 @@
 //! The argument surface: what clap parses, and nothing else.
 //!
-//! A `///` line here is user-facing text — clap prints it. The bodies live in
-//! `commands`, reached through `dispatch`.
+//! A `///` line here is user-facing text — clap prints it — so its first
+//! paragraph is the one-line summary `-h` shows, the rest is what `--help`
+//! adds, and every reason a field is shaped the way it is goes in a `//`
+//! comment. The bodies live in `commands`, reached through `dispatch`.
 
 mod actions;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use actions::{BucketAction, ConfigAction, DaemonAction, DocAction};
+pub(crate) use actions::{BucketAction, ConfigAction, DaemonAction, DocAction, ModelAction};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueHint};
+
+/// The heading every subcommand lists the global options under, below its own.
+const GLOBAL: &str = "Global options";
 
 #[derive(Parser)]
 #[command(
     name = "findery",
+    bin_name = "findery",
     version,
-    about = "Index and search your codebases with a local semantic index",
-    after_help = "Most commands take no project argument: the one containing the current \
-                  directory is used. Start with `findery init` inside a repository."
+    about = "Index and search your codebases with a local semantic index"
 )]
 pub(crate) struct Cli {
-    /// Server address. Defaults to `server.url` in the settings file, then to a
-    /// local server started on demand.
-    #[arg(long, env = "FINDERY_SERVER_URL", global = true)]
+    /// Server address [default: the settings, else local]
+    ///
+    /// `server.url` in the settings file, else a local server started on demand.
+    #[arg(
+        long,
+        env = "FINDERY_SERVER_URL",
+        global = true,
+        value_name = "URL",
+        value_hint = ValueHint::Url,
+        help_heading = GLOBAL
+    )]
     pub(crate) server: Option<String>,
 
-    /// Bearer token, when the server requires one. Defaults to `server.api_token`
-    /// in the settings file.
-    #[arg(long, env = "FINDERY_API_TOKEN", global = true)]
+    /// Bearer token [default: `server.api_token`]
+    ///
+    /// Only for a server that requires one.
+    // `hide_env_values`: the help must never print a secret that happens to be
+    // exported in the shell reading it.
+    #[arg(
+        long,
+        env = "FINDERY_API_TOKEN",
+        global = true,
+        value_name = "TOKEN",
+        hide_env_values = true,
+        help_heading = GLOBAL
+    )]
     pub(crate) token: Option<String>,
 
-    /// Print the raw JSON answer instead of the formatted one.
-    #[arg(long, global = true)]
+    /// Print the raw JSON answer, for a script
+    #[arg(long, global = true, help_heading = GLOBAL)]
     pub(crate) json: bool,
 
-    /// Never start the server; fail instead if it is not already running.
-    ///
-    /// INTENT: `BoolishValueParser` is here for the environment variable, not
-    /// for the flag. Everything that documents this setting — the compose file,
-    /// the page you are reading — writes `FINDERY_NO_SPAWN=1`, and clap's
-    /// default parser accepts only `true` and `false`. A documented spelling
-    /// that is rejected at startup is worse than no spelling.
+    /// Never start a server; fail if none is running
+    // `BoolishValueParser` is here for the environment variable, not for the
+    // flag. Everything that documents this setting — the compose file, the
+    // usage page — writes `FINDERY_NO_SPAWN=1`, and clap's default parser
+    // accepts only `true` and `false`. A documented spelling that is rejected
+    // at startup is worse than no spelling.
     #[arg(
         long,
         global = true,
         env = "FINDERY_NO_SPAWN",
-        value_parser = clap::builder::BoolishValueParser::new()
+        value_parser = clap::builder::BoolishValueParser::new(),
+        help_heading = GLOBAL
     )]
     pub(crate) no_spawn: bool,
 
@@ -56,153 +78,143 @@ pub(crate) struct Cli {
 /// Selects a project: explicit id, or the one containing the current directory.
 #[derive(clap::Args, Clone, Default)]
 pub(crate) struct Scope {
-    /// Project id. Defaults to the project containing the current directory.
-    #[arg(short, long, global = true)]
+    /// Project id [default: the project containing the current directory]
+    #[arg(short, long, global = true, value_name = "PROJECT")]
     pub(crate) project: Option<String>,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Register the current directory (or PATH) as a project.
+    /// Register a directory as a project, the current one by default
     ///
-    /// Indexing is a separate step, so a repository can be registered — and its
-    /// bucket chosen — before a model is reachable.
+    /// Indexing is a separate step — `findery sync`, or `--sync` here — so a
+    /// repository can be registered, and its bucket chosen, before a model is
+    /// reachable.
     Init {
-        /// Directory to index. Defaults to the current one.
-        #[arg(default_value = ".")]
+        /// Directory to register
+        #[arg(default_value = ".", value_name = "PATH", value_hint = ValueHint::DirPath)]
         path: String,
-        /// Project id. Derived from the directory name when omitted.
-        #[arg(long)]
+        /// Project id [default: derived from the directory name]
+        #[arg(long, value_name = "ID")]
         id: Option<String>,
-        /// Extensions to index, comma-separated. Defaults to every
-        /// language the chunkers know:
-        /// `rs,md,toml,js,mjs,cjs,ts,py,php,json,axle,java,kt,kts,go`.
-        #[arg(long, value_delimiter = ',')]
-        ext: Option<Vec<String>>,
-        /// Bucket to hold this project, by name. Defaults to a bucket inside
-        /// the project, named after it.
+        /// Extensions to index, comma-separated [default: every known language]
         ///
-        /// Chosen once: every later command follows the project, so nobody has
-        /// to remember which index a directory belongs to.
-        #[arg(long)]
+        /// The default list: `rs,md,toml,js,mjs,cjs,ts,py,php,json,axle,java,kt,kts,go`.
+        #[arg(long, value_name = "EXT,…", value_delimiter = ',')]
+        ext: Option<Vec<String>>,
+        /// Bucket to hold the project [default: one inside it, named after it]
+        // Chosen once: every later command follows the project, so nobody has
+        // to remember which index a directory belongs to.
+        #[arg(long, value_name = "NAME")]
         bucket: Option<String>,
-        /// Index it now instead of waiting for `findery sync`.
+        /// Model to pin the project to [default: follow the default model]
+        #[arg(long, value_name = "ALIAS")]
+        model: Option<String>,
+        /// Index it now instead of waiting for `findery sync`
         #[arg(long)]
         sync: bool,
-        /// Send file contents instead of letting the server read them.
+        /// Send file contents instead of letting the server read them
+        ///
         /// Chosen automatically when the server cannot see the directory.
         #[arg(long)]
         push: bool,
     },
-    /// Search the index.
-    Search {
-        /// Query words; joined with spaces.
-        #[arg(required = true)]
-        query: Vec<String>,
-        #[command(flatten)]
-        scope: Scope,
-        #[arg(short, long, default_value_t = 8)]
-        k: usize,
-        #[arg(long, value_parser = ["hybrid", "vector", "keyword"])]
-        mode: Option<String>,
-        /// Retrieval intent sent to the instruction-aware model.
-        #[arg(long, value_parser = ["code", "symbol", "usage", "docs", "test", "config", "error"])]
-        task: Option<String>,
-        /// Free-form instruction for the embedding model, overriding --task.
-        ///
-        /// The first half of what the model reads as "Instruct: …\nQuery: …";
-        /// the query is the other half, and both are always sent.
-        #[arg(long, alias = "instruct")]
-        instruction: Option<String>,
-        /// A named restriction the project declares, narrowing this same index.
-        ///
-        /// Declared in `.findery/config.toml`, applied before scoring — never a
-        /// second index, never a cut applied after the ranking.
-        #[arg(long = "scope")]
-        search_scope: Option<String>,
-        #[arg(long = "path")]
-        paths: Vec<String>,
-        #[arg(long = "lang")]
-        langs: Vec<String>,
-        #[arg(long = "kind")]
-        kinds: Vec<String>,
-        /// Per-excerpt character budget.
-        #[arg(long)]
-        max_chars: Option<usize>,
-    },
-    /// Synchronize a project with the filesystem.
+    /// Search the current project: by meaning, by exact words, or both
+    Search(Box<crate::commands::search::SearchArgs>),
+    /// Bring the index up to date with the files
     Sync {
         #[command(flatten)]
         scope: Scope,
-        /// Rebuild every file, ignoring the metadata and hash gates.
+        /// Re-read every file; vectors already computed are still reused
         #[arg(long)]
         full: bool,
-        /// Limit the sync to these project-relative paths.
-        #[arg(long = "path")]
+        /// Only these project-relative paths; repeatable
+        #[arg(long = "path", value_name = "PATH", value_hint = ValueHint::AnyPath)]
         paths: Vec<String>,
-        /// Return immediately with a job id.
+        /// Return at once with a job id instead of following the run
         #[arg(long)]
         background: bool,
     },
-    /// File, chunk and vector counts.
+    /// File, chunk and vector counts for a project
     Status {
         #[command(flatten)]
         scope: Scope,
     },
-    /// List indexed projects.
+    /// List the registered projects, the current one marked
     Projects,
-    /// Manage buckets: independent indexes under one server.
+    /// Buckets: independent indexes under one server
     Bucket {
         #[command(subcommand)]
         action: BucketAction,
     },
-    /// Remove a project, its chunks and its vectors.
+    /// Embedding models: list them, inspect one, switch the default
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
+    /// Take a project off the server, keeping its index on disk, unlocked
+    ///
+    /// `findery init` in the project attaches it again, instantly.
+    Detach {
+        #[command(flatten)]
+        scope: Scope,
+    },
+    /// Delete a project and its index — its bucket files too, unless shared
+    ///
+    /// The manifest (`.findery/config.toml`) is kept.
     Rm {
         #[command(flatten)]
         scope: Scope,
     },
-    /// Add or drop a single document.
+    /// Add or drop a single document
     Doc {
         #[command(subcommand)]
         action: DocAction,
     },
-    /// Export vectors and metadata.
+    /// Export a project's vectors and metadata
     Export {
         #[command(flatten)]
         scope: Scope,
+        /// File format to write
         #[arg(long, default_value = "jsonl", value_parser = ["jsonl", "json", "binary"])]
         format: String,
-        #[arg(long)]
+        /// Directory to write into [default: chosen by the server]
+        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
         dir: Option<String>,
     },
-    /// Turn filesystem watching on or off.
+    /// Re-sync on every file change, or stop doing so
     Watch {
         #[command(flatten)]
         scope: Scope,
+        /// Stop watching
         #[arg(long)]
         off: bool,
-        #[arg(long, default_value_t = 1500)]
+        /// Quiet time after a change before re-syncing, in milliseconds
+        #[arg(long, value_name = "MS", default_value_t = 1500)]
         debounce_ms: u64,
     },
-    /// What the index answers, and what it serves.
+    /// Whether the index answers, and what it serves
     Health,
-    /// Check the whole setup and say what to fix.
+    /// Check the whole setup and say what to fix
     Doctor,
-    /// Read and write the settings, without touching your shell.
+    /// Read and write the settings, without touching your shell
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
-    /// Start, stop or inspect the background server.
-    ///
-    /// Hidden from `--help`: it starts itself, it stops itself, and the only
-    /// reader of this command is a service manager or someone debugging one.
-    /// Showing it invites the user to manage a process they never asked for.
+    // Hidden from `--help`: it starts itself, it stops itself, and the only
+    // reader of this command is a service manager or someone debugging one.
+    // Showing it invites the user to manage a process they never asked for.
+    /// Start, stop or inspect the background server
     #[command(hide = true)]
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// List background jobs, or show one.
-    Jobs { id: Option<String> },
+    /// List background jobs, or show one
+    Jobs {
+        /// A job id, as `sync --background` prints it [default: every job]
+        #[arg(value_name = "JOB")]
+        id: Option<String>,
+    },
 }

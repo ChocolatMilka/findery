@@ -1,99 +1,139 @@
 //! # findery-index — layer L2
 //!
-//! The engine. It owns the buckets, the vector stores, the embedder and the
+//! The engine. It owns the buckets, the vector stores, the embedders and the
 //! chunkers, and it is the only place where those four meet. Everything above —
-//! HTTP, MCP, CLI — is a thin translation of [`Indexer`]'s methods.
+//! HTTP, MCP, CLI — is a thin translation of [`Indexer`]'s methods, jobs and
+//! watchers included: a transport validates, calls one method, serializes.
 //!
 //! INTENT: keeping orchestration in one layer is what lets the transports stay
-//! dumb. A bug in "what sync does" has exactly one home.
+//! dumb. A bug in "what sync does" has exactly one home — and so does "what
+//! `detach` must wait for", which is why the jobs and the watchers live here,
+//! where a drain can reach them.
 
-pub mod buckets;
+pub mod gates;
 pub mod jobs;
+mod lifecycle;
+pub mod models;
 pub mod projects;
 pub mod search;
+pub mod storage;
 pub mod sync;
 
 pub use findery_walk as walker;
 
-pub use buckets::BucketHandle;
+pub use gates::{Access, Lease};
 pub use jobs::progress::ProgressHandle;
+pub use jobs::{Job, JobRegistry, JobState};
+pub use models::EmbedderPool;
+pub use storage::families::{BucketFamily, BucketHandle};
+
+// Wire vocabulary lives in L0 and is re-exported here so callers keep one
+// import path.
+pub use findery_core::api::{HealthReport, RegisterProject};
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use findery_core::config::Config;
 use findery_core::ids::ProjectId;
-use findery_core::model::{IndexStats, SearchHit, SearchRequest, SyncMode, SyncReport};
+use findery_core::model::{SearchRequest, SyncMode, SyncReport};
 use findery_core::support::path_map::PathMapper;
-use findery_core::traits::Embedder;
 use findery_core::{Error, Result};
 
-use findery_store::{ExportFormat, ExportReport};
+use findery_store::files::registry::Registry;
 
-pub use jobs::{Job, JobRegistry, JobState};
+use gates::ProjectGate;
+use jobs::watch::WatchHandle;
 
-// `RegisterProject` and `HealthReport` are wire vocabulary: they live in
-// L0 and are re-exported here so callers keep one import path.
-pub use findery_core::api::{HealthReport, RegisterProject};
-
+/// The engine: every operation a transport exposes is one of its methods.
 pub struct Indexer {
     pub cfg: Config,
-    pub embedder: Arc<dyn Embedder>,
     pub chunkers: findery_chunk::Registry,
     pub jobs: JobRegistry,
-    /// Every bucket the daemon has open, keyed by name. Rebuilt from the
-    /// filesystem at boot, then maintained only by the daemon's own writes.
-    buckets: RwLock<BTreeMap<String, Arc<BucketHandle>>>,
-    /// Which bucket holds each registered project. A duplicate takes a
-    /// hand-edited database, and [`Indexer::home_of`] takes the first in order.
+    /// One embedder per model profile, and which profile is the default.
+    pool: Arc<EmbedderPool>,
+    /// Every bucket family the daemon has open, by name. Rebuilt from the disk
+    /// at boot, then maintained only by the daemon's own writes.
+    families: RwLock<BTreeMap<String, Arc<BucketFamily>>>,
+    /// Which family each ATTACHED project lives in. A detached project has no
+    /// home: that is what keeps it out of every listing and every lease.
     homes: RwLock<HashMap<ProjectId, String>>,
-    /// Buckets on disk that could not be opened at boot, as reasons. Set once:
-    /// the daemon keeps serving the others and says so in [`Indexer::health`].
-    broken: Vec<String>,
+    /// The door of each project every operation passes, and a drain closes.
+    gates: Mutex<HashMap<ProjectId, Arc<ProjectGate>>>,
+    /// Live watchers, one per project. Dropping a handle stops its task.
+    watches: Mutex<HashMap<ProjectId, WatchHandle>>,
+    /// Buckets on disk that could not be opened, at boot or when attached
+    /// again, as reasons. The daemon keeps serving the others and says so in
+    /// [`Indexer::health`].
+    broken: Mutex<Vec<String>>,
+    /// What boot did on its own that a user should hear about.
+    notices: Vec<String>,
     mapper: PathMapper,
 }
 
 impl Indexer {
-    /// Wires everything together: the width the vectors already have, then the
-    /// embedder, then every bucket on disk.
+    /// Boots the engine over the data directory `cfg` names.
+    ///
+    /// The order is the point, each step a precondition of the next:
+    ///
+    /// 1. the vocabulary migration (`catalog.db` → `bucket.db`);
+    /// 2. `buckets.toml`;
+    /// 3. the removals a previous run left unfinished — before anything opens a
+    ///    file a removal still has to delete;
+    /// 4. legacy adoption (`bucket.db` → its recipe's member), on the blocking
+    ///    pool, before anything opens a handle that would hold the file;
+    /// 5. a scan of every family, peeking at the recipe each file records;
+    /// 6. the embedder pool — the default profile built now, at the width its
+    ///    buckets remember when its runtime is down;
+    /// 7. the families opened, skipping the ones whose projects are all
+    ///    detached, and each project's home picked.
     pub async fn new(cfg: Config) -> Result<Arc<Self>> {
+        Self::with_builder(cfg, models::default_builder()).await
+    }
+
+    /// [`Indexer::new`] with the embedder builder swapped, for tests.
+    pub(crate) async fn with_builder(cfg: Config, build: models::BuildFn) -> Result<Arc<Self>> {
         cfg.validate()?;
-        // Before anything opens a handle: an install that predates the current
-        // file names is moved onto them, so every later read sees the same files.
         findery_store::migrate_legacy_layout(&cfg.store)?;
-        // The width comes from the disk first: an index built earlier lets the
-        // daemon start even while the embedding runtime is down, which is what
-        // keeps `findery doctor` answerable.
-        let known_dim = buckets::remembered_dim(&cfg.store, &cfg.embedder.model).await?;
-        let embedder = findery_embed::build(&cfg.embedder, known_dim).await?;
-        let recipe = format!("{}:{}", embedder.model(), embedder.dim());
-        // A bucket built with another recipe is opened anyway: the conflict is
-        // refused at the operation that would misuse it, never at boot.
-        let opened = buckets::open_all(&cfg, &recipe, embedder.dim()).await?;
-        for reason in &opened.broken {
+        let (registry, mut broken) = Registry::load(&cfg.store);
+        let (unfinished, mut notices) = lifecycle::tombstones::complete(&cfg, &registry).await;
+        // Finishing a removal rewrote the file.
+        let (registry, _) = Registry::load(&cfg.store);
+        notices.extend(adopt(&cfg.store, &registry).await?);
+
+        let scans =
+            storage::boot::scan_all(&cfg.store, &registry, &unfinished.families, &mut broken).await;
+        let remembered = storage::boot::remembered_dims(&scans);
+        let pool = Arc::new(EmbedderPool::boot(&cfg, &remembered, build).await?);
+        let default = pool.default_alias();
+        tracing::info!(profile = %default, recipe = ?pool.recipe_of(&default).ok().map(|r| r.to_string()), "default model");
+
+        let opened = storage::boot::open_all(&cfg.store, &pool, &registry, scans).await;
+        broken.extend(opened.broken);
+        notices.extend(opened.notices);
+        for reason in &broken {
             tracing::warn!("{reason}");
         }
-
-        let jobs = JobRegistry::new(cfg.server.job_history, cfg.server.job_concurrency);
-        let mapper = cfg.path_mapper();
         Ok(Arc::new(Self {
-            cfg,
-            embedder,
             chunkers: findery_chunk::Registry::new(),
-            jobs,
-            buckets: RwLock::new(opened.buckets),
+            jobs: JobRegistry::new(cfg.server.job_history, cfg.server.job_concurrency),
+            pool,
+            families: RwLock::new(opened.families),
             homes: RwLock::new(opened.homes),
-            broken: opened.broken,
-            mapper,
+            gates: Mutex::new(HashMap::new()),
+            watches: Mutex::new(HashMap::new()),
+            broken: Mutex::new(broken),
+            notices,
+            mapper: cfg.path_mapper(),
+            cfg,
         }))
     }
 
-    /// The cache namespace: model plus width, as actually served.
-    pub fn recipe(&self) -> String {
-        format!("{}:{}", self.embedder.model(), self.embedder.dim())
+    /// The embedder pool: profiles, the default one, and what each serves.
+    pub fn pool(&self) -> &EmbedderPool {
+        &self.pool
     }
 
     pub fn mapper(&self) -> &PathMapper {
@@ -102,190 +142,72 @@ impl Indexer {
 
     // -- indexing -----------------------------------------------------------
 
-    /// Synchronizes a project against the filesystem. `progress` is written as
-    /// the pass advances; a caller with nobody watching passes
-    /// [`ProgressHandle::detached`].
+    /// Synchronizes a project against the filesystem, under its model. The
+    /// first write under a model creates that model's member of the bucket.
+    /// `progress` is written as the pass advances; a caller with nobody
+    /// watching passes [`ProgressHandle::detached`].
+    ///
+    /// Two passes over one project never write side by side: the second waits
+    /// for the first's turn to end, without holding the project meanwhile.
     pub async fn sync(
         &self,
         id: &ProjectId,
         mode: SyncMode,
         progress: &ProgressHandle,
     ) -> Result<SyncReport> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        sync::run(self, &cat, &project, mode, progress).await
-    }
-
-    /// Adds or refreshes one document. With `text`, the content is taken from
-    /// the request and the file never has to exist on disk.
-    pub async fn add_document(
-        &self,
-        id: &ProjectId,
-        rel_path: &str,
-        text: Option<String>,
-    ) -> Result<SyncReport> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        let rel = sanitize_rel(rel_path)?;
-        match text {
-            Some(body) => sync::index_inline(self, &cat, &project, &rel, &body).await,
-            None => {
-                sync::run(
-                    self,
-                    &cat,
-                    &project,
-                    SyncMode::Paths(vec![rel]),
-                    &ProgressHandle::detached(),
-                )
-                .await
-            }
-        }
-    }
-
-    /// Indexes a batch of documents pushed by a client.
-    ///
-    /// This is the entry point for a daemon that cannot see the project: the
-    /// client walks, reads and sends, so no bind mount and no path translation
-    /// are involved at all.
-    pub async fn push_documents(
-        &self,
-        id: &ProjectId,
-        documents: Vec<findery_core::api::AddDocument>,
-    ) -> Result<SyncReport> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        let mut cleaned = Vec::with_capacity(documents.len());
-        for doc in documents {
-            let text = doc.text.ok_or_else(|| {
-                Error::Invalid(format!("document `{}` was pushed without text", doc.path))
-            })?;
-            cleaned.push((sanitize_rel(&doc.path)?, text));
-        }
-        sync::push_documents(self, &cat, &project, cleaned).await
-    }
-
-    /// Removes pushed files the client no longer has, given everything it saw.
-    pub async fn prune(&self, id: &ProjectId, keep: Vec<String>) -> Result<u64> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        let mut wanted = std::collections::HashSet::with_capacity(keep.len());
-        for path in keep {
-            wanted.insert(sanitize_rel(&path)?);
-        }
-        sync::prune(&cat, &project, &wanted).await
-    }
-
-    /// Everything the bucket knows about a project's files.
-    ///
-    /// A pushing client diffs against this to decide what is worth sending.
-    pub async fn file_manifest(&self, id: &ProjectId) -> Result<Vec<findery_core::FileRecord>> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        let mut files: Vec<_> = cat
-            .bucket
-            .file_map(&project.id)
-            .await?
-            .into_values()
-            .collect();
-        files.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(files)
-    }
-
-    /// Drops one document from the index.
-    pub async fn remove_document(&self, id: &ProjectId, rel_path: &str) -> Result<u64> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        let rel = sanitize_rel(rel_path)?;
-        sync::forget_file(&cat, &project, &rel).await
+        let _turn = self.gate(id).take_turn().await;
+        let lease = self.lease(id, Access::Write).await?;
+        sync::run(self, &lease, mode, progress).await
     }
 
     // -- querying -----------------------------------------------------------
 
-    pub async fn search(&self, req: &SearchRequest) -> Result<Vec<SearchHit>> {
+    /// A search: a vector list and a keyword list, fused by rank. In hybrid
+    /// mode a vector list that cannot be had degrades to keyword results and a
+    /// warning; see [`search`].
+    pub async fn search(&self, req: &SearchRequest) -> Result<findery_core::api::SearchResponse> {
         search::search(self, req).await
     }
 
-    pub async fn stats(&self, id: &ProjectId) -> Result<IndexStats> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        let (files, chunks, last_sync_at) = cat.bucket.counts(&project.id).await?;
-        Ok(IndexStats {
-            project: project.id.to_string(),
-            bucket: cat.name.clone(),
-            files,
-            chunks,
-            vectors: cat.store.count(&project.id).await.unwrap_or(0),
-            dim: self.embedder.dim(),
-            model: self.embedder.model().to_string(),
-            store_backend: cat.store.backend().to_string(),
-            last_sync_at,
-            disk_bytes: cat.bucket.disk_bytes().await,
-        })
+    /// Releases every file: stops the watchers and closes every member. The
+    /// daemon calls it on its way out, so the journals are folded back and the
+    /// OS lock goes with the process rather than after it.
+    pub async fn close(&self) -> Result<()> {
+        self.watches.lock().clear();
+        let families: Vec<_> = std::mem::take(&mut *self.families.write())
+            .into_values()
+            .collect();
+        storage::families::every(families, |family| async move { family.close().await }).await?;
+        Ok(())
     }
+}
 
-    /// Exports a project's vectors to `dir`, or to the configured export
-    /// directory when `dir` is `None`.
-    pub async fn export(
-        &self,
-        id: &ProjectId,
-        format: ExportFormat,
-        dir: Option<&str>,
-    ) -> Result<ExportReport> {
-        let cat = self.bucket_for(id)?;
-        let project = cat.bucket.require_project(id).await?;
-        let target = match dir {
-            Some(d) => self.mapper.to_container(d),
-            None => self.cfg.store.export_dir.clone(),
-        };
-        findery_store::export_project(
-            &cat.bucket,
-            &project.id,
-            &cat.recipe,
-            self.embedder.model(),
-            format,
-            Path::new(&target),
-        )
-        .await
+/// Adopts every legacy base file onto its recipe's member, on the blocking
+/// pool, and returns what a user should hear about it.
+async fn adopt(
+    cfg: &findery_core::config::StoreConfig,
+    registry: &Registry,
+) -> Result<Vec<String>> {
+    // Owned copies: the blocking task outlives neither, but must own them.
+    let (store, snapshot) = (cfg.clone(), registry.clone());
+    let adopted =
+        storage::blocking::blocking(move || Ok(findery_store::adopt_all(&store, &snapshot)))
+            .await?;
+    let notices = adopted
+        .iter()
+        .map(|notice| notice.describe())
+        .collect::<Vec<_>>();
+    for notice in &notices {
+        tracing::info!("{notice}");
     }
-
-    /// Probes the embedding runtime and reports what the daemon is serving.
-    pub async fn health(&self) -> Result<HealthReport> {
-        let mut projects = 0usize;
-        let mut backend = None;
-        for handle in self.handles() {
-            projects += handle.bucket.list_projects().await.map(|p| p.len())?;
-            backend.get_or_insert_with(|| handle.store.backend().to_string());
-        }
-        let (embedder_ok, embedder_detail) = match self.embedder.health().await {
-            Ok(()) => (true, None),
-            Err(e) => (false, Some(e.to_string())),
-        };
-        // The daemon is up, so `ok` stays true — but a bucket it could not open
-        // is a project gone from every listing, and belongs in the detail line.
-        let detail = match (embedder_detail, self.broken.is_empty()) {
-            (Some(d), false) => Some(format!("{d}; {}", self.broken.join("; "))),
-            (Some(d), true) => Some(d),
-            (None, false) => Some(self.broken.join("; ")),
-            (None, true) => None,
-        };
-        Ok(HealthReport {
-            ok: embedder_ok,
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            model: self.embedder.model().to_string(),
-            dim: self.embedder.dim(),
-            store_backend: backend.unwrap_or_else(|| self.cfg.store.backend.as_str().to_string()),
-            projects,
-            embedder_ok,
-            detail,
-        })
-    }
+    Ok(notices)
 }
 
 /// Normalizes a caller-supplied relative path and refuses traversal.
 ///
 /// INTENT: this string arrives from an MCP tool call. `../../etc/passwd` must
 /// die here, before it becomes a `root.join(..)`.
-fn sanitize_rel(raw: &str) -> Result<String> {
+pub(crate) fn sanitize_rel(raw: &str) -> Result<String> {
     let cleaned = raw.trim().replace('\\', "/");
     let cleaned = cleaned.trim_start_matches('/').to_string();
     if cleaned.is_empty() {
@@ -300,23 +222,4 @@ fn sanitize_rel(raw: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn traversal_is_refused_and_separators_normalized() {
-        assert_eq!(sanitize_rel("src\\lib.rs").expect("ok"), "src/lib.rs");
-        assert_eq!(sanitize_rel("/src/lib.rs").expect("ok"), "src/lib.rs");
-        assert!(sanitize_rel("../etc/passwd").is_err());
-        assert!(sanitize_rel("src/../../x").is_err());
-        assert!(sanitize_rel("   ").is_err());
-    }
-
-    #[test]
-    fn a_dotted_filename_is_not_traversal() {
-        assert_eq!(
-            sanitize_rel("src/..hidden.rs").expect("ok"),
-            "src/..hidden.rs"
-        );
-    }
-}
+mod tests;

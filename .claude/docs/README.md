@@ -14,17 +14,17 @@ avoided.
 
 ## Map
 
-| Page                                                     | What it carries |
-|----------------------------------------------------------|-----------------|
-| [`usage/README.md`](usage/README.md)                     | Running modes, every CLI flag, every tuning knob, and when to reach for it |
-| [`overview/pipeline.md`](overview/pipeline.md)           | The full path: file on disk → chunk → vector → hit cited by the agent |
-| [`overview/layers.md`](overview/layers.md)               | The layer law, the crates, what each is allowed to know |
-| [`chunk/README.md`](chunk/README.md)                     | Chunking per language, the lexical lexicons, item boundaries, windows, merging |
-| [`embed/README.md`](embed/README.md)                     | Models, Qwen3 instruction, local and remote providers, cache recipe |
-| [`store/README.md`](store/README.md)                     | SQLite bucket, vector backends, **the measurements that justify the choice**, export |
-| [`index/README.md`](index/README.md)                     | Incremental sync (the three gates), hybrid search, jobs, watch |
-| [`server/README.md`](server/README.md)                   | HTTP API reference |
-| [`mcp/README.md`](mcp/README.md)                         | MCP tools, wiring into Claude Code, token budget |
+| Page | What it carries |
+|------|------------------|
+| [`usage/README.md`](usage/README.md) | Running modes, every CLI flag, every tuning knob, and when to reach for it |
+| [`overview/pipeline.md`](overview/pipeline.md) | The full path: file on disk → chunk → vector → hit cited by the agent |
+| [`overview/layers.md`](overview/layers.md) | The layer law, the crates, what each is allowed to know |
+| [`chunk/README.md`](chunk/README.md) | Chunking per language, the lexical lexicons, item boundaries, windows, merging |
+| [`embed/README.md`](embed/README.md) | Models, Qwen3 instruction, local and remote providers, cache recipe |
+| [`store/README.md`](store/README.md) | SQLite bucket, vector backends, **the measurements that justify the choice**, export |
+| [`index/README.md`](index/README.md) | Which file an operation works in (members, leases), incremental sync (the three gates), hybrid search and how it degrades, jobs, watch, detach / rm |
+| [`server/README.md`](server/README.md) | HTTP API reference |
+| [`mcp/README.md`](mcp/README.md) | MCP tools, wiring into Claude Code, token budget |
 
 **Open** work lives in [`../roadmap/README.md`](../roadmap/README.md) — not
 here. Fixing a roadmap entry means deleting it (CONV-038).
@@ -46,5 +46,5 @@ here. Fixing a roadmap entry means deleting it (CONV-038).
    tree and re-cloning to the same relative path cost nothing.
 5. **The bucket is the durable truth**, the vector store is
    reconstructible. That's what makes the backend swappable.
-6. **A performance claim is a reproducible number**
-   (`make bench`), otherwise it's gossip.
+6. **A performance claim is a reproducible number** (`make bench`), otherwise
+   it's gossip.

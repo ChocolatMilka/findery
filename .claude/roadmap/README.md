@@ -123,8 +123,8 @@ the new chunker drops nothing.
 
 ### R5 — Persistent watch
 
-Watchers live in the server's memory: a restart loses them. Store them in
-the bucket and relaunch them at boot.
+Watchers live in the engine's memory (`Indexer::set_watch`): a restart loses
+them. Store them in the bucket and relaunch them at boot.
 
 Worth it because the daemon starts itself and is expected to come and go:
 "until the next restart" is a short promise.
@@ -149,6 +149,19 @@ measurement:
 - time to first-index a 500k-line workspace
 - CPU versus GPU
 - the search latency curve as the corpus grows
+
+### R9 — Typed health notices
+
+`HealthReport.notices` are sentences. `findery doctor` recognizes each kind —
+adopted, kept in place, stale, duplicate home, unfinished removal — by the
+phrase the server writes for it (`crates/cli/src/commands/doctor/index.rs`, pinned by a
+fixture test), so rewording a notice in L2 silently demotes it to "see the
+log".
+
+*Fix*: a `Notice { kind, message }` in `findery_core::api`, filled where each
+notice is raised (`AdoptNotice::describe`, `boot::pick_homes`,
+`tombstones::complete`), with `kind` driving the fix and `message` kept for
+older clients.
 
 ---
 

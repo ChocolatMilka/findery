@@ -10,7 +10,7 @@
 //!
 //! let client = Client::from_env()?;
 //! let project = ProjectId::new("axle")?;
-//! for hit in client.search(&SearchRequest::new(project, "where is retry handled")).await? {
+//! for hit in client.search(&SearchRequest::new(project, "where is retry handled")).await?.hits {
 //!     println!("{} ({:.3})", hit.chunk.locator(), hit.score);
 //! }
 //! # Ok(())
@@ -21,7 +21,10 @@
 //! pulls in neither SQLite, nor the walker, nor the chunkers — a consumer gets
 //! the vocabulary and an HTTP client, not half a daemon.
 
+mod admin;
 pub mod daemon;
+pub mod resolve;
+mod search;
 
 use std::time::Duration;
 
@@ -29,12 +32,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use findery_core::api::{
-    AddDocument, BucketInfo, BucketRemoved, CreateBucket, Deleted, ErrorBody, ExportReport,
-    ExportRequest, HealthReport, Job, JobState, PruneRequest, PushDocuments, RegisterProject,
-    Removed, Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
+    AddDocument, ErrorBody, ExportReport, ExportRequest, HealthReport, Job, JobState, PruneRequest,
+    PushDocuments, RegisterProject, Removed, Stopping, SyncRequest, SyncResponse, WatchRequest,
+    Watching,
 };
 use findery_core::ids::ProjectId;
-use findery_core::model::{FileRecord, IndexStats, Project, SearchHit, SearchRequest, SyncReport};
+use findery_core::model::{FileRecord, IndexStats, Project, SyncReport};
 use findery_core::{Error, Result};
 
 /// Default daemon address, matching the bundled Docker Compose stack.
@@ -112,41 +115,8 @@ impl Client {
         &self.base
     }
 
-    // -- buckets -----------------------------------------------------------
-
-    /// Every bucket the daemon has open.
-    pub async fn list_buckets(&self) -> Result<Vec<BucketInfo>> {
-        self.send::<(), _>(reqwest::Method::GET, "/v1/buckets", None)
-            .await
-    }
-
-    /// Creates a bucket, or reports the one that is already there.
-    pub async fn create_bucket(&self, name: &str) -> Result<BucketInfo> {
-        self.send(
-            reqwest::Method::POST,
-            "/v1/buckets",
-            Some(&CreateBucket {
-                name: name.to_string(),
-            }),
-        )
-        .await
-    }
-
-    /// Deletes a bucket, its projects and their vectors.
-    ///
-    /// It goes through the daemon because the daemon is the only process that
-    /// knows every handle on the file, and a bucket still open cannot be
-    /// removed at all.
-    pub async fn delete_bucket(&self, name: &str) -> Result<BucketRemoved> {
-        self.send::<(), _>(
-            reqwest::Method::DELETE,
-            &format!("/v1/buckets/{name}"),
-            None,
-        )
-        .await
-    }
-
     // -- projects -----------------------------------------------------------
+    // Buckets, models, `detach` and `rm` live in `admin.rs`.
 
     pub async fn register(&self, req: &RegisterProject) -> Result<Project> {
         self.send(reqwest::Method::POST, "/v1/projects", Some(req))
@@ -161,13 +131,6 @@ impl Client {
     pub async fn project(&self, id: &ProjectId) -> Result<Project> {
         self.send::<(), _>(reqwest::Method::GET, &format!("/v1/projects/{id}"), None)
             .await
-    }
-
-    pub async fn delete_project(&self, id: &ProjectId) -> Result<bool> {
-        let body: Deleted = self
-            .send::<(), _>(reqwest::Method::DELETE, &format!("/v1/projects/{id}"), None)
-            .await?;
-        Ok(body.deleted)
     }
 
     pub async fn stats(&self, id: &ProjectId) -> Result<IndexStats> {
@@ -207,11 +170,17 @@ impl Client {
             SyncResponse::Accepted { job } => job,
         };
         let done = self.await_job(&job.id).await?;
+        // The job's own error, rebuilt as the variant the daemon raised: a
+        // recipe mismatch stays a recipe mismatch on this side of the wire.
+        if let Some(failure) = done.failure() {
+            return Err(failure);
+        }
         match (done.state, done.report) {
             (JobState::Succeeded, Some(report)) => Ok(report),
-            (_, _) => Err(Error::Internal(done.error.unwrap_or_else(|| {
-                format!("job `{}` ended as {:?} with no report", job.id, done.state)
-            }))),
+            (state, _) => Err(Error::Internal(format!(
+                "job `{}` ended as {state:?} with no report",
+                job.id
+            ))),
         }
     }
 
@@ -291,13 +260,6 @@ impl Client {
         .await
     }
 
-    // -- querying -----------------------------------------------------------
-
-    pub async fn search(&self, req: &SearchRequest) -> Result<Vec<SearchHit>> {
-        self.send(reqwest::Method::POST, "/v1/search", Some(req))
-            .await
-    }
-
     /// Asks the daemon to stop gracefully.
     pub async fn stop_daemon(&self) -> Result<bool> {
         let body: Stopping = self
@@ -334,6 +296,21 @@ impl Client {
                 return Ok(job);
             }
             tokio::time::sleep(JOB_POLL_INTERVAL).await;
+        }
+    }
+
+    /// Polls a job until it finishes or `within` runs out, and returns it as
+    /// it stands then — for a caller that must answer within a bound and say
+    /// how far the job got.
+    pub async fn await_job_within(&self, id: &str, within: Duration) -> Result<Job> {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let job = self.job(id).await?;
+            let now = tokio::time::Instant::now();
+            if job.state.is_terminal() || now >= deadline {
+                return Ok(job);
+            }
+            tokio::time::sleep(JOB_POLL_INTERVAL.min(deadline - now)).await;
         }
     }
 
@@ -378,19 +355,14 @@ impl Client {
 }
 
 /// Rebuilds a typed error from the daemon's error body.
+///
+/// The decoding itself is [`Error::from_wire`], the inverse L0 keeps beside
+/// `code()`: a match spelled out here would forget the next variant.
 fn decode_error(status: u16, body: &str) -> Error {
     let Ok(parsed) = serde_json::from_str::<ErrorBody>(body) else {
         return Error::upstream("findery", format!("HTTP {status}: {body}"));
     };
-    match parsed.code.as_str() {
-        "not_found" => Error::NotFound(parsed.message),
-        "invalid" => Error::Invalid(parsed.message),
-        "config" => Error::Config(parsed.message),
-        "store" => Error::Store(parsed.message),
-        "embed" => Error::Embed(parsed.message),
-        "upstream" => Error::upstream("findery", parsed.message),
-        _ => Error::Internal(parsed.message),
-    }
+    Error::from_wire(&parsed.code, parsed.message)
 }
 
 /// Minimal percent-encoding for a query-string value.
@@ -436,6 +408,26 @@ mod tests {
 
         // A non-JSON body (a proxy error page) must not be swallowed.
         assert_eq!(decode_error(502, "<html>").code(), "upstream");
+    }
+
+    /// The conflicts a user resolves arrive as themselves, not as `internal`.
+    #[test]
+    fn a_recipe_mismatch_body_becomes_a_recipe_mismatch() {
+        let body = r#"{"code":"recipe_mismatch","message":"bucket `w` holds `a:1`"}"#;
+        let err = decode_error(409, body);
+        assert!(matches!(err, Error::RecipeMismatch(_)), "{err:?}");
+        assert_eq!(err.to_string(), "recipe mismatch: bucket `w` holds `a:1`");
+    }
+
+    /// The service travels in the payload, so a down embedder is not reported
+    /// as a down daemon.
+    #[test]
+    fn an_upstream_body_keeps_the_service_that_failed() {
+        let body = r#"{"code":"upstream","message":"embedder: connection refused"}"#;
+        assert_eq!(
+            decode_error(502, body).to_string(),
+            "upstream embedder: connection refused"
+        );
     }
 
     #[test]

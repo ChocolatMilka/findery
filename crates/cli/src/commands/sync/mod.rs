@@ -17,6 +17,7 @@ use findery_core::api::{SyncRequest, SyncResponse, WatchRequest};
 use findery_client::Client;
 
 use crate::args::Scope;
+use crate::ui::board::Board;
 use crate::ui::render;
 use crate::workspace::scope::resolve;
 
@@ -37,7 +38,8 @@ pub(crate) async fn run(
     let id = resolve(client, scope).await?;
     let project = client.project(&id).await?;
     if project.spec.push {
-        let report = push::sync(client, &project).await?;
+        let board = if json { None } else { Board::new() };
+        let report = push::sync(client, &project, board.as_ref()).await?;
         return if json {
             render::json(&report)
         } else {
@@ -47,10 +49,10 @@ pub(crate) async fn run(
     }
     // `--background` is a promise to return immediately, so it never gets a
     // bar: watching a job is the opposite of not waiting for it.
-    let bar = if json || options.background {
+    let board = if json || options.background {
         None
     } else {
-        follow::bar()
+        Board::new()
     };
     let request = SyncRequest {
         mode: options.full.then(|| "full".to_string()),
@@ -59,9 +61,10 @@ pub(crate) async fn run(
         // `follow::watch_sync` on why it never asks the server to hold one
         // request open for the length of the run.
         wait: false,
+        wait_ms: None,
     };
     let follow = !options.background;
-    match follow::watch_sync(client, &id, &request, bar, follow).await? {
+    match follow::watch_sync(client, &id, &request, board, follow).await? {
         SyncResponse::Completed { report } if json => render::json(&report),
         SyncResponse::Completed { report } => {
             render::sync(&report);

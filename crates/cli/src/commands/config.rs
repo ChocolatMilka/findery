@@ -14,11 +14,11 @@ use crate::settings;
 pub(crate) async fn run(client: &Client, action: ConfigAction, json: bool) -> Result<()> {
     let written = match action {
         ConfigAction::Set { key, value } => {
-            warn_if_shadowed(settings::set(&key, &value, json)?);
+            settings::warn_if_shadowed(settings::set(&key, &value, json)?);
             true
         }
         ConfigAction::Unset { key } => {
-            warn_if_shadowed(settings::unset(&key, json)?);
+            settings::warn_if_shadowed(settings::unset(&key, json)?);
             true
         }
         ConfigAction::Show => {
@@ -38,20 +38,4 @@ pub(crate) async fn run(client: &Client, action: ConfigAction, json: bool) -> Re
         client.stop_daemon().await?;
     }
     Ok(())
-}
-
-/// Says when a written setting will not take effect.
-///
-/// INTENT: the environment overlay wins over the file on purpose — one image
-/// has to serve every deployment — but that makes a successful `config set`
-/// appear to do nothing at all. Naming the variable at the moment of the write
-/// turns a trap back into a rule.
-fn warn_if_shadowed(variable: Option<&'static str>) {
-    let Some(variable) = variable else {
-        return;
-    };
-    eprintln!(
-        "warning: {variable} is set in this environment and overrides what was just \
-         written.\n  Unset it, or the file will keep being ignored."
-    );
 }
