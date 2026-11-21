@@ -55,7 +55,10 @@ blake3    = "1"
 # Only the CLI draws progress: a bar is a terminal thing, and no other crate has
 # a terminal.
 indicatif = "0.18"
-clap   = { version = "4", features = ["derive", "env"] }
+clap   = { version = "4", features = ["derive", "env", "wrap_help"] }
+# Pinned exactly: `unstable-dynamic` is the completion engine that asks the
+# binary for values at TAB time, and its API may move in any patch release.
+clap_complete = { version = "=4.6.12", features = ["unstable-dynamic"] }
 uuid   = { version = "1", features = ["v4", "serde"] }
 time   = { version = "0.3", features = ["formatting", "macros"] }
 

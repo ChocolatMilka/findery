@@ -4,10 +4,16 @@
 //! INTENT: one place decides whether escape codes are written — never into a
 //! pipe, never under `NO_COLOR` — so a renderer styles freely and a test
 //! renders plain text by asking for [`Paint::plain`].
+//!
+//! The palette is shared with `--help`: [`HELP`] is built from the same
+//! constants [`Paint`] writes, so an answer and the help that explains it look
+//! like one program. Help text is the one place that writes escapes
+//! unconditionally ([`styled`]) — clap strips them itself, under the same two
+//! rules, before anything reaches the terminal.
 
 use std::io::IsTerminal;
 
-use clap::builder::styling::{AnsiColor, Style as Ansi};
+use clap::builder::styling::{AnsiColor, Style as Ansi, Styles};
 
 /// Emphasis: names, headings.
 pub(crate) const BOLD: Ansi = Ansi::new().bold();
@@ -17,6 +23,26 @@ pub(crate) const DIM: Ansi = Ansi::new().dimmed();
 pub(crate) const GREEN: Ansi = AnsiColor::Green.on_default();
 /// Something that failed.
 pub(crate) const RED: Ansi = AnsiColor::Red.on_default();
+/// A literal to type as written: a command, a flag.
+pub(crate) const CYAN: Ansi = AnsiColor::Cyan.on_default();
+
+/// The help palette: bold headings, literals and placeholders coloured, the
+/// secondary text dim.
+pub(crate) const HELP: Styles = Styles::styled()
+    .header(BOLD)
+    .usage(BOLD)
+    .literal(CYAN.bold())
+    .placeholder(GREEN)
+    .valid(GREEN)
+    .invalid(RED.bold())
+    .error(RED.bold())
+    .context(DIM);
+
+/// `text` wrapped in `style`, always — for help text, which clap strips of
+/// escapes when colour is off.
+pub(crate) fn styled(style: Ansi, text: &str) -> String {
+    format!("{}{text}{}", style.render(), style.render_reset())
+}
 
 /// Whether escape codes are written.
 #[derive(Clone, Copy, Debug)]
@@ -74,7 +100,7 @@ impl Paint {
 
     fn wrap(self, style: Ansi, text: &str) -> String {
         if self.color && !text.is_empty() {
-            format!("{}{text}{}", style.render(), style.render_reset())
+            styled(style, text)
         } else {
             text.to_string()
         }

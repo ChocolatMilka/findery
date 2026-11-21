@@ -2,8 +2,10 @@
 //! `model use`, `daemon stop`, `doc add`.
 
 use clap::{Subcommand, ValueHint};
+use clap_complete::ArgValueCandidates;
 
 use super::Scope;
+use super::complete::values;
 
 #[derive(Subcommand)]
 pub(crate) enum ConfigAction {
@@ -13,7 +15,7 @@ pub(crate) enum ConfigAction {
     /// is the server address, `url` the embedding endpoint.
     Set {
         /// A short name such as `model`, or a full path such as `embedder.dim`
-        #[arg(value_name = "KEY")]
+        #[arg(value_name = "KEY", add = ArgValueCandidates::new(values::settings))]
         key: String,
         /// The value to write; checked before the file is touched
         #[arg(value_name = "VALUE")]
@@ -22,7 +24,7 @@ pub(crate) enum ConfigAction {
     /// Return one setting to its default
     Unset {
         /// A short name or a full path, as `set` takes it
-        #[arg(value_name = "KEY")]
+        #[arg(value_name = "KEY", add = ArgValueCandidates::new(values::settings))]
         key: String,
     },
     /// List what is set, secrets masked
@@ -46,13 +48,13 @@ pub(crate) enum BucketAction {
     /// Delete a bucket, its projects and their vectors — or one model's file
     Rm {
         /// The bucket to delete
-        #[arg(value_name = "NAME")]
+        #[arg(value_name = "NAME", add = ArgValueCandidates::new(values::buckets))]
         name: String,
         /// Delete without asking; required while it holds projects
         #[arg(long)]
         force: bool,
         /// Delete only this model's file; the projects stay on the others
-        #[arg(long, value_name = "ALIAS")]
+        #[arg(long, value_name = "ALIAS", add = ArgValueCandidates::new(values::models))]
         model: Option<String>,
     },
 }
@@ -64,7 +66,7 @@ pub(crate) enum ModelAction {
     /// One model in detail: its recipe, its file name, why it is down
     Show {
         /// The model to show [default: the default model]
-        #[arg(value_name = "ALIAS")]
+        #[arg(value_name = "ALIAS", add = ArgValueCandidates::new(values::models))]
         alias: Option<String>,
     },
     /// Make a model the default, now and for the next start
@@ -73,7 +75,7 @@ pub(crate) enum ModelAction {
     /// live in their own files, so switching back re-embeds nothing.
     Use {
         /// The model to make the default
-        #[arg(value_name = "ALIAS")]
+        #[arg(value_name = "ALIAS", add = ArgValueCandidates::new(values::models))]
         alias: String,
     },
 }

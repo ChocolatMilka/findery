@@ -3,15 +3,23 @@
 //! A `///` line here is user-facing text — clap prints it — so its first
 //! paragraph is the one-line summary `-h` shows, the rest is what `--help`
 //! adds, and every reason a field is shaped the way it is goes in a `//`
-//! comment. The bodies live in `commands`, reached through `dispatch`.
+//! comment. The bodies live in `commands`, reached through `dispatch`; how
+//! the surface is grouped, styled and illustrated lives in [`help`], what TAB
+//! offers in [`complete`].
 
 mod actions;
+pub(crate) mod complete;
+pub(crate) mod help;
 #[cfg(test)]
 mod tests;
+pub(crate) mod vocab;
 
 pub(crate) use actions::{BucketAction, ConfigAction, DaemonAction, DocAction, ModelAction};
 
 use clap::{Parser, Subcommand, ValueHint};
+use clap_complete::ArgValueCandidates;
+
+use complete::values;
 
 /// The heading every subcommand lists the global options under, below its own.
 const GLOBAL: &str = "Global options";
@@ -79,7 +87,13 @@ pub(crate) struct Cli {
 #[derive(clap::Args, Clone, Default)]
 pub(crate) struct Scope {
     /// Project id [default: the project containing the current directory]
-    #[arg(short, long, global = true, value_name = "PROJECT")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        value_name = "PROJECT",
+        add = ArgValueCandidates::new(values::projects)
+    )]
     pub(crate) project: Option<String>,
 }
 
@@ -105,10 +119,10 @@ pub(crate) enum Command {
         /// Bucket to hold the project [default: one inside it, named after it]
         // Chosen once: every later command follows the project, so nobody has
         // to remember which index a directory belongs to.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", add = ArgValueCandidates::new(values::buckets))]
         bucket: Option<String>,
         /// Model to pin the project to [default: follow the default model]
-        #[arg(long, value_name = "ALIAS")]
+        #[arg(long, value_name = "ALIAS", add = ArgValueCandidates::new(values::models))]
         model: Option<String>,
         /// Index it now instead of waiting for `findery sync`
         #[arg(long)]
@@ -121,6 +135,11 @@ pub(crate) enum Command {
     },
     /// Search the current project: by meaning, by exact words, or both
     Search(Box<crate::commands::search::SearchArgs>),
+    /// List the intents a search can name in this project
+    Intents {
+        #[command(flatten)]
+        scope: Scope,
+    },
     /// Bring the index up to date with the files
     Sync {
         #[command(flatten)]
@@ -202,6 +221,8 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Shell completion: print the script, or how to load it
+    Completions(complete::CompletionsArgs),
     // Hidden from `--help`: it starts itself, it stops itself, and the only
     // reader of this command is a service manager or someone debugging one.
     // Showing it invites the user to manage a process they never asked for.

@@ -386,6 +386,7 @@ findery projects                   # all of them, current one marked *
 | `findery detach` | takes a project off the server and **keeps** its index: the files are closed, unlocked, and not reopened at the next start. `findery init` in the project attaches it again, instantly |
 | `findery rm` | **deletes** a project, its chunks and its vectors — and its bucket's files when no other project shares them. The manifest stays |
 | `findery health` | whether the index answers, and what it serves |
+| `findery completions <shell>` | the shell completion script; `install` prints the profile line that loads it — [below](#--help-and-tab) |
 
 ### `detach` or `rm`
 
@@ -474,6 +475,72 @@ following it.
 **`init` stops at registration.** Indexing is a separate, deliberate step, so a
 repository can be claimed — and its bucket chosen — before any model is
 reachable. `--sync` collapses the two.
+
+### `--help`, and TAB
+
+`findery --help` lists the commands by what they are for, each with its
+one-line summary:
+
+```text
+Get started       init  doctor  health
+Search            search  intents
+Index             sync  watch  status  jobs
+Projects          projects  detach  rm  doc
+Models & storage  model  bucket  export
+Settings          config  completions
+```
+
+`-h` on a command is one line per option. `--help` adds:
+
+- the details;
+- the accepted values of every closed list (`--mode`, `--task`, `--lang`,
+  `--kind`, `export --format`);
+- an **Examples** block of lines to copy as they are.
+
+A command's own options come first; `--server`, `--token`, `--json` and
+`--no-spawn` sit under *Global options*.
+
+Colour reaches a terminal only: piped, redirected or with `NO_COLOR` set, the
+help is plain text, wrapped to the terminal width.
+
+The grouping is one table in `crates/cli/src/args/help/mod.rs`. A test fails when a
+command is missing from it, and another parses every example against the real
+argument surface.
+
+Completion is one line in your shell's profile. `findery completions install`
+prints it for the shell it detects — `$SHELL`, else PowerShell on Windows — as
+a comment naming the file and the line itself. It edits nothing; appending its
+output (`findery completions install >> ~/.bashrc`) works because both lines
+are valid shell.
+
+| Shell | Add to | The line |
+|-------|--------|----------|
+| PowerShell | `$PROFILE` | `findery completions powershell \| Out-String \| Invoke-Expression` |
+| bash | `~/.bashrc` | `source <(findery completions bash)` |
+| zsh | `~/.zshrc`, after `compinit` | `source <(findery completions zsh)` |
+| fish | `~/.config/fish/config.fish` | `findery completions fish \| source` |
+| elvish | `~/.config/elvish/rc.elv` | `eval (findery completions elvish \| slurp)` |
+
+The script asks `findery` itself at each TAB (with `FINDERY_COMPLETE` set), so
+it follows the binary on your `PATH` with nothing to regenerate, and completes
+names as well as commands and flags:
+
+| After | Offers | From |
+|-------|--------|------|
+| `-p` | project ids | the manifest above the current directory, then the server |
+| `init --bucket`, `bucket rm` | bucket names | the manifest, then the server |
+| `init --model`, `model use` / `show`, `bucket rm --model` | model aliases | the settings file's profiles, then the server |
+| `--intent` | intents, with their summaries | the built-in library, the settings and the manifest |
+| `--scope` | scopes | the manifest |
+| `config set` / `unset` | short setting names | the CLI |
+
+Intents, scopes and the current project come from disk, so they complete with
+no server at all. A server is asked only **if it is already running**, with a
+300 ms limit; a TAB never starts one, whatever `FINDERY_NO_SPAWN` says.
+
+`--static` prints a self-contained script instead — commands, flags and closed
+lists, but no names — for a shell that should never run a program to complete
+a word.
 
 ---
 
