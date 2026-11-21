@@ -13,31 +13,42 @@
 //! never by location — and the content that is hashed is the text actually
 //! embedded, `path:` header included, so a fragment that MOVED is re-embedded.
 //! The path is signal; that cost is the point of it.
+//!
+//! A pass is planned before it is done (`plan`: the walk, then gate 1 over the
+//! whole list), then worked by two overlapping halves (`pipeline`).
 
+mod flush;
 mod ingest;
+mod pipeline;
+mod plan;
 
-use ingest::{FLUSH_CHUNKS, FLUSH_FILES, Pending, flush, materialize};
 pub use ingest::{forget_file, index_inline, prune, push_documents};
 
+use std::collections::HashMap;
+
+use findery_core::Result;
 use findery_core::api::ProgressPhase;
-use findery_core::ids::ContentHash;
-use findery_core::model::{FileRecord, Lang, Origin, Project, SyncMode, SyncReport};
-use findery_core::support::clock::{now_millis, now_unix};
-use findery_core::{Error, Result};
+use findery_core::model::{FileRecord, Origin, SyncMode, SyncReport};
+use findery_core::support::clock::now_millis;
 
-use crate::BucketHandle;
 use crate::Indexer;
-use crate::jobs::progress::{PROGRESS_FILES, ProgressHandle};
+use crate::gates::Lease;
+use crate::jobs::progress::ProgressHandle;
+use plan::Plan;
 
-/// Runs a synchronization pass and returns exactly what it did. `progress`
-/// carries the counters out to whoever is watching; the pass never waits on it.
+/// Runs a synchronization pass into the lease's member and returns exactly
+/// what it did. `progress` carries the counters out to whoever is watching;
+/// the pass never waits on it. A drain stops it between two files, or before a
+/// flush, with `Cancelled`.
 pub async fn run(
     idx: &Indexer,
-    cat: &BucketHandle,
-    project: &Project,
+    lease: &Lease,
     mode: SyncMode,
     progress: &ProgressHandle,
 ) -> Result<SyncReport> {
+    progress.begin();
+    let member = lease.writer()?;
+    let project = &lease.project;
     let started = now_millis();
     let mut report = SyncReport {
         project: project.id.to_string(),
@@ -45,214 +56,70 @@ pub async fn run(
         ..SyncReport::default()
     };
 
-    // A bucket built by another model must not receive vectors of this one:
-    // the two spaces would share a store and neither would be searchable.
-    cat.ensure_vectors_usable()?;
-    cat.store
-        .ensure_project(&project.id, idx.embedder.dim())
+    // A file holding another model's vectors must not receive this one's: the
+    // two spaces would share a store and neither would be searchable.
+    member.ensure_serves(&lease.recipe)?;
+    member
+        .store
+        .ensure_project(&project.id, lease.recipe.dim())
         .await?;
-    let known = cat.bucket.file_map(&project.id).await?;
-
-    // Switching vector backend leaves the bucket intact and the new store
-    // empty. An incremental pass would then find every file unchanged, write
-    // nothing, and leave search returning nothing — silently. Detect that and
-    // rebuild instead of reporting a successful no-op.
-    let mode = if !matches!(mode, SyncMode::Full)
-        && !known.is_empty()
-        && cat.store.count(&project.id).await.unwrap_or(1) == 0
-    {
-        tracing::warn!(
-            project = %project.id,
-            "vector store is empty but the bucket is not; rebuilding it"
-        );
-        report.mode = SyncMode::Full.as_str().to_string();
-        report
-            .warnings
-            .push("vector store was empty; rebuilt from the bucket".into());
-        SyncMode::Full
-    } else {
-        mode
-    };
+    let known = member.bucket.file_map(&project.id).await?;
+    let mode = rebuild_if_store_is_empty(lease, mode, &known, &mut report).await?;
     let full = matches!(mode, SyncMode::Full);
 
-    let (candidates, warnings) = collect_candidates(project, &mode).await?;
+    let (candidates, warnings) = plan::candidates(project, &mode, progress).await?;
     report.warnings.extend(warnings);
     report.files_scanned = candidates.len() as u64;
-    // The walk is over, so the denominator exists: a watcher can now draw
-    // a proportion instead of a spinner.
-    progress.write(|p| {
-        p.phase = ProgressPhase::Indexing;
-        p.files_total = candidates.len() as u64;
-        p.elapsed_ms = now_millis().saturating_sub(started);
-    });
+    let plan = Plan::new(candidates, &known, full);
+    plan.publish(progress);
+    report.files_unchanged = plan.unchanged;
 
-    let mut pending: Vec<Pending> = Vec::new();
-    let mut buffered_chunks = 0usize;
-    let mut done = 0u64;
-    let mut seen: Vec<String> = Vec::with_capacity(candidates.len());
-
-    for candidate in candidates {
-        seen.push(candidate.rel_path.clone());
-        // Counted before the gates: a file they skip was still looked at, and a
-        // bar that only moved for changed files would stand still through the
-        // common case.
-        done += 1;
-        if done.is_multiple_of(PROGRESS_FILES) {
-            progress.write(|p| {
-                p.files_done = done;
-                p.elapsed_ms = now_millis().saturating_sub(started);
-            });
-        }
-        let previous = known.get(&candidate.rel_path);
-
-        // Gate 1: metadata unchanged.
-        if !full
-            && let Some(prev) = previous
-            && prev.size == candidate.size
-            && prev.mtime_ns == candidate.mtime_ns
-            && candidate.mtime_ns != 0
-        {
-            report.files_unchanged += 1;
-            continue;
-        }
-
-        let bytes = match tokio::fs::read(&candidate.abs_path).await {
-            Ok(b) => b,
-            Err(e) => {
-                report.warnings.push(format!("{}: {e}", candidate.rel_path));
-                report.files_skipped += 1;
-                continue;
-            }
-        };
-        let Ok(text) = String::from_utf8(bytes) else {
-            report
-                .warnings
-                .push(format!("{}: not valid UTF-8", candidate.rel_path));
-            report.files_skipped += 1;
-            continue;
-        };
-        let hash = ContentHash::of(text.as_bytes());
-
-        // Gate 2: bytes unchanged. Refresh the metadata so gate 1 catches it
-        // next time instead of re-reading the file forever.
-        if !full
-            && let Some(prev) = previous
-            && prev.content_hash == hash
-        {
-            let mut record = prev.clone();
-            record.mtime_ns = candidate.mtime_ns;
-            record.size = candidate.size;
-            cat.bucket.put_file(&project.id, &record).await?;
-            report.files_unchanged += 1;
-            continue;
-        }
-
-        let raw = idx
-            .chunkers
-            .chunk(&candidate.rel_path, candidate.lang, &text, &idx.cfg.chunk)?;
-        let chunks = materialize(project, &candidate.rel_path, candidate.lang, raw);
-        let record = FileRecord {
-            path: candidate.rel_path.clone(),
-            lang: candidate.lang,
-            origin: Origin::File,
-            content_hash: hash,
-            size: candidate.size,
-            mtime_ns: candidate.mtime_ns,
-            chunk_count: chunks.len() as u32,
-            indexed_at: now_unix(),
-        };
-        buffered_chunks += chunks.len();
-        pending.push(Pending {
-            record,
-            chunks,
-            is_new: previous.is_none(),
-        });
-
-        if pending.len() >= FLUSH_FILES || buffered_chunks >= FLUSH_CHUNKS {
-            flush(
-                idx,
-                cat,
-                project,
-                std::mem::take(&mut pending),
-                &mut report,
-                progress,
-            )
-            .await?;
-            buffered_chunks = 0;
-            progress.write(|p| {
-                p.files_done = done;
-                p.elapsed_ms = now_millis().saturating_sub(started);
-            });
-        }
-    }
-    if !pending.is_empty() {
-        flush(idx, cat, project, pending, &mut report, progress).await?;
-    }
+    let Plan { seen, pending, .. } = plan;
+    pipeline::run(idx, lease, pending, &known, full, &mut report, progress).await?;
 
     // A targeted sync never deletes: the caller asked about specific paths and
     // said nothing about the rest of the project.
     if !matches!(mode, SyncMode::Paths(_)) {
         progress.enter(ProgressPhase::Pruning);
-        let seen: std::collections::HashSet<&str> = seen.iter().map(String::as_str).collect();
-        for (path, record) in &known {
-            // Only what the daemon itself walked. Pushed and inline files
-            // belong to whoever fed them.
-            if record.origin != Origin::File || seen.contains(path.as_str()) {
-                continue;
-            }
-            let removed = forget_file(cat, project, path).await?;
-            report.chunks_deleted += removed;
+        // Only what the daemon itself walked. Pushed and inline files belong
+        // to whoever fed them.
+        let vanished = known
+            .iter()
+            .filter(|(path, record)| record.origin == Origin::File && !seen.contains(*path));
+        for (path, _) in vanished {
+            report.chunks_deleted += forget_file(member, project, path).await?;
             report.files_removed += 1;
         }
     }
 
-    cat.bucket.touch_sync(&project.id).await?;
+    member.bucket.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
-    // The bar lands on the number the report will show.
-    progress.write(|p| {
-        p.files_done = report.files_scanned;
-        p.elapsed_ms = report.duration_ms;
-    });
     Ok(report)
 }
 
-/// Turns a sync mode into the list of files to consider.
-async fn collect_candidates(
-    project: &Project,
-    mode: &SyncMode,
-) -> Result<(Vec<crate::walker::Candidate>, Vec<String>)> {
-    let root = std::path::PathBuf::from(&project.spec.root);
-    match mode {
-        SyncMode::Paths(paths) => {
-            let mut out = Vec::new();
-            let mut warnings = Vec::new();
-            for rel in paths {
-                let rel = rel.replace('\\', "/");
-                if rel.contains("..") {
-                    warnings.push(format!("{rel}: rejected, escapes the project root"));
-                    continue;
-                }
-                let abs = root.join(&rel);
-                match tokio::fs::metadata(&abs).await {
-                    Ok(meta) if meta.is_file() => out.push(crate::walker::Candidate {
-                        lang: Lang::from_path(&rel),
-                        rel_path: rel,
-                        abs_path: abs,
-                        size: meta.len(),
-                        mtime_ns: crate::walker::mtime_ns(&meta),
-                    }),
-                    Ok(_) => warnings.push(format!("{rel}: not a file")),
-                    Err(e) => warnings.push(format!("{rel}: {e}")),
-                }
-            }
-            Ok((out, warnings))
-        }
-        _ => {
-            let spec = project.spec.clone();
-            let outcome = tokio::task::spawn_blocking(move || crate::walker::walk(&root, &spec))
-                .await
-                .map_err(|e| Error::Internal(format!("walk task: {e}")))??;
-            Ok((outcome.files, outcome.warnings))
-        }
+/// Switching vector backend leaves the bucket intact and the new store empty.
+/// An incremental pass would then find every file unchanged, write nothing,
+/// and leave search returning nothing — silently. Rebuild instead, and say so.
+async fn rebuild_if_store_is_empty(
+    lease: &Lease,
+    mode: SyncMode,
+    known: &HashMap<String, FileRecord>,
+    report: &mut SyncReport,
+) -> Result<SyncMode> {
+    if matches!(mode, SyncMode::Full) || known.is_empty() {
+        return Ok(mode);
     }
+    let store = &lease.writer()?.store;
+    if store.count(&lease.project.id).await? != 0 {
+        return Ok(mode);
+    }
+    tracing::warn!(
+        project = %lease.project.id,
+        "vector store is empty but the bucket is not; rebuilding it"
+    );
+    report.mode = SyncMode::Full.as_str().to_string();
+    report
+        .warnings
+        .push("vector store was empty; rebuilt from the bucket".into());
+    Ok(SyncMode::Full)
 }

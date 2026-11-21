@@ -6,40 +6,27 @@
 //! HTTP, and writes them the same way. One write path, so the two feeding sides
 //! cannot drift.
 
-use findery_core::ids::{ChunkId, ContentHash};
-use findery_core::model::{Chunk, FileRecord, Lang, Origin, Project, RawChunk, SyncReport};
+use findery_core::Result;
+use findery_core::ids::ContentHash;
+use findery_core::model::{FileRecord, Lang, Origin, Project, SyncReport};
 use findery_core::support::clock::{now_millis, now_unix};
-use findery_core::traits::{VectorPayload, VectorRecord};
-use findery_core::{Error, Result};
 
 use super::Indexer;
+use super::flush::{Batch, Pending, flush, materialize};
 use crate::BucketHandle;
+use crate::gates::Lease;
 use crate::jobs::progress::ProgressHandle;
-
-/// Files buffered before a flush. Bounds peak memory on a first full index.
-pub(super) const FLUSH_FILES: usize = 96;
-/// Chunks buffered before a flush, whichever limit trips first.
-pub(super) const FLUSH_CHUNKS: usize = 512;
-
-/// A file whose chunks are computed but not yet embedded or written.
-pub(super) struct Pending {
-    pub(super) record: FileRecord,
-    pub(super) chunks: Vec<Chunk>,
-    pub(super) is_new: bool,
-}
 
 /// Indexes one document supplied by the caller, bypassing the filesystem.
 pub async fn index_inline(
     idx: &Indexer,
-    cat: &BucketHandle,
-    project: &Project,
+    lease: &Lease,
     rel_path: &str,
     text: &str,
 ) -> Result<SyncReport> {
     ingest(
         idx,
-        cat,
-        project,
+        lease,
         vec![(rel_path.to_string(), text.to_string())],
         Origin::Inline,
         &ProgressHandle::detached(),
@@ -55,16 +42,14 @@ pub async fn index_inline(
 /// the throughput actually comes from.
 pub async fn push_documents(
     idx: &Indexer,
-    cat: &BucketHandle,
-    project: &Project,
+    lease: &Lease,
     documents: Vec<(String, String)>,
 ) -> Result<SyncReport> {
     // Nobody polls a pushed batch: the client that walked the project draws its
     // own bar. The engine stays written once rather than forked in two.
     ingest(
         idx,
-        cat,
-        project,
+        lease,
         documents,
         Origin::Pushed,
         &ProgressHandle::detached(),
@@ -75,12 +60,13 @@ pub async fn push_documents(
 /// Shared body of inline and pushed ingestion.
 async fn ingest(
     idx: &Indexer,
-    cat: &BucketHandle,
-    project: &Project,
+    lease: &Lease,
     documents: Vec<(String, String)>,
     origin: Origin,
     progress: &ProgressHandle,
 ) -> Result<SyncReport> {
+    let member = lease.writer()?;
+    let project = &lease.project;
     let started = now_millis();
     let mut report = SyncReport {
         project: project.id.to_string(),
@@ -96,18 +82,19 @@ async fn ingest(
     if documents.is_empty() {
         return Ok(report);
     }
-    // A bucket built by another model must not receive vectors of this one:
-    // the two spaces would share a store and neither would be searchable.
-    cat.ensure_vectors_usable()?;
-    cat.store
-        .ensure_project(&project.id, idx.embedder.dim())
+    // A file holding another model's vectors must not receive this one's: the
+    // two spaces would share a store and neither would be searchable.
+    member.ensure_serves(&lease.recipe)?;
+    member
+        .store
+        .ensure_project(&project.id, lease.recipe.dim())
         .await?;
 
-    let known = cat.bucket.file_map(&project.id).await?;
-    let mut pending = Vec::with_capacity(documents.len());
-    let mut buffered = 0usize;
+    let known = member.bucket.file_map(&project.id).await?;
+    let mut batch = Batch::new(&idx.cfg.sync);
 
     for (rel_path, text) in documents {
+        lease.check_cancelled()?;
         let lang = Lang::from_path(&rel_path);
         let hash = ContentHash::of(text.as_bytes());
 
@@ -132,213 +119,58 @@ async fn ingest(
             chunk_count: chunks.len() as u32,
             indexed_at: now_unix(),
         };
-        buffered += chunks.len();
-        pending.push(Pending {
+        let file = Pending {
             record,
             chunks,
             is_new: !known.contains_key(&rel_path),
-        });
-
-        if pending.len() >= FLUSH_FILES || buffered >= FLUSH_CHUNKS {
-            flush(
-                idx,
-                cat,
-                project,
-                std::mem::take(&mut pending),
-                &mut report,
-                progress,
-            )
-            .await?;
-            buffered = 0;
+        };
+        if batch.push(file) {
+            flush(lease, batch.take(), &mut report, progress).await?;
         }
     }
-    if !pending.is_empty() {
-        flush(idx, cat, project, pending, &mut report, progress).await?;
-    }
-    cat.bucket.touch_sync(&project.id).await?;
+    flush(lease, batch.take(), &mut report, progress).await?;
+    member.bucket.touch_sync(&project.id).await?;
     report.duration_ms = now_millis().saturating_sub(started);
     Ok(report)
 }
 
-/// Removes pushed files the client no longer has.
+/// Removes pushed files the client no longer has from one member.
 ///
 /// INTENT: only `Origin::Pushed` rows are touched. A client must never be able
 /// to delete what the daemon walked, nor a hand-added inline document — each
 /// side prunes what it fed, and nothing else.
 pub async fn prune(
-    cat: &BucketHandle,
+    member: &BucketHandle,
     project: &Project,
     keep: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let known = cat.bucket.file_map(&project.id).await?;
+    let known = member.bucket.file_map(&project.id).await?;
     let mut removed = 0u64;
     for (path, record) in &known {
         if record.origin != Origin::Pushed || keep.contains(path.as_str()) {
             continue;
         }
-        forget_file(cat, project, path).await?;
+        forget_file(member, project, path).await?;
         removed += 1;
     }
     if removed > 0 {
-        cat.bucket.touch_sync(&project.id).await?;
+        member.bucket.touch_sync(&project.id).await?;
     }
     Ok(removed)
 }
 
-/// Removes one document: chunks, vectors and file record.
-pub async fn forget_file(cat: &BucketHandle, project: &Project, rel_path: &str) -> Result<u64> {
-    let removed = cat.bucket.delete_file_chunks(&project.id, rel_path).await?;
+/// Removes one document from one member: chunks, vectors and file record.
+pub async fn forget_file(member: &BucketHandle, project: &Project, rel_path: &str) -> Result<u64> {
+    let removed = member
+        .bucket
+        .delete_file_chunks(&project.id, rel_path)
+        .await?;
     if !removed.is_empty() {
-        cat.store.delete(&project.id, &removed).await?;
+        member.store.delete(&project.id, &removed).await?;
     }
-    cat.bucket.delete_file_record(&project.id, rel_path).await?;
+    member
+        .bucket
+        .delete_file_record(&project.id, rel_path)
+        .await?;
     Ok(removed.len() as u64)
-}
-
-// ---------------------------------------------------------------------------
-
-/// Embeds and writes a batch of files.
-pub(super) async fn flush(
-    idx: &Indexer,
-    cat: &BucketHandle,
-    project: &Project,
-    pending: Vec<Pending>,
-    report: &mut SyncReport,
-    progress: &ProgressHandle,
-) -> Result<()> {
-    if pending.is_empty() {
-        return Ok(());
-    }
-    // Only a bucket whose stored recipe is this one reaches here, so the cache
-    // key names the recipe the vectors already in it were built with.
-    let recipe = cat.recipe.clone();
-
-    // One cache probe for the whole batch, deduplicated: two identical chunks
-    // in two files cost one lookup and, on a miss, one embedding.
-    let mut wanted: Vec<ContentHash> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for file in &pending {
-        for chunk in &file.chunks {
-            if seen.insert(chunk.content_hash.to_string()) {
-                wanted.push(chunk.content_hash.clone());
-            }
-        }
-    }
-    let mut vectors = cat.bucket.cached_vectors(&recipe, wanted.clone()).await?;
-    report.embeddings_cached += vectors.len() as u64;
-    progress.write(|p| {
-        p.embeddings_cached = report.embeddings_cached;
-        p.chunks_done = report.chunks_written;
-    });
-
-    let misses: Vec<&Chunk> = {
-        let mut out = Vec::new();
-        let mut taken = std::collections::HashSet::new();
-        for file in &pending {
-            for chunk in &file.chunks {
-                if !vectors.contains_key(chunk.content_hash.as_str())
-                    && taken.insert(chunk.content_hash.to_string())
-                {
-                    out.push(chunk);
-                }
-            }
-        }
-        out
-    };
-
-    if !misses.is_empty() {
-        let inputs: Vec<String> = misses.iter().map(|c| c.embed_input()).collect();
-        let computed = idx.embedder.embed_documents(&inputs).await?;
-        if computed.len() != misses.len() {
-            return Err(Error::Embed(format!(
-                "embedder returned {} vectors for {} inputs",
-                computed.len(),
-                misses.len()
-            )));
-        }
-        report.embeddings_computed += computed.len() as u64;
-        let mut to_cache = Vec::with_capacity(computed.len());
-        for (chunk, vector) in misses.iter().zip(computed) {
-            vectors.insert(chunk.content_hash.to_string(), vector.clone());
-            to_cache.push((chunk.content_hash.clone(), vector));
-        }
-        cat.bucket.put_cached_vectors(&recipe, to_cache).await?;
-        progress.write(|p| p.embeddings_computed = report.embeddings_computed);
-    }
-
-    for file in pending {
-        let path = file.record.path.clone();
-        let mut records = Vec::with_capacity(file.chunks.len());
-        for chunk in &file.chunks {
-            let Some(vector) = vectors.get(chunk.content_hash.as_str()) else {
-                return Err(Error::Internal(format!(
-                    "chunk {} lost its vector",
-                    chunk.id
-                )));
-            };
-            records.push(VectorRecord {
-                id: chunk.id.clone(),
-                vector: vector.clone(),
-                payload: VectorPayload {
-                    path: chunk.path.clone(),
-                    lang: chunk.lang,
-                    kind: chunk.kind,
-                    symbol: chunk.symbol.clone(),
-                },
-            });
-        }
-
-        let orphans = cat
-            .bucket
-            .replace_file_chunks(&project.id, &path, file.chunks)
-            .await?;
-        if !orphans.is_empty() {
-            cat.store.delete(&project.id, &orphans).await?;
-            report.chunks_deleted += orphans.len() as u64;
-        }
-        cat.store.upsert(&project.id, &records).await?;
-        cat.bucket.put_file(&project.id, &file.record).await?;
-
-        report.chunks_written += records.len() as u64;
-        if file.is_new {
-            report.files_added += 1;
-        } else {
-            report.files_updated += 1;
-        }
-    }
-    progress.write(|p| p.chunks_done = report.chunks_written);
-    Ok(())
-}
-
-/// Stamps project identity, ordinals and content hashes onto raw chunks.
-pub(super) fn materialize(
-    project: &Project,
-    rel_path: &str,
-    lang: Lang,
-    raw: Vec<RawChunk>,
-) -> Vec<Chunk> {
-    raw.into_iter()
-        .enumerate()
-        .map(|(ordinal, r)| {
-            let ordinal = ordinal as u32;
-            let mut chunk = Chunk {
-                id: ChunkId::derive(&project.id, rel_path, ordinal),
-                project: project.id.clone(),
-                path: rel_path.to_string(),
-                lang,
-                ordinal,
-                kind: r.kind,
-                symbol: r.symbol,
-                breadcrumb: r.breadcrumb,
-                start_line: r.start_line,
-                end_line: r.end_line,
-                // Placeholder: the real hash covers the text we actually embed,
-                // header included, so a path change invalidates the vector.
-                content_hash: ContentHash::from_hex(String::new()),
-                text: r.text,
-            };
-            chunk.content_hash = ContentHash::of(chunk.embed_input().as_bytes());
-            chunk
-        })
-        .collect()
 }

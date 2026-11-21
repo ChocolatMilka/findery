@@ -4,59 +4,19 @@
 //! `GET /v1/jobs/{id}` — and it lives here, at the edge. A streaming route would
 //! be a protocol in service of a progress bar.
 
-use std::io::IsTerminal;
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressStyle};
-
 use findery_core::Result;
-use findery_core::api::{JobState, Progress, SyncRequest, SyncResponse};
+use findery_core::api::{Job, JobState, SyncRequest, SyncResponse};
 use findery_core::ids::ProjectId;
 
 use findery_client::Client;
 
-/// Each poll is an HTTP round trip and the bar moves in units of files, which
-/// take far longer to change than this.
+use crate::ui::board::{Board, ago};
+
+/// Each poll is an HTTP round trip, and a bar redrawn five times a second
+/// already reads as continuous.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
-
-/// A live bar on stderr, or nothing.
-///
-/// Never stdout: a pipe and `--json` must see the answer alone. And never when
-/// nobody is watching — a redirected log gets the summary line, not hundreds of
-/// carriage returns.
-pub(crate) fn bar() -> Option<ProgressBar> {
-    if !std::io::stderr().is_terminal() {
-        return None;
-    }
-    let Ok(style) = ProgressStyle::with_template("{spinner} {bar:28} {pos}/{len} files · {msg}")
-    else {
-        // An unparseable template is a bug, and not a reason to lose the run:
-        // the report prints either way.
-        return None;
-    };
-    let bar = ProgressBar::new(0);
-    bar.set_style(style.progress_chars("=> "));
-    // The spinner is what says the run is alive while the walk is still
-    // establishing the denominator.
-    bar.enable_steady_tick(Duration::from_millis(120));
-    Some(bar)
-}
-
-/// Draws one snapshot. The total appears only once the walk has returned, so the
-/// bar grows to its real length once and never runs backwards.
-fn draw(bar: &ProgressBar, p: &Progress) {
-    if p.files_total > 0 {
-        bar.set_length(p.files_total);
-    }
-    bar.set_position(p.files_done);
-    bar.set_message(format!(
-        "{} · {} chunks · {} embedded / {} cached",
-        p.phase.as_str(),
-        p.chunks_done,
-        p.embeddings_computed,
-        p.embeddings_cached
-    ));
-}
 
 /// Runs a sync and, unless the caller asked not to wait, follows it to the end.
 ///
@@ -72,7 +32,7 @@ pub(crate) async fn watch_sync(
     client: &Client,
     project: &ProjectId,
     request: &SyncRequest,
-    bar: Option<ProgressBar>,
+    board: Option<Board>,
     wait: bool,
 ) -> Result<SyncResponse> {
     let job = match client.sync(project, request).await? {
@@ -83,21 +43,45 @@ pub(crate) async fn watch_sync(
     if !wait {
         return Ok(SyncResponse::Accepted { job });
     }
+    // A board is a luxury; waiting is not. Without one — a pipe, `--json`, a
+    // log — the run is followed just the same, silently.
+    if let (Some(board), Some(note)) = (&board, attached(&job)) {
+        board.note(&note);
+    }
 
     loop {
         let current = client.job(&job.id).await?;
-        // A bar is a luxury; waiting is not. Without one — a pipe, `--json`, a
-        // log — the run is followed just the same, silently.
-        if let (Some(bar), Some(progress)) = (&bar, &current.progress) {
-            draw(bar, progress);
+        if let Some(board) = &board {
+            draw(board, &current);
         }
         if current.state.is_terminal() {
-            if let Some(bar) = &bar {
-                bar.finish_and_clear();
+            if let Some(board) = &board {
+                board.clear();
             }
             return terminal(current);
         }
         tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// A job already running before this command asked is someone else's pass,
+/// joined midway: say so, or its first frame reads as a jump. A job this
+/// command started is still queued when the answer comes back.
+fn attached(job: &Job) -> Option<String> {
+    match (job.state, &job.progress) {
+        (JobState::Running, Some(progress)) => Some(format!(
+            "attached to the running sync (started {} ago)",
+            ago(progress.elapsed_ms)
+        )),
+        _ => None,
+    }
+}
+
+fn draw(board: &Board, job: &Job) {
+    match (job.state, &job.progress) {
+        (JobState::Queued, _) => board.queued(),
+        (_, Some(progress)) => board.draw(progress),
+        _ => {}
     }
 }
 
@@ -108,9 +92,9 @@ pub(crate) async fn sync_now(
     project: &ProjectId,
     json: bool,
 ) -> Result<findery_core::model::SyncReport> {
-    let bar = if json { None } else { bar() };
+    let board = if json { None } else { Board::new() };
     let request = SyncRequest::default();
-    match watch_sync(client, project, &request, bar, true).await? {
+    match watch_sync(client, project, &request, board, true).await? {
         SyncResponse::Completed { report } => Ok(report),
         // Unreachable while `wait` mirrors the bar, and still handled: an
         // `unreachable!` on a production path is a panic waiting for a refactor.
@@ -123,17 +107,75 @@ pub(crate) async fn sync_now(
 
 /// A sync that failed must fail *here*, with a non-zero exit code: returning the
 /// job would let the CLI print "queued" for work that is already over.
-fn terminal(job: findery_core::api::Job) -> Result<SyncResponse> {
-    if job.state == JobState::Succeeded {
-        return match job.report {
-            Some(report) => Ok(SyncResponse::Completed { report }),
-            None => Err(findery_core::Error::Internal(format!(
-                "job `{}` succeeded without a report",
-                job.id
-            ))),
-        };
+///
+/// The failure is the variant the daemon raised, rebuilt by [`Job::failure`], so
+/// the user reads `findery: recipe mismatch: …` and the command that repairs it —
+/// not `findery: internal: config: …`, which blames a bug that is not there.
+///
+/// [`Job::failure`]: findery_core::api::Job::failure
+fn terminal(job: Job) -> Result<SyncResponse> {
+    if let Some(failure) = job.failure() {
+        return Err(failure);
     }
-    Err(findery_core::Error::Internal(job.error.unwrap_or_else(
-        || format!("job `{}` failed without a message", job.id),
-    )))
+    match (job.state, job.report) {
+        (JobState::Succeeded, Some(report)) => Ok(SyncResponse::Completed { report }),
+        (state, _) => Err(findery_core::Error::Internal(format!(
+            "job `{}` ended as {state:?} without a report",
+            job.id
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(state: JobState, error: Option<&str>, code: Option<&str>) -> Job {
+        Job {
+            id: "3f2a".into(),
+            project: "axle".into(),
+            kind: "full".into(),
+            state,
+            created_at: 0,
+            finished_at: Some(1),
+            progress: None,
+            report: None,
+            error: error.map(str::to_string),
+            error_code: code.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_failed_sync_is_reported_as_the_error_the_daemon_raised() {
+        let failed = job(
+            JobState::Failed,
+            Some("bucket `work` holds vectors built with `a:1`"),
+            Some("recipe_mismatch"),
+        );
+        let err = terminal(failed).expect_err("a failed job fails the command");
+        assert_eq!(
+            err.to_string(),
+            "recipe mismatch: bucket `work` holds vectors built with `a:1`"
+        );
+    }
+
+    #[test]
+    fn joining_a_running_sync_says_since_when_and_a_fresh_one_says_nothing() {
+        let mut running = job(JobState::Running, None, None);
+        running.progress = Some(findery_core::api::Progress {
+            elapsed_ms: 12_300,
+            ..Default::default()
+        });
+        assert_eq!(
+            attached(&running).as_deref(),
+            Some("attached to the running sync (started 12s ago)")
+        );
+        assert_eq!(attached(&job(JobState::Queued, None, None)), None);
+    }
+
+    #[test]
+    fn a_success_without_a_report_is_still_an_error() {
+        let err = terminal(job(JobState::Succeeded, None, None)).expect_err("no report");
+        assert_eq!(err.code(), "internal");
+    }
 }

@@ -5,24 +5,38 @@
 //! when a client asks. The value goes down as an argument and comes up as a
 //! return value. The handle holds no `Indexer` and no store, so it cannot grow
 //! into a second engine.
+//!
+//! The handle also owns the clock: every write and every read stamps
+//! `elapsed_ms`, so a snapshot is as old as the moment it is taken, not the
+//! moment the sync last wrote.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use parking_lot::Mutex;
 
 use findery_core::api::{Progress, ProgressPhase};
 
-/// How often a pass reports file progress when no flush happens first. A pass
-/// where nothing changed flushes nothing, and a bar driven only by flushes would
-/// sit still for all of it; counting every file would take the lock 50k times to
-/// move a bar nobody can see move.
-pub const PROGRESS_FILES: u64 = 512;
+#[derive(Default)]
+struct Shared {
+    progress: Progress,
+    /// When the sync began; `None` while the job waits for a slot.
+    started: Option<Instant>,
+}
+
+impl Shared {
+    fn stamp(&mut self) {
+        if let Some(started) = self.started {
+            self.progress.elapsed_ms = started.elapsed().as_millis() as u64;
+        }
+    }
+}
 
 /// A shared, writable view of one job's counters.
 ///
 /// Cloned cheaply; every clone points at the same counters.
 #[derive(Clone, Default)]
-pub struct ProgressHandle(Arc<Mutex<Progress>>);
+pub struct ProgressHandle(Arc<Mutex<Shared>>);
 
 impl ProgressHandle {
     /// A handle nobody reads, for the callers that have no client watching — so
@@ -31,15 +45,28 @@ impl ProgressHandle {
         Self::default()
     }
 
-    /// Mutates the counters under the lock. Keep the closure trivial: it runs on
-    /// the sync's hot path.
-    pub fn write(&self, update: impl FnOnce(&mut Progress)) {
-        update(&mut self.0.lock());
+    /// Starts the clock and clears the counters: the sync begins now.
+    pub fn begin(&self) {
+        let mut shared = self.0.lock();
+        *shared = Shared {
+            started: Some(Instant::now()),
+            ..Shared::default()
+        };
     }
 
-    /// The counters as a client would see them.
+    /// Mutates the counters under the lock, `elapsed_ms` already current. Keep
+    /// the closure trivial: it runs on the sync's hot path.
+    pub fn write(&self, update: impl FnOnce(&mut Progress)) {
+        let mut shared = self.0.lock();
+        shared.stamp();
+        update(&mut shared.progress);
+    }
+
+    /// The counters as a client would see them, right now.
     pub fn snapshot(&self) -> Progress {
-        self.0.lock().clone()
+        let mut shared = self.0.lock();
+        shared.stamp();
+        shared.progress.clone()
     }
 
     /// Moves every future write into `phase`.
@@ -58,21 +85,10 @@ mod tests {
         let reader = handle.clone();
         handle.write(|p| {
             p.files_done = 3;
-            p.files_total = 12;
+            p.files_pending = 12;
         });
         assert_eq!(reader.snapshot().files_done, 3);
-        assert_eq!(reader.snapshot().files_total, 12);
-    }
-
-    /// The walk is what establishes the denominator, so a bar drawn before it
-    /// returns must read 0% rather than dividing by zero.
-    #[test]
-    fn an_unknown_total_is_not_a_division_by_zero() {
-        let handle = ProgressHandle::detached();
-        assert_eq!(handle.snapshot().fraction(), 0.0);
-        handle.write(|p| p.files_total = 4);
-        handle.write(|p| p.files_done = 1);
-        assert!((handle.snapshot().fraction() - 0.25).abs() < f32::EPSILON);
+        assert_eq!(reader.snapshot().files_pending, 12);
     }
 
     /// A detached handle is a real handle: writing to it must not panic, which
@@ -82,5 +98,24 @@ mod tests {
         let handle = ProgressHandle::detached();
         handle.enter(ProgressPhase::Pruning);
         assert_eq!(handle.snapshot().phase, ProgressPhase::Pruning);
+    }
+
+    /// The elapsed time a client reads is the time now, even when the sync
+    /// has not written for a while — a stalled clock reads as a hung job.
+    #[test]
+    fn a_snapshot_carries_the_time_it_was_taken() {
+        let handle = ProgressHandle::detached();
+        assert_eq!(handle.snapshot().elapsed_ms, 0, "a queued job has no clock");
+        handle.begin();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(handle.snapshot().elapsed_ms >= 20);
+    }
+
+    #[test]
+    fn beginning_clears_what_an_earlier_pass_left() {
+        let handle = ProgressHandle::detached();
+        handle.write(|p| p.files_done = 9);
+        handle.begin();
+        assert_eq!(handle.snapshot().files_done, 0);
     }
 }
