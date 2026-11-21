@@ -100,6 +100,10 @@ $tasks = [ordered]@{
     'imports'      = 'Verify every block of imports is grouped by layer (CONV-039)'
     'check'        = 'Everything CI would run'
     'bench'        = 'Measure the brute-force vector scan (release only)'
+    'models-install' = 'Install the native model runtime and its models (GPU via Vulkan)'
+    'models-start' = 'Start it in the background, on 127.0.0.1:8090'
+    'models-stop'  = 'Stop it'
+    'models-status' = 'Whether it answers, and which models are loaded'
     'image'        = 'Build the daemon image'
     'up-model'     = 'Start ONLY the model; the daemon starts itself'
     'up-model-gpu' = 'Same, on the GPU'
@@ -149,6 +153,10 @@ switch ($Task) {
 
     'run'          { Invoke-Step 'cargo'  @('run', '--release', '-p', 'findery-server') }
     'image'        { Invoke-Step 'docker' @('compose', 'build') }
+    'models-install' { & (Join-Path $PSScriptRoot '..\runtime\models.ps1') install }
+    'models-start' { & (Join-Path $PSScriptRoot '..\runtime\models.ps1') start }
+    'models-stop'  { & (Join-Path $PSScriptRoot '..\runtime\models.ps1') stop }
+    'models-status' { & (Join-Path $PSScriptRoot '..\runtime\models.ps1') status }
     'up-model'     { Invoke-Step 'docker' @('compose', 'up', '-d', 'tei') }
     'up-model-gpu' { Invoke-Step 'docker' @('compose', '--profile', 'gpu', 'up', '-d', 'tei-gpu') }
     'up'           { Invoke-Step 'docker' @('compose', 'up', '-d') }
@@ -174,7 +182,7 @@ switch ($Task) {
     'help' {
         Write-Host 'findery tasks - .\tools\tasks.ps1 <task>' -ForegroundColor Cyan
         foreach ($name in $tasks.Keys) {
-            Write-Host ("  {0,-13} {1}" -f $name, $tasks[$name])
+            Write-Host ("  {0,-16} {1}" -f $name, $tasks[$name])
         }
     }
 

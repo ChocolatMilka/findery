@@ -20,7 +20,7 @@ avoided.
 | [`overview/pipeline.md`](overview/pipeline.md) | The full path: file on disk → chunk → vector → hit cited by the agent |
 | [`overview/layers.md`](overview/layers.md) | The layer law, the crates, what each is allowed to know |
 | [`chunk/README.md`](chunk/README.md) | Chunking per language, the lexical lexicons, item boundaries, windows, merging |
-| [`embed/README.md`](embed/README.md) | Models, Qwen3 instruction, local and remote providers, cache recipe |
+| [`embed/README.md`](embed/README.md) | Models and profiles, Qwen3 instruction, local and remote providers, the native runtime (`runtime/`), cache recipe |
 | [`store/README.md`](store/README.md) | SQLite bucket, vector backends, **the measurements that justify the choice**, export |
 | [`index/README.md`](index/README.md) | Which file an operation works in (members, leases), incremental sync (the three gates), search — intents run as legs, `like`, pairing — and how it degrades, jobs, watch, detach / rm |
 | [`server/README.md`](server/README.md) | HTTP API reference |

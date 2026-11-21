@@ -23,6 +23,7 @@ It accepts **two** response shapes — the OpenAI envelope and TEI's bare
 |---|---|
 | DashScope (default) | `FINDERY_EMBED_BASE_URL=https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`, `FINDERY_EMBED_MODEL=qwen3.7-text-embedding`, `FINDERY_EMBED_DIM=1024`, `FINDERY_EMBED_API_KEY=$DASHSCOPE_API_KEY` |
 | A local runtime instead | `FINDERY_EMBED_BASE_URL=http://127.0.0.1:1234`, `FINDERY_EMBED_MODEL=<whatever it serves>` — `qwen3.7-text-embedding` is API-only, so a local box runs a different model and therefore a different recipe |
+| The native runtime (`runtime/`) | `FINDERY_EMBED_BASE_URL=http://127.0.0.1:8090`, `FINDERY_EMBED_MODEL=harrier-oss-v1-0.6b` — see below |
 | llama.cpp (GGUF) | `FINDERY_EMBED_BASE_URL=http://llama:8080` |
 | OpenAI | `FINDERY_EMBED_BASE_URL=https://api.openai.com`, `FINDERY_EMBED_MODEL=text-embedding-3-large`, `FINDERY_EMBED_DIM=3072`, `FINDERY_EMBED_API_KEY=sk-…`, `FINDERY_EMBED_SEND_DIMENSIONS=true` |
 | Azure OpenAI | + `FINDERY_EMBED_AUTH_HEADER=api-key`, `FINDERY_EMBED_AUTH_PREFIX=` (empty) |
@@ -30,6 +31,44 @@ It accepts **two** response shapes — the OpenAI envelope and TEI's bare
 
 `FINDERY_EMBED_HEADERS="Name: value; Other: value"` adds static headers
 (gateways, tenancy, API versioning).
+
+## The native runtime — `runtime/`
+
+findery never runs a model itself; [`runtime/`](../../../runtime/) is the
+shortest path to one that is local, on the GPU, without Docker:
+llama.cpp's `llama-server` in embedding mode, behind llama-swap, which serves
+every model on one port (`127.0.0.1:8090`) and routes by the request's `model`.
+An unknown name is an error, never another model's vectors.
+
+| File | What it is |
+|---|---|
+| `models.ps1` / `models.sh` | the same verbs on Windows and Linux: `install`, `pull`, `start`, `stop`, `restart`, `status`, `ui`, `logs`, `devices`, `autostart on\|off`, `uninstall` |
+| `pins.txt` | the llama.cpp build, the llama-swap version, and the sha256 of every asset and model file — the only place a version is decided |
+| `llama-swap.yaml` | the template `install` fills in once; the copy in the runtime directory is the user's to edit and is never overwritten |
+| `findery-models.service` | the systemd user unit `autostart on` writes on Linux; Windows uses a `Run` key that starts the runtime hidden at logon |
+
+Why it is shaped this way:
+
+- **Pinned, then checked.** A runtime that installs "latest" changes under a
+  working setup. Every download is verified against `pins.txt` before it is
+  unpacked, and a step already done is skipped, so `install` is safe to run
+  again.
+- **The served names are LM Studio's** (`harrier-oss-v1-0.6b`,
+  `text-embedding-qwen3-embedding-0.6b`), and the GGUF files sit in LM Studio's
+  layout (`owner/repo/file`). The recipe is `<model>:<dim>`, so a project
+  indexed through LM Studio keeps every vector when its URL moves to `:8090` —
+  and an existing LM Studio library is reused instead of downloaded again.
+- **Last-token pooling, 4 slots of 8k tokens**: what Qwen3-Embedding and Harrier
+  expect, and room for a sync's concurrent batches. Both models stay loaded
+  together (`swap: false`), so two projects on two models never evict each
+  other; a model idle for 30 minutes unloads and reloads on the next request.
+- **A copy of the tooling lives beside the binaries**
+  (`<runtime>/findery-models[.ps1]`, `pins.txt`, `templates/`), so the service
+  and autostart keep working whatever happens to the repository checkout.
+
+The runtime directory is `<data_dir>/runtime` (`FINDERY_RUNTIME_DIR` moves it,
+`FINDERY_MODELS_LISTEN` changes the port). `tools/` is the repository's own
+development tooling; `runtime/` is for users, which is why it sits apart.
 
 ## Model profiles
 

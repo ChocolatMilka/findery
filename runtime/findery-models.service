@@ -1,0 +1,16 @@
+# findery's embedding runtime, as a systemd user service.
+#
+# `models.sh autostart on` fills in the @...@ placeholders, writes this to
+# ~/.config/systemd/user/ and enables it; `autostart off` disables it.
+
+[Unit]
+Description=findery embedding runtime (llama-swap + llama.cpp)
+After=network.target
+
+[Service]
+ExecStart="@SWAP@" -config "@CONFIG@" -listen @LISTEN@ -watch-config
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

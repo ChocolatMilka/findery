@@ -1,0 +1,58 @@
+# findery's embedding runtime: llama.cpp behind llama-swap.
+#
+# `models.ps1 install` / `models.sh install` copy this file into the runtime
+# directory with the @...@ placeholders filled in, once: an existing copy is
+# never overwritten, so edit that one freely (the scripts print where it is).
+#
+# One port serves every model, routed by the request's `model`; an unknown
+# name is an error, never another model's vectors. Dashboard: <listen>/ui
+
+healthCheckTimeout: 120
+logLevel: info
+startPort: 10101
+# Unload a model after 30 idle minutes; the next request loads it again.
+globalTTL: 1800
+
+macros:
+  server: '"@SERVER@"'
+  models: '@MODELS@'
+  # Embedding mode with last-token pooling, which Qwen3-Embedding and Harrier
+  # both use. 4 slots of 8k tokens: a sync sends several batches at once.
+  # A GPU build puts every layer on the GPU (`-ngl all`); a CPU build has no
+  # such flag. Add `--device Vulkan1` to pick another GPU (`models devices`).
+  embed: >-
+    --host 127.0.0.1 --port ${PORT}
+    --embeddings --pooling last
+    @DEVICE@
+    -c 32768 -np 4 -b 2048 -ub 2048
+
+# The names are the ones LM Studio serves the same files under, so moving a
+# findery profile from LM Studio to this runtime keeps its recipe, and every
+# vector already computed.
+models:
+  "harrier-oss-v1-0.6b":
+    name: "Harrier OSS v1 0.6B (Q8_0)"
+    cmd: >-
+      ${server} ${embed}
+      --alias harrier-oss-v1-0.6b
+      -m "${models}/mradermacher/harrier-oss-v1-0.6b-GGUF/harrier-oss-v1-0.6b.Q8_0.gguf"
+
+  "text-embedding-qwen3-embedding-0.6b":
+    name: "Qwen3-Embedding 0.6B (Q8_0)"
+    cmd: >-
+      ${server} ${embed}
+      --alias text-embedding-qwen3-embedding-0.6b
+      -m "${models}/Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
+
+routing:
+  router:
+    use: group
+    settings:
+      groups:
+        # Both stay loaded together: two projects on two models never swap.
+        "embeddings":
+          swap: false
+          exclusive: false
+          members:
+            - "harrier-oss-v1-0.6b"
+            - "text-embedding-qwen3-embedding-0.6b"
