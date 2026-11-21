@@ -6,7 +6,7 @@
 //! silent fallback: selecting it is an explicit `backend = "mock"`.
 
 use findery_core::Result;
-use findery_core::prompt;
+use findery_core::embedding::prompt;
 use findery_core::traits::Embedder;
 
 pub struct MockEmbedder {

@@ -1,11 +1,12 @@
 //! Markdown chunker: one chunk per heading section, breadcrumbs carrying the
 //! full heading ancestry so a fragment stays self-locating out of context.
 
-use crate::sizing::{count_lines, drop_empty, merge_small, split_windows};
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
+
+use crate::sizing::{count_lines, drop_empty, merge_small, split_windows};
 
 /// Splits Markdown into heading sections.
 pub struct MarkdownChunker;

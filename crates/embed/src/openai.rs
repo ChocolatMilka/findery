@@ -8,15 +8,17 @@
 //! Two response shapes are accepted, because the same code must talk to both
 //! `/v1/embeddings` (OpenAI envelope) and TEI's native `/embed` (bare matrix).
 
-use findery_core::config::EmbedderConfig;
-use findery_core::prompt;
-use findery_core::traits::Embedder;
-use findery_core::{Error, Result};
-use futures::stream::{self, StreamExt};
-use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::stream::{self, StreamExt};
+use serde::Deserialize;
 use tokio::sync::Semaphore;
+
+use findery_core::config::EmbedderConfig;
+use findery_core::embedding::prompt;
+use findery_core::traits::Embedder;
+use findery_core::{Error, Result};
 
 const SERVICE: &str = "embedder";
 

@@ -10,13 +10,14 @@
 //! annotation (`@Test`, `@ParameterizedTest`, `@SpringBootTest`…) tags the
 //! item a test.
 
-use crate::brace::{ItemMeta, Profile, chunk_with};
-use crate::header::{annotated_header, next_ident};
-use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
+
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::{annotated_header, next_ident};
+use crate::scanner::Lexicon;
 
 /// Splits Java source into items.
 pub struct JavaChunker;

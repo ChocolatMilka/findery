@@ -5,14 +5,16 @@
 //! session on Windows. The settings file the daemon already reads is the third,
 //! and it is what `findery config set server …` writes, so naming a daemon is a
 //! command rather than an export. Order: flag, environment (clap folds both into
-//! [`crate::Cli`]), the file, then loopback.
+//! [`crate::args::Cli`]), the file, then loopback.
 //!
-//! Kept apart from `run.rs`, whose one job is dispatch: naming where a command
+//! Kept apart from `dispatch`, whose one job is routing: naming where a command
 //! goes is a different question from deciding what it does.
 
-use crate::Cli;
-use findery_client::DEFAULT_BASE_URL;
 use findery_core::Result;
+
+use findery_client::DEFAULT_BASE_URL;
+
+use crate::args::Cli;
 
 pub(crate) struct Endpoint {
     pub(crate) base_url: String,
@@ -21,7 +23,7 @@ pub(crate) struct Endpoint {
 
 impl Endpoint {
     pub(crate) fn resolve(cli: &Cli) -> Result<Self> {
-        let (url, token) = crate::config::connection()?;
+        let (url, token) = crate::settings::connection()?;
         Ok(Self {
             base_url: cli
                 .server

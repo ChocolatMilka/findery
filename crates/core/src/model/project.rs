@@ -6,12 +6,14 @@
 //! it crosses the wire, and everything here is about a *project*, while what
 //! stayed behind is about chunks and runs.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 use crate::ids::{ContentHash, ProjectId};
 use crate::model::Lang;
 use crate::model::search::SearchFilter;
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Files and projects
@@ -115,7 +117,7 @@ pub struct ProjectSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<crate::prompt::QueryTask>,
+    pub task: Option<crate::embedding::prompt::QueryTask>,
 }
 
 impl ProjectSpec {

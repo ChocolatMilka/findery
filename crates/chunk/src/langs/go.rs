@@ -11,14 +11,15 @@
 //! `ExampleXxx` — not an attribute, which is why the profile knows the path
 //! it chunks.
 
-use crate::brace::{ItemMeta, Profile, chunk_with};
-use crate::header::{PARENS, balanced_end, header_of, next_ident, opens_on, split_trivia};
-use crate::items::Span;
-use crate::scanner::Lexicon;
 use findery_core::Result;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
 use findery_core::traits::Chunker;
+
+use crate::brace::{ItemMeta, Profile, chunk_with};
+use crate::header::{PARENS, balanced_end, header_of, next_ident, opens_on, split_trivia};
+use crate::items::Span;
+use crate::scanner::Lexicon;
 
 /// Splits Go source into items.
 pub struct GoChunker;

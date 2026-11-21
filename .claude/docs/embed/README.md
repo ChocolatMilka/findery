@@ -44,7 +44,7 @@ on the **query** side, and raw text on the **document** side.
 Prefixing the documents too costs a few MTEB points and, worse, doubles the
 blast radius of a prompt change: every stored vector would need recomputing.
 
-The formatting lives in `findery_core::prompt` (CONV-012). Nobody concatenates
+The formatting lives in `findery_core::embedding::prompt` (CONV-012). Nobody concatenates
 `"Instruct: "` anywhere else.
 
 ### The presets — what an agent can actually choose

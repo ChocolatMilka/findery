@@ -7,9 +7,11 @@
 
 mod fixtures;
 
-use findery_chunk::Registry;
 use findery_core::config::ChunkConfig;
 use findery_core::model::{ChunkKind, Lang, RawChunk};
+
+use findery_chunk::Registry;
+
 use fixtures::*;
 
 fn chunks_under(path: &str, src: &str, max_chars: usize) -> Vec<RawChunk> {

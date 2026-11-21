@@ -6,9 +6,11 @@
 //! return value. The handle holds no `Indexer` and no store, so it cannot grow
 //! into a second engine.
 
-use findery_core::api::{Progress, ProgressPhase};
-use parking_lot::Mutex;
 use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+use findery_core::api::{Progress, ProgressPhase};
 
 /// How often a pass reports file progress when no flush happens first. A pass
 /// where nothing changed flushes nothing, and a bar driven only by flushes would

@@ -6,12 +6,14 @@
 //! deepest root wins, an auto-derived id may not hijack an existing project,
 //! and a Windows verbatim prefix never reaches a message (CONV-029).
 
-use crate::Scope;
-use findery_client::Client;
 use findery_core::ids::ProjectId;
 use findery_core::model::SearchMode;
-use findery_core::path_map;
+use findery_core::support::path_map;
 use findery_core::{Error, Result};
+
+use findery_client::Client;
+
+use crate::args::Scope;
 
 /// Resolves the project a command applies to.
 ///
@@ -24,7 +26,7 @@ pub(crate) async fn resolve(client: &Client, scope: &Scope) -> Result<ProjectId>
     if let Some(explicit) = &scope.project {
         return ProjectId::new(explicit.clone());
     }
-    if let Some(found) = crate::manifest::discover(
+    if let Some(found) = crate::workspace::manifest::discover(
         &std::env::current_dir()
             .map_err(|e| Error::Invalid(format!("cannot read the current directory: {e}")))?,
     )? && let Some(id) = found.config.project_id()

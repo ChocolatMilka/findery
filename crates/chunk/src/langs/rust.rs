@@ -1,15 +1,16 @@
 //! Rust chunker: one chunk per item, one chunk per method inside a large
 //! `impl`, doc comments and attributes riding along with the item they document.
 
+use findery_core::Result;
+use findery_core::config::ChunkConfig;
+use findery_core::model::{ChunkKind, Lang, RawChunk};
+use findery_core::traits::Chunker;
+
 use super::module_name;
 use crate::brace::{ItemMeta, Profile, chunk_with, inner_doc_preamble_end};
 use crate::header::{next_ident, split_trivia};
 use crate::items::LineIndex;
 use crate::scanner::Lexicon;
-use findery_core::Result;
-use findery_core::config::ChunkConfig;
-use findery_core::model::{ChunkKind, Lang, RawChunk};
-use findery_core::traits::Chunker;
 
 /// Splits Rust source into items.
 pub struct RustChunker;

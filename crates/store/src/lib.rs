@@ -13,22 +13,21 @@
 
 pub mod bucket;
 pub mod export;
-pub mod qdrant;
-pub mod registry;
-pub mod schema;
-pub mod sqlite_store;
+pub mod files;
+pub mod vectors;
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use findery_core::Result;
 use findery_core::config::{StoreBackend, StoreConfig, bucket_path, buckets_dir};
 use findery_core::model::{DEFAULT_BUCKET, is_bucket_name};
 use findery_core::traits::VectorStore;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 pub use bucket::Bucket;
 pub use export::{ExportFormat, ExportReport, export_project};
-pub use qdrant::QdrantStore;
-pub use sqlite_store::SqliteVectorStore;
+pub use vectors::qdrant::QdrantStore;
+pub use vectors::sqlite::SqliteVectorStore;
 
 /// Moves an install created before the vocabulary change onto the current names.
 ///
@@ -299,10 +298,11 @@ pub fn build_vector_store(cfg: &StoreConfig, bucket: Bucket) -> Result<Arc<dyn V
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use findery_core::ids::ProjectId;
     use findery_core::model::SearchFilter;
     use findery_core::traits::{VectorPayload, VectorRecord};
+
+    use super::*;
 
     #[tokio::test]
     async fn the_sqlite_backend_needs_nothing_but_a_directory() {

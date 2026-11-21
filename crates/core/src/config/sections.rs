@@ -5,10 +5,12 @@
 //! overlay and validation. Those are one responsibility; describing every knob
 //! of every subsystem is another (CONV-029).
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 use crate::config::default_data_dir;
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// Where a client reaches the daemon when nothing tells it otherwise.
 ///
@@ -158,7 +160,7 @@ impl Default for EmbedderConfig {
             max_retries: 3,
             max_input_chars: 24_000,
             normalize: true,
-            query_instruction: crate::prompt::DEFAULT_QUERY_INSTRUCTION.into(),
+            query_instruction: crate::embedding::prompt::DEFAULT_QUERY_INSTRUCTION.into(),
         }
     }
 }

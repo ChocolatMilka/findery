@@ -1,5 +1,5 @@
-//! Terminal rendering. Kept apart from dispatch so `main.rs` stays a table of
-//! commands rather than a table of commands interleaved with `println!`.
+//! Terminal rendering of each answer. Kept apart from the commands so a body
+//! reads as calls, not as calls interleaved with `println!`.
 
 use findery_core::Result;
 use findery_core::api::{BucketInfo, ExportReport, HealthReport, Job};
@@ -197,8 +197,9 @@ pub fn explain(err: &findery_core::Error, server: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use findery_core::Error;
+
+    use super::*;
 
     #[test]
     fn a_refused_connection_names_the_fix() {

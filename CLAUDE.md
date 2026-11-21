@@ -50,7 +50,8 @@ A transport decides nothing.
 | `Chunker` | `RustChunker`, `MarkdownChunker`, `TextChunker` | how we split |
 
 **The layer law**: dependencies go down, data goes up through `Result`.
-Mechanical truth: `bash tools/watchdogs/check_layers.sh`.
+Mechanical truth: `bash tools/watchdogs/check_layers.sh`. How each crate is
+laid out inside: `.claude/docs/overview/layers.md` (*Inside each crate*).
 
 ---
 
@@ -101,7 +102,7 @@ cargo +1.99.0 clippy --workspace --all-targets -- -D warnings
 ```
 
 ```bash
-make check                  # fmt-check + clippy -D warnings + test + layers
+make check                  # fmt-check + clippy -D warnings + test + layers + sizes + imports
 make test                   # 475 tests
 make bench                  # measures the vector scan (release)
 make install                # findery + finderyd + MCP bridge into ~/.cargo/bin
@@ -153,10 +154,11 @@ finderyd --check                # the config as actually resolved
 | A field visible to a client | `findery-core::model` / `findery-core::api`                   |
 | A language to chunk         | `findery-chunk` + one line in `Registry`                      |
 | An embeddings provider      | often **zero code**: it's config                              |
-| A vector database           | `findery-store`, `VectorStore` impl                           |
+| A vector database           | `findery-store::vectors`, `VectorStore` impl                  |
 | A sync or ranking rule      | `findery-index` — **never** in a handler                      |
 | An HTTP route               | `findery-server::routes` + `findery-client` method + MCP tool |
 | A tool for Claude Code      | `findery-mcp::tools`                                          |
+| A CLI command               | `findery-cli::commands` + `args` + one arm in `dispatch`      |
 
 ---
 

@@ -10,10 +10,11 @@
 pub mod mock;
 pub mod openai;
 
+use std::sync::Arc;
+
 use findery_core::Result;
 use findery_core::config::{EmbedderBackend, EmbedderConfig};
 use findery_core::traits::Embedder;
-use std::sync::Arc;
 
 pub use mock::MockEmbedder;
 pub use openai::OpenAiCompatEmbedder;

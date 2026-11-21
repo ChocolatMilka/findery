@@ -11,14 +11,16 @@
 //! Qdrant has no glob predicate and a wrong translation is worse than a second
 //! pass over a few hundred rows.
 
+use std::time::Duration;
+
+use serde_json::{Value, json};
+
 use findery_core::config::QdrantConfig;
-use findery_core::filter::CompiledFilter;
 use findery_core::ids::{ChunkId, ProjectId};
+use findery_core::model::filter::CompiledFilter;
 use findery_core::model::{ChunkKind, Lang, ScoredChunk, SearchFilter};
 use findery_core::traits::{VectorPayload, VectorRecord, VectorStore};
 use findery_core::{Error, Result};
-use serde_json::{Value, json};
-use std::time::Duration;
 
 const SERVICE: &str = "qdrant";
 /// Over-fetch factor when a predicate has to be applied client-side.

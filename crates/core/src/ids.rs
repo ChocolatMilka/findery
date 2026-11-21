@@ -1,9 +1,11 @@
 //! Newtyped identifiers. A bare `String` crossing three layers always ends up
 //! swapped with another bare `String`.
 
-use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Error, Result};
 
 /// Stable slug of an indexed project (`[a-z0-9_-]{1,64}`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

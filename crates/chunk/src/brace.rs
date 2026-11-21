@@ -7,13 +7,14 @@
 //! every language at once (CONV-024: the chunker splits, and nothing else).
 //! Reading one item's header is [`crate::header`]'s job.
 
+use findery_core::Result;
+use findery_core::config::ChunkConfig;
+use findery_core::model::{ChunkKind, RawChunk};
+
 use crate::header::split_trivia;
 use crate::items::{LineIndex, Span, body_span, split_items};
 use crate::scanner::{Lexicon, is_comment_at, skip_opaque};
 use crate::sizing::{MAX_NESTING, drop_empty, merge_small, split_windows, within_budget};
-use findery_core::Result;
-use findery_core::config::ChunkConfig;
-use findery_core::model::{ChunkKind, RawChunk};
 
 /// What the header of an item says about it.
 pub(crate) struct ItemMeta {

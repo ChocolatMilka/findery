@@ -12,11 +12,13 @@
 //! exclusion is explicit configuration, and the walk reports what it skipped
 //! rather than dropping it in silence.
 
-use findery_core::model::{Lang, ProjectSpec};
-use findery_core::project::MANIFEST_DIR;
-use findery_core::{Error, Result};
-use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
+
+use ignore::WalkBuilder;
+
+use findery_core::manifest::MANIFEST_DIR;
+use findery_core::model::{Lang, ProjectSpec};
+use findery_core::{Error, Result};
 
 /// A file the walker accepted.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,8 +186,9 @@ pub fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
+    use super::*;
 
     fn fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");

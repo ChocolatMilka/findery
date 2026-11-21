@@ -19,10 +19,11 @@ pub use sections::{
     ProjectDefaults, QdrantConfig, SearchConfig, ServerConfig, StoreBackend, StoreConfig,
 };
 
-use crate::model::is_bucket_name;
-use crate::path_map::{Mount, PathMapper};
-use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::model::is_bucket_name;
+use crate::support::path_map::{Mount, PathMapper};
+use crate::{Error, Result};
 
 /// Root configuration of the daemon.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

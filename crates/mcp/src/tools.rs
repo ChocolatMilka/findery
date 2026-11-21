@@ -6,13 +6,15 @@
 //! `path:line-line` locator the agent can quote, a host path it can open, and
 //! the excerpt itself — nothing else.
 
-use findery_client::Client;
+use serde_json::Value;
+
 use findery_core::api::{AddDocument, ExportRequest, RegisterProject, SyncRequest};
+use findery_core::embedding::prompt::QueryTask;
 use findery_core::ids::ProjectId;
 use findery_core::model::{ChunkKind, Lang, SearchFilter, SearchHit, SearchMode, SearchRequest};
-use findery_core::prompt::QueryTask;
 use findery_core::{Error, Result};
-use serde_json::Value;
+
+use findery_client::Client;
 
 /// Dispatches one `tools/call`, returning the text to show the model.
 pub async fn call(client: &Client, name: &str, args: &Value) -> Result<String> {
@@ -358,10 +360,12 @@ fn parse_mode(raw: &str) -> Option<SearchMode> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use serde_json::json;
+
     use findery_core::ids::{ChunkId, ContentHash};
     use findery_core::model::Chunk;
-    use serde_json::json;
+
+    use super::*;
 
     fn hit(path: &str, score: f32) -> SearchHit {
         let project = ProjectId::new("demo").expect("id");

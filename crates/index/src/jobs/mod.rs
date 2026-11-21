@@ -6,14 +6,20 @@
 //! concurrency is capped by a semaphore so two clients cannot saturate the
 //! embedding runtime between them.
 
-use crate::progress::ProgressHandle;
-use findery_core::clock::now_unix;
-use findery_core::model::SyncReport;
-use findery_core::{Error, Result};
-use parking_lot::Mutex;
+pub mod progress;
+pub mod watch;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+
+use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use findery_core::model::SyncReport;
+use findery_core::support::clock::now_unix;
+use findery_core::{Error, Result};
+
+use progress::ProgressHandle;
 
 // The job types are wire vocabulary and therefore live in L0, next to every
 // other shape a client can observe.
