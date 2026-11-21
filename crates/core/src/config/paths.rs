@@ -6,6 +6,10 @@
 //! end up in" are two responsibilities, and the second one is read by clients
 //! that never load a configuration at all.
 
+use std::path::{Path, PathBuf};
+
+use crate::embedding::recipe::{Recipe, RecipeTag};
+
 /// Directory holding every bucket but the default one.
 pub fn buckets_dir(data_dir: &str) -> String {
     format!("{}/buckets", data_dir.trim_end_matches('/'))
@@ -79,4 +83,99 @@ pub fn data_dir_from_env() -> String {
         .filter(|v| !v.is_empty())
         .map(|v| v.replace('\\', "/").trim_end_matches('/').to_string())
         .unwrap_or_else(default_data_dir)
+}
+
+/// The file holding one recipe's member of the bucket whose base path is
+/// `base` (`dir/stem.db`): `dir/{stem}.{slug}-{tag}.db`.
+///
+/// INTENT: one bucket holds one file per vector space, so switching model never
+/// has to refuse, rename or overwrite anything — the other model's vectors stay
+/// beside it, and switching back costs nothing. The slug is for the human
+/// reading a directory listing; the tag is what [`parse_member_name`] reads
+/// back. The slug never contains a `.`, which is what keeps
+/// `bucket.foo.x-abcdefgh.db` from ever being read as a member of `bucket`.
+///
+/// The only place a member's file name is spelled.
+pub fn bucket_member_path(base: &Path, recipe: &Recipe) -> PathBuf {
+    let stem = base
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("bucket");
+    let name = format!("{stem}.{}-{}.db", recipe.slug(), recipe.tag());
+    match base.parent() {
+        Some(dir) => dir.join(name),
+        None => PathBuf::from(name),
+    }
+}
+
+/// The recipe tag of `file_name` when it names a member of the bucket whose
+/// base file stem is `stem` — `{stem}.{middle}-{tag}.db`, the middle holding no
+/// `.` — and `None` for anything else, the base file and its `-wal`/`-shm`
+/// included.
+pub fn parse_member_name(stem: &str, file_name: &str) -> Option<RecipeTag> {
+    let rest = file_name.strip_prefix(stem)?.strip_prefix('.')?;
+    let body = rest.strip_suffix(".db")?;
+    if body.contains('.') {
+        return None;
+    }
+    let (slug, tag) = body.rsplit_once('-')?;
+    if slug.is_empty() {
+        return None;
+    }
+    RecipeTag::parse(tag).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recipe(raw: &str) -> Recipe {
+        Recipe::parse(raw).expect("recipe")
+    }
+
+    #[test]
+    fn a_member_sits_beside_its_base_file_and_reads_back_to_its_tag() {
+        let r = recipe("harrier-oss-v1-0.6b:1024");
+        let path = bucket_member_path(Path::new("/p/.findery/bucket.db"), &r);
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf-8 name");
+        assert_eq!(path.parent(), Some(Path::new("/p/.findery")));
+        assert_eq!(name, format!("bucket.harrier-oss-v1-0-6b-{}.db", r.tag()));
+        assert_eq!(parse_member_name("bucket", name), Some(r.tag()));
+    }
+
+    #[test]
+    fn a_bare_base_name_still_gets_a_member() {
+        let r = recipe("mock:256");
+        let path = bucket_member_path(Path::new("bucket.db"), &r);
+        assert_eq!(path, PathBuf::from(format!("bucket.mock-{}.db", r.tag())));
+    }
+
+    #[test]
+    fn only_a_members_own_name_parses_as_one() {
+        let tag = recipe("mock:256").tag();
+        let member = format!("bucket.mock-{tag}.db");
+        assert_eq!(parse_member_name("bucket", &member), Some(tag));
+        // Another family's member, whose stem happens to extend ours.
+        let nested = format!("bucket.foo.x-{tag}.db");
+        assert_eq!(parse_member_name("bucket", &nested), None);
+        assert_eq!(parse_member_name("bucket.foo", &nested), Some(tag));
+        for other in [
+            "bucket.db".to_string(),
+            "bucket.db-wal".to_string(),
+            format!("bucket.mock-{tag}.db-wal"),
+            format!("bucket.mock-{tag}.db-shm"),
+            format!("bucket.-{tag}.db"),
+            "bucket.mock-ABCDEFGH.db".to_string(),
+            "bucket.mock-abcdefg.db".to_string(),
+            "bucket.mock.db".to_string(),
+            format!("buckets.mock-{tag}.db"),
+            format!("other.mock-{tag}.db"),
+        ] {
+            assert_eq!(parse_member_name("bucket", &other), None, "{other}");
+        }
+    }
 }

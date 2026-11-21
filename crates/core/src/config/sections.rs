@@ -42,6 +42,16 @@ pub struct ServerConfig {
     pub job_concurrency: usize,
     /// How many finished jobs stay queryable.
     pub job_history: usize,
+    /// How long `detach` and `rm` wait for a project's running sync to stop
+    /// before they give up with `busy`, changing nothing.
+    pub drain_timeout_secs: u64,
+    /// How long a drain still waits once it aborted a job that ignored its
+    /// cancel flag. An aborted task lets go at its next `await`; one that does
+    /// not within this is stuck, and waiting longer would only hide that.
+    pub abort_grace_secs: u64,
+    /// Longest a sync request may ask to wait for its job (`wait_ms`) before
+    /// the job is answered as it stands.
+    pub max_sync_wait_ms: u64,
 }
 
 impl Default for ServerConfig {
@@ -53,6 +63,9 @@ impl Default for ServerConfig {
             max_body_bytes: 32 * 1024 * 1024,
             job_concurrency: 2,
             job_history: 64,
+            drain_timeout_secs: 15,
+            abort_grace_secs: 2,
+            max_sync_wait_ms: 120_000,
         }
     }
 }
@@ -105,6 +118,13 @@ pub struct EmbedderConfig {
     pub path: String,
     /// Model identifier forwarded to the runtime, verbatim.
     pub model: String,
+    /// Canonical name of the weights behind `model`, when the runtime's own
+    /// name is not one. It replaces `model` as the recipe's identity, so LM
+    /// Studio's `harrier-oss-v1-0.6b` and TEI's `microsoft/harrier-oss-v1-0.6b`
+    /// — the same weights under two names — share their vectors. A different
+    /// quantization (a GGUF `Q8_0`) is different weights, and must not claim
+    /// the same name.
+    pub weights: Option<String>,
     /// Secret for the auth header. Prefer `FINDERY_EMBED_API_KEY` over the file.
     pub api_key: Option<String>,
     /// Header carrying the secret. Azure OpenAI wants `api-key`, most others
@@ -138,6 +158,13 @@ pub struct EmbedderConfig {
     pub normalize: bool,
     /// Instruction prefix, applied to QUERIES only (the model is asymmetric).
     pub query_instruction: String,
+    /// How this model wants a query; `None` is
+    /// [`crate::embedding::prompt::DEFAULT_QUERY_TEMPLATE`]. Must contain `{query}`.
+    pub query_template: Option<String>,
+    /// How this model wants a document; `None` is the identity `{text}`. Must
+    /// contain `{text}`. A non-identity template changes every stored vector,
+    /// so it enters the recipe and opens its own vector space.
+    pub document_template: Option<String>,
 }
 
 impl Default for EmbedderConfig {
@@ -147,6 +174,7 @@ impl Default for EmbedderConfig {
             base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode".into(),
             path: "/v1/embeddings".into(),
             model: "qwen3.7-text-embedding".into(),
+            weights: None,
             api_key: None,
             auth_header: "Authorization".into(),
             auth_prefix: "Bearer ".into(),
@@ -161,6 +189,8 @@ impl Default for EmbedderConfig {
             max_input_chars: 24_000,
             normalize: true,
             query_instruction: crate::embedding::prompt::DEFAULT_QUERY_INSTRUCTION.into(),
+            query_template: None,
+            document_template: None,
         }
     }
 }
@@ -219,6 +249,10 @@ pub struct StoreConfig {
     /// INTENT: the default is the bucket every install already has, so a
     /// single-bucket user never learns the concept exists.
     pub default_bucket: String,
+    /// How long a peek at another file's recipe or project ids — at boot, and
+    /// during adoption — waits for a writer to let go, in milliseconds. Short
+    /// on purpose: it runs once per file while the daemon starts.
+    pub peek_busy_timeout_ms: u64,
     pub qdrant: QdrantConfig,
 }
 
@@ -230,8 +264,16 @@ impl Default for StoreConfig {
             export_dir: format!("{data_dir}/exports"),
             data_dir,
             default_bucket: crate::model::DEFAULT_BUCKET.to_string(),
+            peek_busy_timeout_ms: 2_000,
             qdrant: QdrantConfig::default(),
         }
+    }
+}
+
+impl StoreConfig {
+    /// [`StoreConfig::peek_busy_timeout_ms`] as a duration.
+    pub fn peek_busy_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.peek_busy_timeout_ms)
     }
 }
 
@@ -288,35 +330,6 @@ impl Default for ChunkConfig {
             min_chars: 120,
             overlap_chars: 200,
             include_tests: true,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SearchConfig {
-    pub default_k: usize,
-    pub max_k: usize,
-    pub default_mode: crate::model::SearchMode,
-    /// Reciprocal-rank-fusion constant. 60 is the value from the original
-    /// Cormack et al. paper and holds up well here.
-    pub rrf_k: f32,
-    /// Candidates fetched per leg before fusion, as a multiple of `k`.
-    pub candidate_multiplier: usize,
-    /// Maximum characters of chunk text returned per hit; 0 means unlimited.
-    /// This is the single most effective token-budget knob for MCP clients.
-    pub max_snippet_chars: usize,
-}
-
-impl Default for SearchConfig {
-    fn default() -> Self {
-        Self {
-            default_k: 10,
-            max_k: 100,
-            default_mode: crate::model::SearchMode::Hybrid,
-            rrf_k: 60.0,
-            candidate_multiplier: 4,
-            max_snippet_chars: 2_400,
         }
     }
 }

@@ -32,8 +32,12 @@ x-daemon-env: &daemon-env
   FINDERY_MOUNTS: ${FINDERY_WORKSPACES:-.}=/workspaces
   # --- embedding runtime (local by default, remote by configuration) --------
   FINDERY_EMBED_BACKEND: ${FINDERY_EMBED_BACKEND:-openai_compat}
-  FINDERY_EMBED_MODEL: ${FINDERY_EMBED_MODEL:-qwen3.7-text-embedding}
+  # FINDERY_EMBED_MODEL is set per service, next to the base URL it must agree
+  # with — see the `findery` service below.
   FINDERY_EMBED_DIM: ${FINDERY_EMBED_DIM:-1024}
+  # Profile selection and canonical weights, passed through when set.
+  FINDERY_MODEL: ${FINDERY_MODEL:-}
+  FINDERY_EMBED_WEIGHTS: ${FINDERY_EMBED_WEIGHTS:-}
   FINDERY_EMBED_API_KEY: ${FINDERY_EMBED_API_KEY:-}
   FINDERY_EMBED_BATCH_SIZE: ${FINDERY_EMBED_BATCH_SIZE:-32}
   FINDERY_EMBED_CONCURRENCY: ${FINDERY_EMBED_CONCURRENCY:-2}
@@ -61,8 +65,10 @@ x-tei: &tei
   # project may live on any disk.
   ports:
     - "${FINDERY_TEI_PORT:-8080}:80"
+  # Microsoft Harrier: Qwen3-based, 1024 dims, MIT, the same Instruct/Query
+  # query format as Qwen3-Embedding, documents sent raw.
   command:
-    - --model-id=${FINDERY_TEI_MODEL_ID:-Qwen/Qwen3-Embedding-0.6B}
+    - --model-id=${FINDERY_TEI_MODEL_ID:-microsoft/harrier-oss-v1-0.6b}
     - --port=80
     - --max-client-batch-size=${FINDERY_EMBED_BATCH_SIZE:-32}
     - --auto-truncate
@@ -117,6 +123,15 @@ services:
     environment:
       <<: *daemon-env
       FINDERY_EMBED_BASE_URL: ${FINDERY_EMBED_BASE_URL:-http://tei:80}
+      # INTENT: the model name is the recipe's identity, and TEI serves its one
+      # model whatever name a request carries. Defaulting the name to a model
+      # TEI does not serve (it used to be `qwen3.7-text-embedding`) filed TEI's
+      # vectors under another model's recipe — the exact recipe real DashScope
+      # vectors would later be cached under. So the name defaults to what TEI
+      # was told to load, through the same switch as the URL: set nothing and
+      # both point at the bundled TEI; set FINDERY_EMBED_BASE_URL and
+      # FINDERY_EMBED_MODEL (as .env does) and both point at your provider.
+      FINDERY_EMBED_MODEL: ${FINDERY_EMBED_MODEL:-${FINDERY_TEI_MODEL_ID:-microsoft/harrier-oss-v1-0.6b}}
     depends_on:
       tei:
         condition: service_healthy
@@ -131,6 +146,8 @@ services:
     environment:
       <<: *daemon-env
       FINDERY_EMBED_BASE_URL: ${FINDERY_EMBED_BASE_URL:-http://tei-gpu:80}
+      # Same rule as the CPU service: the name follows what TEI loaded.
+      FINDERY_EMBED_MODEL: ${FINDERY_EMBED_MODEL:-${FINDERY_TEI_MODEL_ID:-microsoft/harrier-oss-v1-0.6b}}
     depends_on:
       tei-gpu:
         condition: service_healthy

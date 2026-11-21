@@ -66,6 +66,92 @@ impl fmt::Display for ProjectId {
     }
 }
 
+/// Name of a model profile: `[models.<alias>]`, `default_model = "<alias>"`.
+///
+/// INTENT: letters, digits, `-` and `_`, starting with a letter or digit, at
+/// most 64 — the bucket names' charset **without `.`**. An alias is a TOML key
+/// and one segment of a dotted setting (`findery config set models.qwen3.dim
+/// 1024`), where a dot would split it in two; it must also never look like a
+/// path. So `qwen3` and `harrier-v1` are aliases, `qwen3-0.6b` and `../x` are
+/// not.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModelAlias(String);
+
+/// The alias charset: see [`ModelAlias`].
+fn is_alias(raw: &str) -> bool {
+    !raw.contains('.') && crate::model::is_bucket_name(raw)
+}
+
+impl ModelAlias {
+    /// The alias of the implicit profile `[embedder]` itself. Reserved: no
+    /// `[models.<alias>]` may take it.
+    pub const IMPLICIT: &'static str = "embedder";
+
+    /// Validates an alias as a caller names it — `embedder` included, since
+    /// that is how a caller selects the implicit profile.
+    pub fn new(raw: impl Into<String>) -> Result<Self> {
+        let raw = raw.into();
+        if !is_alias(&raw) {
+            return Err(Error::Invalid(format!(
+                "model alias `{raw}`: expected letters, digits, `-` or `_` (no `.`), starting \
+                 with a letter or digit, at most 64 characters"
+            )));
+        }
+        Ok(Self(raw))
+    }
+
+    /// Validates the alias of a user-defined `[models.<alias>]` profile, which
+    /// may not shadow the implicit one.
+    pub fn for_profile(raw: impl Into<String>) -> Result<Self> {
+        let alias = Self::new(raw)?;
+        if alias.is_implicit() {
+            return Err(Error::Invalid(format!(
+                "model alias `{}` is reserved for the `[embedder]` section itself; \
+                 name the profile something else",
+                Self::IMPLICIT
+            )));
+        }
+        Ok(alias)
+    }
+
+    /// The implicit profile's alias.
+    pub fn implicit() -> Self {
+        Self(Self::IMPLICIT.to_string())
+    }
+
+    /// Whether this names the `[embedder]` section.
+    pub fn is_implicit(&self) -> bool {
+        self.0 == Self::IMPLICIT
+    }
+
+    /// The alias as the configuration spells it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ModelAlias {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// INTENT: through `ModelAlias::new` rather than `#[serde(transparent)]`, so an
+// alias read off the wire or out of a stored project row is as valid as one a
+// caller built (CONV-016) — `../x` never deserializes.
+impl Serialize for ModelAlias {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelAlias {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Self::new(raw).map_err(|e| serde::de::Error::custom(e.detail()))
+    }
+}
+
 /// Content fingerprint (blake3, 32 bytes, hex encoded).
 ///
 /// INTENT: this is the embedding cache key. Two chunks with identical content —
@@ -160,6 +246,49 @@ mod tests {
         assert!(ProjectId::new("../etc").is_err());
         assert!(ProjectId::new("Axle").is_err());
         assert!(ProjectId::new("").is_err());
+    }
+
+    #[test]
+    fn a_model_alias_refuses_paths_and_dots() {
+        assert_eq!(ModelAlias::new("qwen3").expect("valid").as_str(), "qwen3");
+        assert!(ModelAlias::new("harrier_v1-oss").is_ok());
+        // A dot would split `models.<alias>.<key>` in two.
+        for bad in [
+            "qwen3-0.6b",
+            "../x",
+            "",
+            ".hidden",
+            "a/b",
+            "a b",
+            &"x".repeat(65),
+        ] {
+            assert!(ModelAlias::new(bad).is_err(), "{bad:?}");
+            assert!(ModelAlias::for_profile(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_implicit_alias_is_reserved_for_the_embedder_section() {
+        let implicit = ModelAlias::new("embedder").expect("a caller may name it");
+        assert!(implicit.is_implicit());
+        assert_eq!(implicit, ModelAlias::implicit());
+        let err = ModelAlias::for_profile("embedder").expect_err("reserved");
+        assert_eq!(err.code(), "invalid");
+        assert!(
+            !ModelAlias::for_profile("harrier")
+                .expect("valid")
+                .is_implicit()
+        );
+    }
+
+    #[test]
+    fn a_model_alias_round_trips_through_json_and_refuses_a_bad_one() {
+        let alias = ModelAlias::new("qwen3").expect("valid");
+        let text = serde_json::to_string(&alias).expect("serialize");
+        assert_eq!(text, "\"qwen3\"");
+        let back: ModelAlias = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back, alias);
+        assert!(serde_json::from_str::<ModelAlias>("\"../x\"").is_err());
     }
 
     #[test]

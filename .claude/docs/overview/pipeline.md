@@ -42,7 +42,8 @@
 
 Then, in order:
 
-1. an extension filter (`rs`, `md` by default);
+1. an extension filter (`extensions`: by default, every language the chunkers
+   know);
 2. `include`;
 3. `exclude`.
 
@@ -92,11 +93,11 @@ Detail: [`../store/README.md`](../store/README.md).
 
 ### 6. Search — `findery-index::search`
 
-Two legs, fused by **rank** and not by score: cosine lives in `[-1,1]`,
+Two lists, fused by **rank** and not by score: cosine lives in `[-1,1]`,
 BM25 is unbounded, calibrating one against the other would be a permanent
-tuning job.
+tuning job. RRF fuses them with no calibration.
 
-RRF fuses them with no calibration.
+Detail: [`../index/README.md`](../index/README.md).
 
 ## The three gates — what makes re-sync free
 
@@ -132,9 +133,14 @@ Executable proof, in `crates/server/tests/api.rs`:
 
 ## What changes a vector
 
-The cache namespace is `recipe = "<model>:<dim>"`. Changing model or
-dimension opens a **new** space, and a bucket refuses to mix two recipes —
-at the operation, never at boot.
+The cache namespace is `recipe = "<model>:<dim>"`, built only by `Recipe::of`:
+
+- the profile's `weights` stand in for `<model>` when set;
+- a non-default document template adds `|doc=<fingerprint>`, since it changes
+  every vector without changing any `content_hash`.
+
+Changing model or dimension opens a **new** space, and a bucket refuses to mix
+two recipes — at the operation, never at boot.
 
 This is deliberate: a corpus half embedded at 1024 dims and half at 2560 is
 silently unsearchable, so the mix has to be refused. But refusing it at boot

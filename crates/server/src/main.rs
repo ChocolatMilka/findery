@@ -74,15 +74,20 @@ async fn run() -> Result<()> {
 
     let bind = cfg.server.bind.clone();
     let authenticated = cfg.server.api_token.is_some();
+    // The profile actually embedded with: `[embedder]` is only the base when
+    // `default_model` names another.
+    let (profile_name, profile) = cfg.default_profile()?;
     tracing::info!(
-        model = %cfg.embedder.model,
-        endpoint = %cfg.embedder.endpoint(),
+        profile = %profile_name,
+        model = %profile.model,
+        endpoint = %profile.endpoint(),
         store = cfg.store.backend.as_str(),
         "starting"
     );
 
     let state = findery_server::state_from_config(cfg).await?;
     let asked_to_stop = state.shutdown.clone();
+    let indexer = state.indexer.clone();
     let app = findery_server::app(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -93,7 +98,10 @@ async fn run() -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(asked_to_stop))
         .await
-        .map_err(|e| Error::Internal(format!("server: {e}")))
+        .map_err(|e| Error::Internal(format!("server: {e}")))?;
+    // Every bucket closed on the way out: the journals are folded back now,
+    // not by whichever process opens the files next.
+    indexer.close().await
 }
 
 /// Reads the configuration file, tolerating its absence.

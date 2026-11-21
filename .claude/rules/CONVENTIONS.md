@@ -39,7 +39,7 @@ user is in **French**.
 | **CONV-010** | The error → HTTP code mapping lives in `Error::http_status()`. A handler that writes `StatusCode::NOT_FOUND` by hand is a divergence. |
 | **CONV-011** | Filter semantics live in `CompiledFilter`. A backend can push part of the predicate down to its engine; what it doesn't push, it evaluates with THIS matcher. |
 | **CONV-012** | The Qwen3 prompt format lives in `findery_core::embedding::prompt`. No one concatenates `"Instruct: "` anywhere else. |
-| **CONV-013** | The vector cache key is `(recipe, content_hash)` and nothing else. `recipe = "<model>:<dim>"`, built in `Indexer::recipe()`. |
+| **CONV-013** | The vector cache key is `(recipe, content_hash)` and nothing else. `recipe = "<model>:<dim>"`, built by `Recipe::of` in L0. |
 | **CONV-014** | Thresholds (`max_chars`, `default_k`, `rrf_k`, `batch_size`…) live in `Config`. A magic number in a function is a named constant that got ignored. |
 
 ---

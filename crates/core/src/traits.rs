@@ -8,6 +8,7 @@ use async_trait::async_trait;
 
 use crate::Result;
 use crate::config::ChunkConfig;
+use crate::embedding::prompt::QueryPrompt;
 use crate::ids::{ChunkId, ProjectId};
 use crate::model::{ChunkKind, Lang, RawChunk, ScoredChunk, SearchFilter};
 
@@ -30,10 +31,9 @@ pub trait Embedder: Send + Sync {
     /// but always returned in the caller's order, one vector per input.
     async fn embed_documents(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>>;
 
-    /// Embeds a query, applying the instruction prefix.
-    ///
-    /// `instruction` overrides the configured default; `None` uses it.
-    async fn embed_query(&self, query: &str, instruction: Option<&str>) -> Result<Vec<f32>>;
+    /// Embeds a query, rendered through [`crate::embedding::prompt::render_query`] the
+    /// way `how` says: the configured instruction, another one, or verbatim.
+    async fn embed_query(&self, query: &str, how: QueryPrompt<'_>) -> Result<Vec<f32>>;
 
     /// Cheap liveness probe against the runtime.
     async fn health(&self) -> Result<()>;

@@ -1,8 +1,16 @@
 //! # findery-core — layer L0
 //!
-//! The shared vocabulary of findery: domain types, identifiers, errors,
-//! configuration, contracts (`Embedder`, `VectorStore`, `Chunker`) and host
-//! path translation.
+//! The shared vocabulary of findery:
+//!
+//! | Module | Holds |
+//! |---|---|
+//! | [`error`], [`ids`], [`traits`] | the error, the newtyped identifiers, the three seams (`Embedder`, `VectorStore`, `Chunker`) |
+//! | [`model`] | what is indexed and how it is asked for: chunks, projects, search requests and the filter that evaluates them |
+//! | [`api`] | the wire: what clients send and what the daemon answers |
+//! | [`config`] | the daemon's configuration, its model profiles, its environment overlay |
+//! | [`manifest`] | `.findery/config.toml`, the manifest of one project |
+//! | [`embedding`] | the vector space (`Recipe`) and the prompt formats a model reads |
+//! | [`support`] | the clock, host/container path translation, the serde-via-`parse` macro |
 //!
 //! INTENT: this layer depends on no other workspace crate and touches neither
 //! the filesystem nor the network. It describes; it does not execute. Any I/O
@@ -19,11 +27,13 @@ pub mod support;
 pub mod traits;
 
 pub use api::{
-    AddDocument, Deleted, ErrorBody, ExportReport, ExportRequest, HealthReport, Job, JobState,
-    RegisterProject, Removed, Stopping, SyncRequest, SyncResponse, WatchRequest, Watching,
+    AddDocument, ErrorBody, ExportReport, ExportRequest, HealthReport, Job, JobState, ModelHealth,
+    ModelInfo, ProjectDetached, ProjectRemoved, RegisterProject, Removed, SearchResponse, Stopping,
+    SyncRequest, SyncResponse, WatchRequest, Watching,
 };
+pub use embedding::recipe::{Recipe, RecipeTag};
 pub use error::{Error, Result};
-pub use ids::{ChunkId, ContentHash, ProjectId};
+pub use ids::{ChunkId, ContentHash, ModelAlias, ProjectId};
 pub use model::filter::CompiledFilter;
 pub use model::{
     Chunk, ChunkKind, FileRecord, IndexStats, Lang, Origin, Project, ProjectSpec, RawChunk,

@@ -18,7 +18,7 @@
 
 pub(crate) mod endpoint;
 
-use findery_core::config::{Config, user_config_path};
+use findery_core::config::{Config, env_var_for, user_config_path};
 use findery_core::{Error, Result};
 
 /// Friendly names for the keys people actually set.
@@ -26,7 +26,7 @@ use findery_core::{Error, Result};
 /// INTENT: `findery config set model …` is what someone types. Making them
 /// learn `embedder.model` to change a model is the kind of tax that sends them
 /// back to environment variables.
-const ALIASES: &[(&str, &str)] = &[
+pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("model", "embedder.model"),
     ("url", "embedder.base_url"),
     ("server", "server.url"),
@@ -116,6 +116,30 @@ pub fn show(json: bool) -> Result<()> {
 /// the caller is the only place that still knows how to warn about it, and the
 /// resolved key is the only thing that can find it.
 pub fn set(key: &str, value: &str, json: bool) -> Result<Option<&'static str>> {
+    let saved = save(key, value)?;
+    if json {
+        crate::ui::render::json(&serde_json::json!({
+            "path": saved.path, "key": saved.key, "value": saved.value,
+        }))?;
+    } else {
+        println!("{} = {}", saved.key, saved.value);
+    }
+    Ok(saved.shadowed)
+}
+
+/// One setting as it now reads in the file.
+pub(crate) struct Saved {
+    pub(crate) path: String,
+    pub(crate) key: String,
+    /// Masked when it is a secret.
+    pub(crate) value: String,
+    /// The variable that overrides it, when one is set.
+    pub(crate) shadowed: Option<&'static str>,
+}
+
+/// Writes one setting without printing anything, refusing a document the
+/// daemon would reject.
+pub(crate) fn save(key: &str, value: &str) -> Result<Saved> {
     let key = resolve(key);
     let path = user_config_path();
     let mut document = read(&path)?;
@@ -124,14 +148,28 @@ pub fn set(key: &str, value: &str, json: bool) -> Result<Option<&'static str>> {
     verify(&document)?;
     write(&path, &document)?;
 
-    if json {
-        crate::ui::render::json(&serde_json::json!({
-            "path": path, "key": key, "value": mask(&key, &shown(&document, &key)),
-        }))?;
-    } else {
-        println!("{key} = {}", mask(&key, &shown(&document, &key)));
-    }
-    Ok(shadowed(&key))
+    Ok(Saved {
+        value: mask(&key, &shown(&document, &key)),
+        shadowed: shadowed(&key),
+        path,
+        key,
+    })
+}
+
+/// Says on stderr when a written setting will not take effect.
+///
+/// INTENT: the environment overlay wins over the file on purpose — one image
+/// has to serve every deployment — but that makes a successful write appear to
+/// do nothing at all. Naming the variable at the moment of the write turns a
+/// trap back into a rule.
+pub(crate) fn warn_if_shadowed(variable: Option<&'static str>) {
+    let Some(variable) = variable else {
+        return;
+    };
+    eprintln!(
+        "warning: {variable} is set in this environment and overrides what was just \
+         written.\n  Unset it, or the file will keep being ignored."
+    );
 }
 
 /// Removes one setting, returning it to its default.
@@ -340,31 +378,10 @@ fn mask(key: &str, value: &str) -> String {
     format!("****{tail}")
 }
 
-/// The environment variable currently overriding a key, if any.
-///
-/// INTENT: the overlay is deliberate — one container image has to serve every
-/// deployment — but it means a `config set` can appear to do nothing. Naming the
-/// variable at the moment of the write is the difference between a rule and a
-/// trap.
+/// The environment variable currently overriding a key, if any. Looked up in
+/// the overlay's own table, so it never misses a variable the daemon honours.
 fn shadowed(key: &str) -> Option<&'static str> {
     env_var_for(key).filter(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()))
-}
-
-/// The environment variable that would win over a key, when there is one.
-fn env_var_for(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "embedder.model" => "FINDERY_EMBED_MODEL",
-        "embedder.base_url" => "FINDERY_EMBED_BASE_URL",
-        "embedder.api_key" => "FINDERY_EMBED_API_KEY",
-        "embedder.dim" => "FINDERY_EMBED_DIM",
-        "embedder.query_instruction" => "FINDERY_EMBED_QUERY_INSTRUCTION",
-        "embedder.backend" => "FINDERY_EMBED_BACKEND",
-        "store.backend" => "FINDERY_STORE_BACKEND",
-        "store.data_dir" => "FINDERY_DATA_DIR",
-        "server.bind" => "FINDERY_BIND",
-        "server.api_token" => "FINDERY_API_TOKEN",
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
@@ -505,5 +522,54 @@ mod tests {
         );
         assert_eq!(env_var_for("model"), None);
         assert_eq!(env_var_for("search.rrf_k"), None);
+    }
+
+    /// The variables profiles and lifecycle added are found like the old ones:
+    /// a hand-kept list here once missed every one of them.
+    #[test]
+    fn every_variable_the_overlay_honours_is_named_by_the_warning() {
+        for (key, var) in [
+            ("default_model", "FINDERY_MODEL"),
+            ("embedder.weights", "FINDERY_EMBED_WEIGHTS"),
+            ("embedder.query_template", "FINDERY_EMBED_QUERY_TEMPLATE"),
+            (
+                "embedder.document_template",
+                "FINDERY_EMBED_DOCUMENT_TEMPLATE",
+            ),
+            ("server.drain_timeout_secs", "FINDERY_DRAIN_TIMEOUT_SECS"),
+        ] {
+            assert_eq!(env_var_for(key), Some(var), "{key}");
+        }
+        // A profile's own keys have no variable: only `[embedder]` does.
+        assert_eq!(env_var_for("models.harrier.model"), None);
+    }
+
+    /// The one shape a model switch writes: a top-level key, then read back.
+    #[test]
+    fn a_model_profile_setting_is_a_dotted_key_like_any_other() {
+        let mut doc = toml::Table::new();
+        assign(
+            &mut doc,
+            "models.qwen3.dim",
+            parse_scalar("models.qwen3.dim", "1024"),
+        )
+        .expect("assign");
+        assign(
+            &mut doc,
+            "default_model",
+            parse_scalar("default_model", "qwen3"),
+        )
+        .expect("assign");
+        assert_eq!(doc["models"]["qwen3"]["dim"].as_integer(), Some(1024));
+        assert_eq!(shown(&doc, "default_model"), "qwen3");
+        verify(&doc).expect("a profile and a default naming it are valid");
+
+        assign(
+            &mut doc,
+            "default_model",
+            parse_scalar("default_model", "harier"),
+        )
+        .expect("assign");
+        assert_eq!(verify(&doc).expect_err("unknown").code(), "model_unknown");
     }
 }
