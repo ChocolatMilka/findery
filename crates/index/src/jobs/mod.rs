@@ -6,11 +6,14 @@
 //! concurrency is capped by a semaphore so two clients cannot saturate the
 //! embedding runtime between them.
 
-use crate::progress::ProgressHandle;
-use findery_core::clock::now_unix;
+pub mod progress;
+pub mod watch;
+
 use findery_core::model::SyncReport;
+use findery_core::support::clock::now_unix;
 use findery_core::{Error, Result};
 use parking_lot::Mutex;
+use progress::ProgressHandle;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};

@@ -11,8 +11,8 @@
 //! demand, so a crash loses nothing.
 
 use crate::bucket::Bucket;
-use findery_core::filter::CompiledFilter;
 use findery_core::ids::{ChunkId, ProjectId};
+use findery_core::model::filter::CompiledFilter;
 use findery_core::model::{ScoredChunk, SearchFilter};
 use findery_core::traits::{VectorPayload, VectorRecord, VectorStore};
 use findery_core::{Error, Result};

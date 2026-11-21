@@ -106,7 +106,7 @@ pub struct SearchRequest {
     /// Named retrieval intent. The embedding model is instruction-aware, and a
     /// task-tailored instruction buys 1-5% retrieval accuracy for free.
     #[serde(default)]
-    pub task: Option<crate::prompt::QueryTask>,
+    pub task: Option<crate::embedding::prompt::QueryTask>,
     /// Free-form instruction, overriding both `task` and the configured default.
     #[serde(default)]
     pub instruction: Option<String>,
@@ -142,7 +142,7 @@ impl SearchRequest {
     }
 
     /// Picks a named retrieval intent.
-    pub fn with_task(mut self, task: crate::prompt::QueryTask) -> Self {
+    pub fn with_task(mut self, task: crate::embedding::prompt::QueryTask) -> Self {
         self.task = Some(task);
         self
     }
@@ -206,8 +206,8 @@ pub struct SearchHit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedding::prompt::{DEFAULT_QUERY_INSTRUCTION, QueryTask};
     use crate::model::ProjectSpec;
-    use crate::prompt::{DEFAULT_QUERY_INSTRUCTION, QueryTask};
     use std::collections::BTreeMap;
 
     fn request() -> SearchRequest {

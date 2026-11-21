@@ -5,7 +5,7 @@
 //! text that no longer exists, which is worse than no keyword leg at all.
 
 use super::Bucket;
-use crate::schema::sql;
+use crate::bucket::schema::sql;
 use findery_core::Result;
 use findery_core::ids::{ChunkId, ContentHash, ProjectId};
 use findery_core::model::{Chunk, ChunkKind, Lang, ScoredChunk};

@@ -12,8 +12,8 @@
 //! pass over a few hundred rows.
 
 use findery_core::config::QdrantConfig;
-use findery_core::filter::CompiledFilter;
 use findery_core::ids::{ChunkId, ProjectId};
+use findery_core::model::filter::CompiledFilter;
 use findery_core::model::{ChunkKind, Lang, ScoredChunk, SearchFilter};
 use findery_core::traits::{VectorPayload, VectorRecord, VectorStore};
 use findery_core::{Error, Result};

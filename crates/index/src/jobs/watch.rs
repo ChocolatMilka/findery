@@ -100,7 +100,7 @@ pub fn spawn(indexer: Arc<Indexer>, project: Project, debounce: Duration) -> Res
                         .sync(
                             &project_id,
                             SyncMode::Paths(batch),
-                            &crate::progress::ProgressHandle::detached(),
+                            &crate::jobs::progress::ProgressHandle::detached(),
                         )
                         .await
                     {

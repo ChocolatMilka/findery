@@ -6,9 +6,9 @@
 
 use crate::Indexer;
 use findery_core::api::RegisterProject;
-use findery_core::clock::now_unix;
 use findery_core::ids::ProjectId;
 use findery_core::model::{Project, ProjectSpec};
+use findery_core::support::clock::now_unix;
 use findery_core::{Error, Result};
 use std::path::Path;
 

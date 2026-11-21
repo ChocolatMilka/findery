@@ -5,6 +5,7 @@
 //! derived from this one — one vocabulary, from the chunker up to Claude Code.
 
 use crate::ids::{ChunkId, ContentHash, ProjectId};
+pub mod filter;
 mod project;
 mod search;
 

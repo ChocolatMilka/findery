@@ -8,8 +8,8 @@
 
 use crate::Indexer;
 use findery_core::Result;
-use findery_core::filter::CompiledFilter;
 use findery_core::ids::ChunkId;
+use findery_core::model::filter::CompiledFilter;
 use findery_core::model::{
     Chunk, Project, ScoredChunk, SearchFilter, SearchHit, SearchMode, SearchRequest,
 };

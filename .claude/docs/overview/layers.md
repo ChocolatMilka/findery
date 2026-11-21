@@ -72,10 +72,30 @@ Three concrete reasons, not aesthetics:
 | A rule about which files count | `findery-walk` — both feeding sides get it |
 | A language to chunk            | `findery-chunk`, + one line in `Registry` |
 | An embeddings provider         | `findery-embed` — often **zero code**: it's config |
-| A vector database              | `findery-store`, impl of `VectorStore`, + a branch in `build_vector_store` |
+| A vector database              | `findery-store::vectors`, impl of `VectorStore`, + a branch in `build_vector_store` |
 | A sync or ranking rule         | `findery-index` — **never** in a handler |
 | An HTTP route                  | `findery-server::routes` + a `findery-client` method + an MCP tool |
 | A tool for Claude Code         | `findery-mcp::tools` |
+| A CLI command                  | `findery-cli::commands` + its arguments in `args` + one arm in `dispatch` |
+
+## Inside each crate
+
+A crate's root holds its entry point and the few types everything in it leans
+on; everything else lives in a directory named for what it is for. A file
+alone at the root is a file nobody could place — which is the signal to find
+it a home, not to add a neighbor.
+
+| Crate | Root | Directories |
+|-------|------|-------------|
+| `findery-core` | `error`, `ids`, `traits`, `manifest` | `model/` (what is indexed and how it is asked for, `filter` included) · `api/` (the wire) · `config/` (the daemon's settings) · `embedding/` (`prompt`) · `support/` (`clock`, `path_map`, `serde_str`) |
+| `findery-store` | `lib` (the factories), `export` | `bucket/` (the SQLite file and its `schema`) · `files/` (`registry`: where a bucket's files are) · `vectors/` (`sqlite`, `qdrant`) |
+| `findery-index` | `lib` (the `Indexer`), `buckets`, `projects`, `search` | `jobs/` (the registry, progress, watchers) · `sync/` |
+| `findery-cli` | `main` (the entry), `dispatch` (one arm per command) | `args/` (the clap surface, nothing else) · `commands/` (one module per command or family) · `settings/` (the settings file, the endpoint) · `workspace/` (the project around the cwd, its manifest) · `ui/` (the renderers) |
+
+`findery-chunk` already splits by concern (`langs/`, `scanner/`, the shared
+`brace` / `header` / `items` / `sizing` passes). `findery-embed`, `findery-walk`,
+`findery-client`, `findery-server` and `findery-mcp` are a handful of files
+each, one concern per file, and stay flat.
 
 ## The trap we already dodged once
 

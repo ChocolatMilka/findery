@@ -1,14 +1,14 @@
 //! Finding a project's manifest, reading it, and writing it.
 //!
-//! The filesystem half of [`findery_core::project`], which parses but opens
+//! The filesystem half of [`findery_core::manifest`], which parses but opens
 //! nothing (CONV-006). Discovery walks up the way `package.json` lookup does.
 //!
 //! Only the CLI reads manifests: the MCP bridge names its project and lets the
 //! daemon answer, which keeps the bridge a wire rather than a working directory.
 
 use findery_core::Result;
+use findery_core::manifest::{BucketRef, MANIFEST_DIR, MANIFEST_FILE, ProjectConfig};
 use findery_core::model::Project;
-use findery_core::project::{BucketRef, MANIFEST_DIR, MANIFEST_FILE, ProjectConfig};
 use std::path::{Path, PathBuf};
 
 /// A manifest found on disk, and the directory that holds it.
@@ -140,7 +140,7 @@ fn read_file(path: &Path) -> Result<ProjectConfig> {
 mod tests {
     use super::*;
     use findery_core::ids::ProjectId;
-    use findery_core::project::BucketRef;
+    use findery_core::manifest::BucketRef;
 
     fn starter() -> ProjectConfig {
         ProjectConfig {

@@ -20,7 +20,7 @@ pub use sections::{
 };
 
 use crate::model::is_bucket_name;
-use crate::path_map::{Mount, PathMapper};
+use crate::support::path_map::{Mount, PathMapper};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 

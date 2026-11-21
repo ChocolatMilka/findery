@@ -13,10 +13,8 @@
 
 pub mod bucket;
 pub mod export;
-pub mod qdrant;
-pub mod registry;
-pub mod schema;
-pub mod sqlite_store;
+pub mod files;
+pub mod vectors;
 
 use findery_core::Result;
 use findery_core::config::{StoreBackend, StoreConfig, bucket_path, buckets_dir};
@@ -27,8 +25,8 @@ use std::sync::Arc;
 
 pub use bucket::Bucket;
 pub use export::{ExportFormat, ExportReport, export_project};
-pub use qdrant::QdrantStore;
-pub use sqlite_store::SqliteVectorStore;
+pub use vectors::qdrant::QdrantStore;
+pub use vectors::sqlite::SqliteVectorStore;
 
 /// Moves an install created before the vocabulary change onto the current names.
 ///

@@ -21,11 +21,11 @@ pub use ingest::{forget_file, index_inline, prune, push_documents};
 
 use crate::BucketHandle;
 use crate::Indexer;
-use crate::progress::{PROGRESS_FILES, ProgressHandle};
+use crate::jobs::progress::{PROGRESS_FILES, ProgressHandle};
 use findery_core::api::ProgressPhase;
-use findery_core::clock::{now_millis, now_unix};
 use findery_core::ids::ContentHash;
 use findery_core::model::{FileRecord, Lang, Origin, Project, SyncMode, SyncReport};
+use findery_core::support::clock::{now_millis, now_unix};
 use findery_core::{Error, Result};
 
 /// Runs a synchronization pass and returns exactly what it did. `progress`

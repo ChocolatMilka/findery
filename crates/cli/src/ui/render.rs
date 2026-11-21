@@ -1,5 +1,5 @@
-//! Terminal rendering. Kept apart from dispatch so `main.rs` stays a table of
-//! commands rather than a table of commands interleaved with `println!`.
+//! Terminal rendering of each answer. Kept apart from the commands so a body
+//! reads as calls, not as calls interleaved with `println!`.
 
 use findery_core::Result;
 use findery_core::api::{BucketInfo, ExportReport, HealthReport, Job};

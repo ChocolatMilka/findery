@@ -11,11 +11,11 @@
 //! another file re-embeds it, and on purpose — the path is signal.
 
 use super::{Bucket, blob_to_vec, vec_to_blob};
-use crate::schema::sql;
+use crate::bucket::schema::sql;
 use findery_core::Result;
-use findery_core::clock::now_unix;
 use findery_core::ids::{ChunkId, ContentHash, ProjectId};
 use findery_core::model::{ChunkKind, Lang};
+use findery_core::support::clock::now_unix;
 use findery_core::traits::{VectorPayload, VectorRecord};
 use rusqlite::params;
 use std::collections::HashMap;

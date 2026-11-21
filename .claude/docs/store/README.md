@@ -6,7 +6,7 @@ Two things live here, deliberately separated.
   files, the chunks, the content-addressed vector cache, and the full-text
   index. Always present, whatever the vector backend. **This is the file to
   back up.**
-- **The vector store** (`sqlite_store.rs`, `qdrant.rs`) — where vectors are
+- **The vector store** (`vectors/sqlite.rs`, `vectors/qdrant.rs`) — where vectors are
   written and searched. Reconstructible from the bucket — that's what makes
   swapping it possible: a config change plus a re-sync.
 
@@ -55,7 +55,7 @@ codebase.
 
 ## 1. The bucket
 
-### Schema (`schema.rs`, `user_version = 1`)
+### Schema (`bucket/schema.rs`, `user_version = 1`)
 
 | Table        | Role                                                  |
 |--------------|-------------------------------------------------------|

@@ -13,7 +13,7 @@
 
 use super::sections::{EmbedderBackend, StoreBackend};
 use crate::config::Config;
-use crate::path_map::Mount;
+use crate::support::path_map::Mount;
 use crate::{Error, Result};
 use std::collections::BTreeMap;
 
